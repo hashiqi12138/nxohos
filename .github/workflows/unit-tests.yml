@@ -36,12 +36,12 @@ jobs:
       - name: Verify docs gate records are present
         working-directory: ohos-port
         run: |
-          python -c "
-import pathlib
-need = ['G0.1','G0.2','G0.3','G0.4','G0.5','G1.3','G1.6-BOTW']
-d = pathlib.Path('docs/verify')
-missing = [n for n in need if not (d / (n + '.md')).exists()]
-if missing:
-    raise SystemExit('missing gate records: ' + ', '.join(missing))
-print('all gate records present')
-"
+          python - <<'EOF'
+          import pathlib, sys
+          d = pathlib.Path('docs/verify')
+          need = ['G0.1', 'G0.2', 'G0.3', 'G0.4', 'G0.5', 'G1.3', 'G1.6-BOTW']
+          missing = [n for n in need if not (d / (n + '.md')).exists()]
+          if missing:
+              sys.exit('missing gate records: ' + ', '.join(missing))
+          print('all gate records present')
+          EOF
