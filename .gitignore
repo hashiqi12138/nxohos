@@ -1,0 +1,64 @@
+# ============================================================
+# nx2android-ohos 仓库忽略规则
+# 规则来源：上游 nx2android/.gitignore + 鸿蒙侧构建产物
+# ============================================================
+
+# ---- 工具链 / 设备工具（本地下载，含 NDK/.NET/adb/prod.keys）----
+/tools/
+/devtools/
+
+# ---- 上游浅克隆 git 备份（本地保留，绝不入库）----
+nx2android/.git.upstream-bak/
+
+# ---- 游戏数据与密钥（绝不入库）----
+/.gamedump/
+/work/
+*.nsp
+*.nsz
+*.xci
+*.nca
+*.keys
+prod.keys
+title.keys
+*-signing-key.json
+*.keystore
+
+# ---- 构建产物 ----
+/build/
+/dist/
+*.apk
+*.spv
+*.dmsv
+*.o
+*.d
+*.so
+*.hap
+*.hsp
+*.app
+
+# ---- 鸿蒙构建产物（nx2android/nxnative/dm/ohos 内部）----
+nx2android/nxnative/dm/ohos/out/
+nx2android/nxnative/dm/ohos/.hvigor/
+nx2android/nxnative/dm/ohos/hap/entry/build/
+nx2android/nxnative/dm/ohos/hap/entry/.preview/
+nx2android/nxnative/dm/ohos/hap/oh_modules/
+nx2android/nxnative/dm/ohos/**/__pycache__/
+
+# ---- 探针工程产物（ohos-port，入档则排除）----
+ohos-port/out/
+ohos-port/probe/hap/entry/build/
+ohos-port/probe/hap/oh_modules/
+ohos-port/probe/__pycache__/
+ohos-port/tools/__pycache__/
+
+# ---- Python / 通用 ----
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+*.log
+.DS_Store
+Thumbs.db
+
+# ---- 本仓库保留的可选基线（如需入库，删掉下一行）----
+# *.png

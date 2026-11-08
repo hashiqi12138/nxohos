@@ -1,0 +1,12 @@
+# Advance Wars 1+2: Re-Boot Camp (0100300012F2A000), base game 1.0.0 (the only version): Unity 2020.2 IL2CPP on SDK 10.4.1, NVN, FMOD; Bink 2 movies drawn by Bink's Unity plugin.
+# Tested 2026-10-28 on the Legion Y700 (TB322FC, Snapdragon 8 Elite, Adreno 830, Android 16), driven with DM_CTL: the Bink opening movie, Nell's introduction, the title menu, a casual
+# campaign's file and mission select and the first training battle (Field Training, Troop Orders) into its second day: cursor, unit select, movement range, moves, Wait, Fire with
+# its battle scene, the enemy's turn, the map menu and the pause menu. 60 fps in the menus and, with fps_target 60 (hle_fpslock.c writes Unity's render frame interval, 2 -> 1),
+# in battle too (30 there on the Switch): frame work p50 16.6 ms, 0 dropped frames outside loading screens, GPU about 5-9 ms; footprint 1.5-1.75 GB, the alias region mapped up
+# to +3.26 GB of 4.38; no audio underrun; no red log line. Not tested yet: a save, a whole mission, the other movies.
+# What it needed from the core: viewport swizzles on the Vulkan backend (the battle map's cursor was not drawn, so the tutorial waited for good), upstream's sdk cuts and
+# Bink shader reader. The shader tables were split on Windows (/ paths since d1ad5f2), as the other Unity profiles made on Windows
+status	playable
+tested	v0 Lenovo Legion Y700 TB322FC (Snapdragon 8 Elite, Adreno 830, Android 16)
+package	org.nx2a.advancewars
+orientation	landscape

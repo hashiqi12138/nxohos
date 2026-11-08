@@ -1,0 +1,20 @@
+# Xenoblade Chronicles 3 on Android (keys in docs/ARCHITECTURE.md "Game profiles on Android")
+# Monolith Soft's engine on SDK 12.3.9, update 2.2.0 with its four DLC. On the Y700 (2026-10-26), driven with DM_CTL: boot, the title (lit dragon, foreground clouds),
+# a new game, the opening movie (VP9) and skipping it (hold X), the first battles, the tutorials and the story to Torchlight Hill, saving and loading, and the pause
+# menu's Performance / Resolution switch: 30 fps held (frame p50 33.3 ms, p95 34-35 ms) over 15 minutes of walking Everblight Plain, mappings steady at 15,000-19,000
+# and GPU memory steady, no audio underruns. Heavy views of Torchlight Hill take about 40 ms a frame. The sky's cloud layer, which dropped out while the camera
+# turned (Adreno applied another depth buffer's LRZ; fixed in the core, gfx_vk_exec.c pass_commit), stays on: 0 flicker frames in 3 turning recordings (2026-10-27).
+# Speed (2026-10-27, CPU capped at ~2.0 GHz by the tablet): with the core fixes to the window acquire's sync, the submission slot ring and command buffers
+# reset on the completion thread, and the replay on its own thread (env below), it holds 30 fps in Performance and Resolution mode, field and battle:
+# frame p50 33.2 ms, p95 33.7-34.5 ms (Resolution-mode battles with ~2,800 draws included; they were 36 ms with the replay on the render thread).
+# Thin black slivers over the cliffs and grass of Everblight Plain (2-6% of frames, the user's report of black flicker; 2026-10-27): its mesh-transforming
+# vertex shaders ran unordered with the G-buffer draws on Adreno; fixed in the core (gfx_vk_exec.c prepare_draw): 0 in 6 recordings of 361 frames.
+# Grass flickering on Everblight Plain (whole blades black in some frames; 2026-10-28): its swayed grass cards met records the sway shaders had not written yet,
+# despite barriers; fixed in the core (gfx_vk_exec.c prepare_draw, rd_read): blades left black 900-2,300 a frame -> 0, on-screen flicker 4-8 -> 0.0-0.5, 30 fps held.
+# Hundreds of its effect and model shaders are in no game file: the app captures each one a draw misses, and the next port with --install translates them
+# (260 so far, 2026-10-27, from the opening, the first field and its battles); until then such draws are skipped, so the status is wip until the shaders are ported.
+status	wip
+tested	v655360 Lenovo Legion Y700 TB322FC (Snapdragon 8 Elite, Adreno 830, Android 16)
+package	org.nx2a.xc3
+orientation	landscape
+env	DM_NVN_ASYNC=1

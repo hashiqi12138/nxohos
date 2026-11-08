@@ -1,0 +1,42 @@
+# Mario vs. Donkey Kong (Switch, 2024; base game v0 + update 1.0.1 = v65536): Nintendo's sead / agl / gsys engine with NintendoWare G3d2 / Ui2d / Vfx2 / Font (as Super Mario Bros. Wonder), SDK 15.3.0, NVN;
+# modules main + subsdk0 (NintendoSDK_movie: the intro and cutscene movies, Movie/*.mp4, H.264 + AAC) + sdk. RomFS: zstd files (.zs, most of them models), BWAV sound.
+# Shaders: agl's sharcb (BAHS) in Lib/agl/agl_resource.Nin_NX_NVN.release.sarc.zs, the models' MaterialUber.bfsha in Model/*.sarc.zs, Shader/Sample.Nin_NX_NVN.release.sarc.zs and BNSH in main: 12,691.
+# Started from porter's provisional profile (dm/games/profile_guess.py); its memory values held
+
+# ---- Identity ----
+title_id	0100B99019412000
+program_id	0100B99019412000
+
+# ---- App ----
+name	Mario vs. Donkey Kong
+ipa	MarioVsDonkeyKong.ipa
+app_category	public.app-category.puzzle-games
+
+# ---- Versions ----
+build	v65536	1.0.1	main=43ae51ee9766867da5f1272ca0d3d8a6	subsdk0=34577ede441d6dddaa1af845b7869356	sdk=d5a1029a57d8cd4fdf4eacad87b0cfd0
+package	v65536
+shader_versions	v65536
+
+# ---- Files ----
+# every module main imports from
+modules	main subsdk0 sdk
+romfs_marker	Model/World08_Textures.bfres.zs
+zip_store	.bwav:.mp4:.xtx:.zs:.metallib
+
+# ---- Memory ----
+# main sets a heap of at most the pool − 64 MB: a 3328 MB heap region
+mem_reserve	0x100000000
+mem_alias	0x10000000
+mem_stack	0x10000000
+app_pool	0xCD500000
+# the NPDM declares 0 MB of system resource: IsVirtualAddressMemoryEnabled is false, as on Horizon
+sys_resource	0x0
+
+# ---- Graphics ----
+# gsys clears its targets under render conditions (as Tears of the Kingdom): run unconditionally, a clear wiped the lit HDR scene before the composite and levels were black under the HUD
+render_cond	on
+
+# ---- Shader split ----
+# source groups without path separators: the sources are RomFS paths, written with backslashes when the split runs on Windows
+shader_groups	.sharcb=agl MaterialUber.bfsha=model Sample.Nin_NX_NVN=sample
+shader_note	Mario vs. Donkey Kong shaders

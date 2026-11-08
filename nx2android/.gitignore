@@ -1,0 +1,28 @@
+# Toolchains and device tools, downloaded locally (NDK, .NET, adb, validation layer); tools/ also holds the APK signing key
+/tools/
+# Scratch work and probe outputs (some are made from game files)
+/work/
+/build/
+
+# Android build outputs
+/nxnative/dm/android/out/
+*.apk
+*.spv
+*.dmsv
+__pycache__/
+
+# Keys: never committed
+*-signing-key.json
+*.keystore
+prod.keys
+title.keys
+/devtools/device.json
+
+# Game dumps: NSPs decompressed from NSZ, the ports made from them (APK, data pack, build folders); one folder per game, .gamedump/<game>/
+/.gamedump/
+
+# Python environment (python -m venv .venv)
+/.venv/
+
+# The player bundle (python packaging/build_bundle.py)
+/dist/

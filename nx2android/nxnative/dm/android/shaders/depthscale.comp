@@ -1,0 +1,24 @@
+#version 450
+// A scaled copy of a depth or stencil region, nearest texel (gfx_vk_exec.c depth_scale): Adreno blits no depth-stencil format, so the region goes image → buffer → this → buffer → image.
+// Both buffers hold their region tightly packed, as vkCmdCopyImageToBuffer writes it: bytes 4 = one 32-bit depth word a texel (D24S8's depth aspect, D32), 1 = one stencil byte a texel,
+// four to a word (each invocation then writes one word: four destination texels)
+layout(local_size_x = 64) in;
+layout(set = 0, binding = 0) readonly buffer Src { uint s[]; };
+layout(set = 0, binding = 1) writeonly buffer Dst { uint d[]; };
+layout(push_constant) uniform P { uint sw, sh, dw, dh, bytes; } p;
+uint src_of(uint t) {   // the source texel for destination texel t
+    uint x = t % p.dw, y = t / p.dw;
+    uint sx = min((2u * x + 1u) * p.sw / (2u * p.dw), p.sw - 1u), sy = min((2u * y + 1u) * p.sh / (2u * p.dh), p.sh - 1u);
+    return sy * p.sw + sx;
+}
+void main() {
+    uint i = gl_GlobalInvocationID.y * gl_NumWorkGroups.x * 64u + gl_GlobalInvocationID.x, n = p.dw * p.dh;   // rows of groups past 65,535
+    if (p.bytes == 4u) { if (i < n) d[i] = s[src_of(i)]; return; }
+    if (i * 4u >= n) return;
+    uint w = 0u;
+    for (uint k = 0u; k < 4u; k++) {
+        uint t = i * 4u + k; if (t >= n) break;
+        uint st = src_of(t); w |= ((s[st >> 2] >> (8u * (st & 3u))) & 0xffu) << (8u * k);
+    }
+    d[i] = w;
+}

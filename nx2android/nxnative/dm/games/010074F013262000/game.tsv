@@ -1,0 +1,40 @@
+# Xenoblade Chronicles 3 (Monolith Soft), SDK 12.3.9, NVN. Started as the provisional profile from the survey (dm/games/profile_guess.py) and checked by hand
+# while bringing it up on Android (Lenovo Legion Y700, 2026-10-25).
+
+# ---- Identity ----
+title_id	010074F013262000
+program_id	010074F013262000
+
+# ---- App ----
+name	Xenoblade Chronicles 3
+ipa	XenobladeChronicles3.ipa
+app_category	public.app-category.games
+
+# ---- Versions ----
+build	v655360	2.2.0	main=82d187fe9ef9be921b8e1b1cddf7bd28	subsdk0=be1ee79a9968a35a6b63fc8f1036a6d4	sdk=e8cdceb1e77a8465fe20f21928e8d296
+package	v655360
+shader_versions	v655360
+
+# ---- Files ----
+# every module main imports from
+modules	main subsdk0 sdk
+romfs_marker	bf3.ard
+zip_store	.ard:.arh:.pck:.webm:.metallib
+
+# ---- Memory ----
+# the NPDM declares 32 MB of system resource (virtual address memory) and main never sets a heap. nninitStartup reserves a 60 GB address region (mov x0, #0xf00000000
+# at main+0x128e58c, the allocator at main+0x124081c) and commits it in 1 MB steps until a map fails: a 64 GB alias region holds the reservation, and the host refuses
+# maps past the application pool as Horizon does (mem_map_limit), which ends the probing; with the guessed 4.375 GB region nninitStartup crashed in a memset of null
+mem_reserve	0x1030000000
+mem_alias	0x1008000000
+mem_stack	0x10000000
+app_pool	0xCD500000
+# the NPDM declares 32 MB of system resource
+sys_resource	0x2000000
+mem_map_limit	on
+
+# ---- Shader split ----
+# the shaders are Monolith HCPS archives (SLCT programs) inside xbc1 streams in bf3.ard, a few standalone SLCTs in main, and Firehawk's GLSLC effects; the DLC
+# (aoc/1-4, Future Redeemed in 4) carries archives of its own (shader_split.py mono_shaders / slct_loose, DM_SPLIT_AOC)
+shader_groups	/aoc/=dlc /bf3.ard/=game
+shader_note	Xenoblade Chronicles 3 shaders

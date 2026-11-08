@@ -1,0 +1,11 @@
+# Tales of Eternia Remastered on Android (keys in docs/ARCHITECTURE.md "Game profiles on Android")
+# Unity 6000.0.66f2 IL2CPP with CRIWARE (ADX2 sound, Sofdec2 movies through the SDK's movie library) on SDK 21.4.4, update 2.0.0, 15,983 shaders from its bundles, all translated.
+# On the Y700 (2026-10-27): boot, the opening movies, the title and play by hand by the user, who reported no issue. 60 fps held as on the Switch (frame p50 16.6 ms,
+# p95 about 18 ms, GPU about 6 ms a frame), footprint about 1.1 GB, no audio underruns over 100,000 device callbacks, no new red log line. It came with one core fix:
+# its CRI output keeps only about 2 blocks queued, so AAudio's callbacks of up to 960 frames underran (11% of the sound was zero padding, heard as "weird" sound,
+# and the opening movie, paced by the sound, ran at 25 ms a frame) until the stream asked for 5 ms callbacks (dm/android/compat/audiotoolbox_aaudio.c).
+# The one red line at boot, ro::LookupModuleSymbol UnitySetGraphicsDevice, is Unity looking for an optional entry point in its native plugin NRO.
+status	playable
+tested	v65536 Lenovo Legion Y700 TB322FC (Snapdragon 8 Elite, Adreno 830, Android 16)
+package	org.nx2a.talesofeternia
+orientation	landscape

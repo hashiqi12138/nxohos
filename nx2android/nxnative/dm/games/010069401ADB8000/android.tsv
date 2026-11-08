@@ -1,0 +1,24 @@
+# Unicorn Overlord (western release) on Android: Vanillaware's engine, SDK 16.2.4, textures BC7. The iOS / Mac profile beside it, unchanged; the Android rows are the Asian
+# release's (010054B01AD92000), whose engine, shaders and memory keys are the same. Its switches below need the core of that release's port (Vulkan 1.1 devices, faster replay).
+# Tested 2026-10-28 on a Legion Y700 (TB322FC, Snapdragon 8 Elite, Adreno 830, Android 16), update 1.05: the logos, the title, a new game's opening story scene in English (and
+# skipping it), the prologue's battle map (about 4,300 draws a frame) docked at 1080p at a held 60 fps (frame p95 17.3 ms, GPU 8.4 ms, replay 6.8 ms), the pause menu with clean
+# sound. Not yet: a save and its load, a full battle, a play soak. Its pools are all zero-copy on that device (the largest in 256 MB chunks)
+status	boots
+tested	v262144 Lenovo Legion Y700 TB322FC (Snapdragon 8 Elite, Adreno 830, Android 16)
+package	org.nx2a.unicornoverlord
+orientation	landscape
+requires	bcn
+# handheld (720p) by default: docked 1080p took 34 ms of GPU a frame in battle on a Legion Y700 2023 (Adreno 730); on the Adreno 830 docked holds 60 fps
+setting	docked=0
+# the replay on its own thread: in battle it took 17.5 ms of the game thread's 33 ms a frame on the Adreno 730
+env	DM_NVN_ASYNC=1
+# colour render targets keep Adreno's UBWC compression (the Asian release's opening: GPU time 35-40% lower on the Adreno 730)
+env	DM_VK_UBWC=1
+# back up to 60 fps judged on the median frame: at 40 the p90 stayed at 21-25 ms though 60 held with 1-2 of 64 frames late (Adreno 730)
+env	DM_ADAPT_UP_PCT=50
+# the battle map's long pass without depth split every 512 draws, so the GPU starts on it during the replay
+env	DM_VK_PASS_SPLIT=512
+# the replay thread on the prime cores
+env	DM_PIN_REPLAY=prime
+# under one layout only the sets that changed are bound again
+env	DM_VK_SETSPLIT=1

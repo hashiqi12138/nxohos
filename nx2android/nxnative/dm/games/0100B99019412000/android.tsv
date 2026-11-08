@@ -1,0 +1,12 @@
+# Mario vs. Donkey Kong (0100B99019412000), update 1.0.1: Nintendo's sead / agl / gsys engine, SDK 15.3.0, NVN; movies through the SDK's movie library (H.264 + AAC).
+# Tested 2026-10-28 on the Legion Y700 (TB322FC, Snapdragon 8 Elite, Adreno 830, Android 16, 120 Hz panel): the intro movie with its sound, the title, file select, World 1's
+# levels docked and handheld, at a held 60 fps (as on the Switch: 2 vsyncs for 125 of 125 frames on screen, GPU 9.5 ms docked / 5.5 ms handheld); a 35-minute play soak
+# kept one process, PSS flat at 1.48 GB and no red lines. A capture of the release install's output (DM_AUDIO_DUMP, 209 s of the user's play into Cutscene02) had no gap inside
+# 108 s of game sound and no clipping, and its movie sound matched Cutscene02.mp4's AAC track sample for sample (correlation 1.000). What it needed from the core: render_cond on the Vulkan backend (its levels were black), AAC through MediaCodec
+# (silent movies), the AAC output size the SDK hands out, and display-timed presents (one frame in ten went out a vsync late).
+# The movie player keeps the outputs it acquires in a ring of 32 entries: more audio slots than that overflow it (hle_movie.c DM_MOVIE_AUDIO_SLOTS)
+status	playable
+tested	v65536 Lenovo Legion Y700 TB322FC (Snapdragon 8 Elite, Adreno 830, Android 16)
+package	org.nx2a.mariovsdonkeykong
+orientation	landscape
+env	DM_MOVIE_AUDIO_SLOTS=32

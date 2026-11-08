@@ -1,0 +1,2 @@
+# LF everywhere: shell scripts and assembly run on the device and in the NDK build, and nxnative's files are LF upstream
+* text=auto eol=lf

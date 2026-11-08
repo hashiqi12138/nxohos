@@ -1,0 +1,36 @@
+{
+  "HVIGOR": {
+    "IS_INCREMENTAL": true,
+    "IS_DAEMON": false,
+    "IS_PARALLEL": true,
+    "IS_HVIGORFILE_TYPE_CHECK": false,
+    "IS_EXECUTION_OHPM_BY_HVIGOR": false,
+    "BUILD_ANALYSIS_MODE": "normal",
+    "TASK_TIME": {},
+    "CUSTOM_TASK_TIME": {},
+    "CUSTOM_PLUGIN_TIME": {},
+    "APIS": [],
+    "CONFIG_EXPERIMENT": {
+      "ENABLE_MODULE_SKIP": false,
+      "ENABLE_CPP_FUNCTION_LEVEL_INCREMENTAL": false
+    },
+    "CONFIG_PROPERTIES": {},
+    "BUILD_ID": "202611060015318420",
+    "ERROR_MESSAGE": [
+      {
+        "CODE": "00303149",
+        "MESSAGE": "Path not found. At file: %s",
+        "SOLUTIONS": [
+          "Please check field: modules in file: F:\\ohos_build_hap\\build-profile.json5."
+        ],
+        "TIMESTAMP": "1793895331848"
+      },
+      {
+        "CODE": "00303149",
+        "STACK": "00303149 Configuration Error\n...\n    at HvigorLogger.printErrorExit (***\\tools\\hvigor\\hvigor\\src\\base\\log\\hv***g.js:1:5087)\n    at exitIfNotExists (***\\tools\\hvigor\\hvigor\\src\\base\\util\\fi***l.js:1:1245)\n    at ***\\tools\\hvigor\\hvigor\\src\\base\\internal\\lifecycle\\in***t.js:1:3371\n...\n    at init (***\\tools\\hvigor\\hvigor\\src\\base\\internal\\lifecycle\\in***t.js:1:3125)\n...\n    at async start (***\\tools\\hvigor\\hvigor\\src\\base\\boot\\in***x.js:1:2597)\n    at async boot (***\\tools\\hvigor\\hvigor\\src\\base\\boot\\in***x.js:1:1914)\n    at async startHvigorBuild (***\\tools\\hvigor\\hvigor\\src\\cli\\main\\cl***i.js:1:7861)",
+        "PROJECT_CONFIG": {}
+      }
+    ],
+    "TOTAL_TIME": 293985000
+  }
+}

@@ -1,0 +1,12 @@
+# Donkey Kong Country Returns HD (01009D901BC56000), update 1.1.0: Unity 6000.0.28f1 IL2CPP with FMOD on SDK 18.3.5, NVN; movies through the SDK's movie library (H.264 + AAC).
+# Tested 2026-10-29 on the Legion Y700 (TB322FC, Snapdragon 8 Elite, Adreno 830, Android 16), driven with DM_CTL: the title, new saves (Modern Mode, one player), the 119 s opening movie
+# GI.mp4 with its sound, the treehouse, and the opening of 1-1 Jungle Hijinxs (running, jumping, damage, Squawks' hints), the pause menu, the save list after a restart. 60 fps as on
+# the Switch (frame work p50 about 10 ms in the level, GPU about 7 ms, 0-3 of 300 frames dropped), about 1.8 GB footprint, no audio underrun, no red log line.
+# What it needed from the core: a swapchain in the window texture's sRGB format (it presents RGBA8_SRGB; through a UNORM swapchain the picture was dark and flat, issue #4), and the movie
+# decoders' tail (its Unity player sends no end-of-stream packet and waits for the last outputs: MediaCodec held the last picture and two AAC packets, and the movie stayed on its
+# last frame until A). Upstream's Unity 6000.0 Shader layout. The shader tables were split on Windows (/ paths since d1ad5f2), as the other Unity profiles made on Windows.
+# Not tested yet: the levels after 1-1's opening, the other thirteen movies, two players
+status	playable
+tested	v65536 Lenovo Legion Y700 TB322FC (Snapdragon 8 Elite, Adreno 830, Android 16)
+package	org.nx2a.donkeykongcountryreturnshd
+orientation	landscape

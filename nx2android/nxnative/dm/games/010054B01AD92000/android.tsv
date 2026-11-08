@@ -1,0 +1,22 @@
+# Unicorn Overlord, Asian release, on Android: a first, untested port (the iOS / Mac profile beside it, unchanged). Vanillaware's textures are BC7.
+status	experimental
+tested	v262144 Lenovo Legion Y700 TB320FC (Snapdragon 8+ Gen 1, Adreno 730, Vulkan 1.1, Android 15)
+package	org.nx2a.unicornoverlordasia
+orientation	landscape
+requires	bcn
+# the 860 MB memory pool as a copied pool: the Legion Y700 2023's gralloc aborts allocating a hardware buffer that big
+env	DM_VK_ZEROCOPY_MAX_MB=512
+# handheld (720p) by default: docked 1080p took 34 ms of GPU a frame in battle on that device (about 22 fps), handheld 11-20 ms
+setting	docked=0
+# the replay on its own thread: in battle it took 17.5 ms of the game thread's 33 ms a frame (about 3,000 draws), which held the adaptive rate at 30 fps
+env	DM_NVN_ASYNC=1
+# colour render targets keep Adreno's UBWC compression: the opening's GPU time 35-40% lower (14 to 8-9 ms at about 550 draws)
+env	DM_VK_UBWC=1
+# back up to 60 fps judged on the median frame: at 40 its p90 stayed at 21-25 ms though it held 60 with 1-2 of 64 frames late
+env	DM_ADAPT_UP_PCT=50
+# the battle map draws ~2,030 of its ~3,500 draws in one pass without depth (13 ms of GPU): split every 512 draws, the GPU starts on it while the replay records the rest
+env	DM_VK_PASS_SPLIT=512
+# the replay thread on the prime core: the battle map's replay 12.5 to 10.0 ms a frame (all big cores: no change)
+env	DM_PIN_REPLAY=prime
+# under one layout only the sets that changed are bound again: the battle map's replay 9.6 to 8.5-8.9 ms a frame
+env	DM_VK_SETSPLIT=1

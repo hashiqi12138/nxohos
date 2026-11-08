@@ -1,0 +1,39 @@
+# Unpacking (Unity 2019.4.34f1 IL2CPP with Wwise on SDK 13.3.2, update 2.01 = v327680). Started from the NSP script's provisional profile (dm/games/profile_guess.py); checked by hand
+# against the survey on 2026-10-26: the modules (subsdk0 is the SDK's movie library, the Humble Games logo intro is an H.264 MP4; sdk and subsdk0 are Bayonetta 3's builds), the 5 GB
+# guest layout of a game with virtual address memory whose nninitStartup hands pool - used to StandardAllocator as one address region (sdk_patches.py cuts the node area and the 1 GB
+# region alignment on its sdk build, or Unity's own regions ran out), the 16 MB system resource from the NPDM. Its shaders are the Unity 2019.4 Shader and ComputeShader objects in
+# Data/*.assets and Data/Resources, which carry no type trees (unityfs.py has the 2019.4 layouts). On Android it plays with these keys (android.tsv)
+# Format: see dm/games/README.md
+
+# ---- Identity ----
+title_id	0100701015846000
+program_id	0100701015846000
+
+# ---- App ----
+name	Unpacking
+ipa	Unpacking.ipa
+app_category	public.app-category.games
+
+# ---- Versions ----
+build	v327680	2.01	main=2b5b01ed8de3c746afef517825bd9cd9	subsdk0=a8cb97803f7f442a3b6cce1c7cd4ee4a	sdk=357efc198e728cb5d55265aff304f03c
+package	v327680
+shader_versions	v327680
+
+# ---- Files ----
+# every module main imports from
+modules	main subsdk0 sdk
+romfs_marker	Data/StreamingAssets/Audio/GeneratedSoundBanks/Switch/Main_SoundBank.bnk
+zip_store	.assets:.bnk:.dat:.ress:.txt:.wem:.xml:.metallib
+
+# ---- Memory ----
+# the NPDM declares 16 MB of system resource (virtual address memory) and main sets a heap: a 5 GB block with a large alias region; the heap check sizes the heap region from the heap the game asks for
+mem_reserve	0x140000000
+mem_alias	0x118000000
+mem_stack	0x10000000
+app_pool	0xCD500000
+# the NPDM declares 16 MB of system resource
+sys_resource	0x1000000
+
+# ---- Shader split ----
+shader_groups	/Data/=data
+shader_note	Unpacking shaders

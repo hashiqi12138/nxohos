@@ -1,0 +1,37 @@
+# Viractal: Will You Trust Your Party? (Unity on SDK 21.4.4, update 1.4.5). Started from the NSP script's provisional profile (dm/games/profile_guess.py);
+# checked by hand against the survey on 2026-10-25: the modules (subsdk0 is the SDK's movie library), the 5 GB guest layout of a game that maps its own memory
+# with no heap (as Hollow Knight: Silksong), the 16 MB system resource from the NPDM; on Android it runs into its Game Room tutorial with these keys
+# Viractal, SDK 21, survey <NSP folder>/0100FD501F95A000_survey/survey.md
+
+# ---- Identity ----
+title_id	0100FD501F95A000
+program_id	0100FD501F95A000
+
+# ---- App ----
+name	Viractal
+ipa	Viractal.ipa
+app_category	public.app-category.games
+
+# ---- Versions ----
+build	v131072	1.4.5	main=d49165c05ead8ae140f189aa97934f39	subsdk0=fc537f0b21c880e89d6f247d22a150ca	sdk=148394139d9d26ca8afd5c9ba5d30601
+package	v131072
+shader_versions	v131072
+
+# ---- Files ----
+# every module main imports from
+modules	main subsdk0 sdk
+romfs_marker	Data/StreamingAssets/aa/Switch/model_assets_field_map_sourceimages.bundle
+zip_store	.acb:.assets:.awb:.bin:.bundle:.dat:.ress:.metallib
+
+# ---- Memory ----
+# the NPDM declares 16 MB of system resource (virtual address memory) and main never sets a heap: a 5 GB block with a 4.375 GB alias region, where the game maps its memory itself
+mem_reserve	0x140000000
+mem_alias	0x118000000
+mem_stack	0x10000000
+app_pool	0xCD500000
+# the NPDM declares 16 MB of system resource
+sys_resource	0x1000000
+
+# ---- Shader split ----
+shader_groups	/Data/=data
+shader_note	Viractal shaders (provisional profile)

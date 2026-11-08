@@ -1,0 +1,13 @@
+# 13 Sentinels: Aegis Rim on Android (keys in docs/ARCHITECTURE.md "Game profiles on Android")
+# Vanillaware's engine on NVN, update v65536 (1.10, SDK 11.4.3), 751 shaders, all translated; BC7 textures; CRI ADX2 sound through AudioOut (6 channels), its small
+# movies H.264 through the SDK's movie library. On the Y700 (2026-10-28): the title, a new game's prologue, the tutorial battle and the start of Juro Kurabe's
+# story with its movie, driven with DM_CTL, then a 20-minute play soak in that story (one process, 18 of 72,900 frames dropped, no red log line, footprint
+# 1.43-1.49 GB). 60 fps as the game asks (present interval 1): on screen 125 of 125 frames at 2 vsyncs of the 120 Hz panel in most windows, GPU 4-6 ms;
+# 457 s of its sound output with no dropout or clipping and no audio underrun. Three core fixes came with it:
+# memory pools over 256 MB in chunks (its 812 MB pool crashed the device's gralloc service and the whole Android UI with it), the LRZ read before passes that load a
+# depth-only buffer (the title's copy to the window lost a triangle to stale bins), and made-up increasing timestamps for H.264 packets the game sends with time 0
+status	playable
+tested	v65536 Lenovo Legion Y700 TB322FC (Snapdragon 8 Elite, Adreno 830, Android 16)
+package	org.nx2a.thirteensentinels
+orientation	landscape
+requires	bcn

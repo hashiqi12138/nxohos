@@ -1,0 +1,15 @@
+{
+  "app": {
+    // bundleName 必须与调试 Profile（.p7b）内绑定的值一致，否则 SignHap 校验失败：
+    //   "The bundleName in app.json5 does not match the bundleName in the generated SigningConfigs"
+    // 本机可用的调试签名材料由 DevEco 为 dev.eden_emu.ohos 生成，故此处对齐该值。
+    // 云调试只要求"可安装的已签名 HAP"，bundleName 取值不影响探针行为；
+    // 若要换成自有 bundleName，需在 DevEco 中重新自动签名生成匹配的 Profile。
+    "bundleName": "dev.eden_emu.ohos",
+    "vendor": "ohosport",
+    "versionCode": 1000000,
+    "versionName": "1.0.0",
+    "icon": "$media:app_icon",
+    "label": "$string:app_name"
+  }
+}

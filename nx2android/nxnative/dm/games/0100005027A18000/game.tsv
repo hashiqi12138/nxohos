@@ -1,0 +1,47 @@
+# Graveyard Keeper 2 (Unity 6000.3.9f1 IL2CPP with FMOD on SDK 21.4.4, update 1.0.4). Started from the NSP script's provisional profile (dm/games/profile_guess.py);
+# checked by hand against the survey on 2026-10-26: the modules (subsdk0 is the SDK's movie library; sdk and subsdk0 are Viractal's builds), the 5 GB guest layout of a game
+# that maps its own memory with no heap (as Viractal and Hollow Knight: Silksong), the 16 MB system resource from the NPDM; on Android it plays with these keys
+# Graveyard Keeper 2, SDK 21, survey <NSP folder>/0100005027A18000_survey/survey.md
+
+# ---- Identity ----
+title_id	0100005027A18000
+program_id	0100005027A18000
+
+# ---- App ----
+name	Graveyard Keeper 2
+ipa	GraveyardKeeper2.ipa
+app_category	public.app-category.games
+
+# ---- Versions ----
+build	v262144	1.0.4	main=1d69f09fc684a7d1cbd778b90a5df1e5	subsdk0=fc537f0b21c880e89d6f247d22a150ca	sdk=148394139d9d26ca8afd5c9ba5d30601
+package	v262144
+shader_versions	v262144
+
+# ---- Files ----
+# every module main imports from
+modules	main subsdk0 sdk
+romfs_marker	Data/sharedassets0.resource
+zip_store	.assets:.bin:.bundle:.dat:.png:.resource:.ress:.metallib
+
+# ---- Memory ----
+# the NPDM declares 16 MB of system resource (virtual address memory) and main never sets a heap: a 5 GB block with a 4.375 GB alias region, where the game maps its memory itself
+mem_reserve	0x140000000
+mem_alias	0x118000000
+mem_stack	0x10000000
+app_pool	0xCD500000
+# the NPDM declares 16 MB of system resource
+sys_resource	0x1000000
+# Unity's free memory (main+0xcaf2d0) is GetInfo's total less used non-system memory, and its maps grow in steps as play goes on (about 16 MB a minute over the first 30 minutes):
+# the used memory counts the alias region's mapped pages and the pool is enforced, as on Horizon (hle_svc.c). With it (and the node area cut on its sdk build, sdk_patches.py)
+# a 1 h 54 min session mapped at most 2.44 GB of the 3.21 GB pool and no map was refused
+mem_map_limit	on
+
+# ---- Frame rate ----
+# 60 fps (30 on the Switch): the host writes Unity's vsync count and frame time in game memory (hle_fpslock.c). The game still asks for present interval 2, which
+# present_interval display ignores; both are needed (with the writes alone, frames stayed at 33.3 ms)
+fps_target	60
+present_interval	display
+
+# ---- Shader split ----
+shader_groups	/Data/=data
+shader_note	Graveyard Keeper 2 shaders (provisional profile)

@@ -1,0 +1,11 @@
+# Viractal: Will You Trust Your Party? on Android (keys in docs/ARCHITECTURE.md "Game profiles on Android")
+# Unity on SDK 21; game.tsv started as upstream's provisional profile and was checked by hand.
+# On the Y700 (2026-10-25), driven with DM_CTL: title, the Game Room (its compute shaders read since unityfs.py has Unity 6.3's ComputeShader layout), the story's
+# opening (Baphoco's poster), the board game's setup (controller settings, contracts, jobs) and its first turns: dice, moves, tile events, the next player.
+# 30 fps, about 1.9 GB, nothing skipped over 12 minutes; no red log line since its blend mode (21, multiply) binds as plain functions (hle_nvn.c blend_adv).
+# Names: the contract's Enter Name opens the front end's text entry (front_android.c front_text_input), checked on the Y700 with touch, an adb keyboard
+# and controller keys: "Rina" signed the contract; cancel keeps the old name.
+status	playable
+tested	v131072 Lenovo Legion Y700 TB322FC (Snapdragon 8 Elite, Adreno 830, Android 16)
+package	org.nx2a.viractal
+orientation	landscape

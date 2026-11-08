@@ -1,0 +1,104 @@
+# Port checklist
+
+Games with no official Android version, from the games nxnative tested on Mac or iPhone (2026-10-29) and our own ports. A checked game has an `android.tsv` here; which ones play and how well: the README's [Games](../README.md#games).
+
+Left out because they have an official Android release: Unpacking (ported here anyway), Balatro, Raging Loop, Baba Is You, BALL x PIT, Blasphemous, FINAL FANTASY CRYSTAL CHRONICLES Remastered Edition, Ghost Trick: Phantom Detective, Sea of Stars, Stardew Valley, and Absolum (Android on 2026-11-05).
+
+"Profile here": `nxnative/dm/games/<title ID>/` has the game's profile from nxnative. "Upstream profile": only seedds/nxnative has one, to read as a reference or starter, not to pull. "60 fps with X" is upstream's note: they run that update at 60 fps (30 on the Switch).
+
+**24 / 94 ported**
+
+- [x] 13 Sentinels: Aegis Rim · `01003FC01670C000`
+- [ ] Ace Attorney Investigations Collection · `010005501E68C000` · profile here
+- [x] Advance Wars 1+2: Re-Boot Camp · `0100300012F2A000`
+- [ ] AI: THE SOMNIUM FILES · `010089B00D09C000` · profile here
+- [ ] AI: THE SOMNIUM FILES - nirvanA Initiative · `0100713016CCC000` · profile here
+- [ ] Animal Crossing: New Horizons · `01006F8002326000` · profile here
+- [ ] ANIMAL WELL · `010020D01AD24000` · profile here
+- [ ] ASTRAL CHAIN · `01007300020FA000` · upstream profile · 60 fps target with 1.0.1
+- [ ] Bastion · `010038600B27E000` · upstream profile · iPhone only
+- [ ] Batman: Arkham Knight · `0100ACD0163D0000` · upstream profile
+- [ ] Bayonetta · `010076F0049A2000` · upstream profile
+- [ ] Bayonetta 2 · `01007960049A0000` · upstream profile
+- [ ] Bayonetta 3 · `01004A4010FEA000` · profile here
+- [ ] Big Brain Academy: Brain vs. Brain · `0100620012D6E000` · profile here
+- [x] Blasphemous 2 · `010040801A4C8000`
+- [ ] Brain Memory Training Academy · `0100F5D01DA3A000` · profile here
+- [x] Captain Toad: Treasure Tracker · `01009BF0072D4000`
+- [x] Castlevania: Belmont's Curse · `0100BA4026E94000`
+- [ ] Catherine: Full Body · `0100BF00112C0000` · profile here
+- [x] Celeste · `01002B30028F6000`
+- [ ] Cult of the Lamb · `01002E7016C46000` · upstream profile · iPhone only, through Apple Arcade
+- [ ] Cuphead · `0100A5C00D162000` · profile here
+- [ ] DARK SOULS: REMASTERED · `01004AB00A260000` · profile here · 60 fps with 1.0.3
+- [ ] Digimon Story Cyber Sleuth: Complete Edition · `010014E00DB56000` · profile here
+- [x] Donkey Kong Country Returns HD · `01009D901BC56000`
+- [ ] Donkey Kong Country: Tropical Freeze · `0100C1F0051B6000` · upstream profile
+- [ ] DRAGON QUEST VII Reimagined · `0100A9D01C446000` · profile here
+- [ ] DRAGON QUEST XI S: Echoes of an Elusive Age – Definitive Edition · `01006C300E9F0000` · profile here · 60 fps with 1.0.4
+- [ ] FINAL FANTASY RESONANCE · `0100606026F12000` · profile here · 60 fps with 1.0.1
+- [ ] FINAL FANTASY TACTICS - The Ivalice Chronicles · `010038B015560000` · profile here
+- [ ] FINAL FANTASY X/X-2 HD Remaster · `0100BC300CB48000` · upstream profile
+- [ ] Fire Emblem Engage · `0100A6301214E000` · profile here · 60 fps with 2.0.0
+- [ ] Fire Emblem: Three Houses · `010055D009F78000` · profile here · 60 fps with 1.2.0
+- [x] Graveyard Keeper 2 · `0100005027A18000`
+- [ ] Hades · `0100535012974000` · profile here · iPhone only, through Netflix
+- [x] Hades II · `0100A00019DE0000`
+- [x] Hollow Knight: Silksong · `010013C00E930000`
+- [ ] Hyrule Warriors: Age of Calamity · `01002B00111A2000` · profile here · 60 fps with 1.3.0
+- [ ] Kirby and the Forgotten Land · `01004D300C5AE000` · upstream profile
+- [ ] Luigi's Mansion 3 · `0100DCA0064A6000` · profile here · 60 fps with 1.4.0
+- [ ] Mario + Rabbids Kingdom Battle · `010067300059A000` · upstream profile
+- [ ] Mario + Rabbids Sparks of Hope · `0100317013770000` · upstream profile
+- [ ] Mario Kart 8 Deluxe · `0100152000022000` · profile here · no Mii heads
+- [x] Mario vs. Donkey Kong · `0100B99019412000`
+- [x] Metroid Dread · `010093801237C000`
+- [ ] Monster Hunter Rise · `0100B04011742000` · profile here · 60 fps with 16.0.2
+- [ ] Monster Train 2 · `010051701FB46000` · profile here · 60 fps with 1.1.1 · only the first Monster Train is on mobile
+- [x] NEO: The World Ends with You · `010043B013C5C000`
+- [ ] NieR:Automata The End of YoRHa Edition · `010056B015FE8000` · upstream profile · 60 fps with 1.0.3
+- [ ] OCTOPATH TRAVELER · `010057D006492000` · upstream profile
+- [ ] Octopath Traveler 0 · `01005270232F2000` · profile here · 60 fps with 1.0.5
+- [ ] Octopath Traveler II · `0100A3501946E000` · upstream profile · 60 fps with 1.1.1
+- [x] Paper Mario: The Origami King · `0100A3900C3E2000`
+- [x] Paper Mario: The Thousand-Year Door · `0100ECD018EBE000`
+- [ ] Patrick's Parabox · `0100E44016C22000` · profile here
+- [ ] Persona 4 Golden · `010062B01525C000` · upstream profile
+- [ ] Persona 5 Royal · `01005CA01580E000` · upstream profile
+- [ ] Pikmin 4 · `0100B7C00933A000` · upstream profile
+- [ ] Pokémon Brilliant Diamond · `0100000011D90000` · upstream profile · 60 fps with 1.3.0
+- [x] Pokémon Legends: Arceus · `01001F5010DFA000`
+- [ ] Pokémon Legends: Z-A · `0100F43008C44000` · profile here
+- [ ] Pokémon Scarlet · `0100A3D008C5C000` · upstream profile
+- [ ] Pokémon Shield · `01008DB008C2C000` · upstream profile
+- [ ] Pokémon Sword · `0100ABF008968000` · upstream profile
+- [ ] Portal · `01007BB017812000` · upstream profile · Android only on NVIDIA Shield TV
+- [ ] Return of the Obra Dinn · `010032E00E6E2000` · upstream profile
+- [ ] Rhythm Heaven Groove · `0100D9F01D474000` · profile here
+- [ ] ROMANCE OF THE THREE KINGDOMS 8 REMAKE · `0100C2A01A730000` · profile here · controller only
+- [ ] SHIN MEGAMI TENSEI V: Vengeance · `010069C01AB82000` · upstream profile · 60 fps with 1.0.3
+- [ ] Silver Pines · `0100D5B026844000` · upstream profile
+- [ ] SteamWorld Heist II · `010089C01E9CA000` · upstream profile
+- [ ] STEINS;GATE RE:BOOT · `01008BC024FDE000` · profile here
+- [ ] Super Mario 3D World + Bowser's Fury · `010028600EBDA000` · profile here
+- [x] Super Mario Bros. Wonder · `010015100B514000`
+- [ ] Super Mario Galaxy · `010099C022B96000` · profile here
+- [ ] Super Mario Galaxy 2 · `0100FD8022DAA000` · profile here
+- [x] Super Mario Odyssey · `0100000000010000`
+- [ ] Super Mario Party Jamboree · `0100965017338000` · upstream profile
+- [ ] Super Smash Bros. Ultimate · `01006A800016E000` · profile here · offline
+- [ ] Taiko Risshiden V DX · `0100346017304000` · profile here · Japanese · played by touch
+- [x] Tales of Eternia Remastered · `010006E0230AC000`
+- [ ] The Great Ace Attorney Chronicles · `010036E00FB20000` · profile here
+- [ ] The Legend of Zelda: Breath of the Wild · `01007EF00011E000` · profile here · 60 fps with 1.9.0
+- [ ] The Legend of Zelda: Echoes of Wisdom · `01008CF01BAAC000` · upstream profile
+- [ ] The Legend of Zelda: Link's Awakening · `01006BB00C6F0000` · profile here
+- [ ] The Legend of Zelda: Tears of the Kingdom · `0100F2C0115B6000` · profile here · 60 fps with 1.4.3
+- [x] UNDER NIGHT IN-BIRTH Exe:Late[cl-r] · `010038C00EC34000`
+- [x] UNDER NIGHT IN-BIRTH II Sys:Celes · `0100BD401D18A000`
+- [x] Unicorn Overlord · `010069401ADB8000` · boots; saving and a full battle not tested yet
+- [x] Viractal: Will You Trust Your Party? · `0100FD501F95A000`
+- [ ] Xenoblade Chronicles 2 · `0100E95004038000` · upstream profile
+- [x] Xenoblade Chronicles 3 · `010074F013262000` · work in progress: some effects and models don't draw yet
+- [ ] Xenoblade Chronicles: Definitive Edition · `0100FF500E34A000` · upstream profile
+- [ ] Yoshi's Crafted World · `01006000040C2000` · upstream profile

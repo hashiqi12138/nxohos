@@ -1,0 +1,11 @@
+#!/bin/sh
+# Refuses commit messages that are not Conventional Commits (.githooks/commit_msg.py has the rules).
+# On with: git config core.hooksPath .githooks
+here=$(dirname "$0")
+for py in "py -3" python3 python; do
+    if $py -c 'import sys; sys.exit(sys.version_info < (3, 8))' >/dev/null 2>&1; then
+        exec $py "$here/commit_msg.py" "$1"
+    fi
+done
+echo "commit-msg: no Python 3 found (tried py -3, python3, python); the message was not checked" >&2
+exit 1

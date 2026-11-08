@@ -1,0 +1,29 @@
+/* bcn_formats.def — BCn 探测格式的唯一真源（X-Macro，被两处 include）
+ *
+ * 为什么用 .def：JSON 键名与 VkFormat 枚举必须严格同序、同集合。旧做法是
+ * 两处各写一张表 + _Static_assert 逐项比对，但 C 里数组元素不是整型常量
+ * 表达式（static_assert(ARR[0] == ...) 在 clang C 模式直接报错），锁序事实上
+ * 失效。改为同一份列表展开到两侧，顺序不一致在结构上就不可能发生。
+ *
+ * 用法：
+ *   probe_vk.c   → #define BCN_ENTRY(e) e,            #include "bcn_formats.def"
+ *   probe_json.c → #define BCN_ENTRY(e) #e,           #include "bcn_formats.def"
+ *
+ * 增删格式只改本文件；probe_report.h 的 PROBE_BCn_COUNT 同步改。
+ */
+BCN_ENTRY(VK_FORMAT_BC1_RGB_UNORM_BLOCK)
+BCN_ENTRY(VK_FORMAT_BC1_RGB_SRGB_BLOCK)
+BCN_ENTRY(VK_FORMAT_BC1_RGBA_UNORM_BLOCK)
+BCN_ENTRY(VK_FORMAT_BC1_RGBA_SRGB_BLOCK)
+BCN_ENTRY(VK_FORMAT_BC2_UNORM_BLOCK)
+BCN_ENTRY(VK_FORMAT_BC2_SRGB_BLOCK)
+BCN_ENTRY(VK_FORMAT_BC3_UNORM_BLOCK)
+BCN_ENTRY(VK_FORMAT_BC3_SRGB_BLOCK)
+BCN_ENTRY(VK_FORMAT_BC4_UNORM_BLOCK)
+BCN_ENTRY(VK_FORMAT_BC4_SNORM_BLOCK)
+BCN_ENTRY(VK_FORMAT_BC5_UNORM_BLOCK)
+BCN_ENTRY(VK_FORMAT_BC5_SNORM_BLOCK)
+BCN_ENTRY(VK_FORMAT_BC6H_UFLOAT_BLOCK)
+BCN_ENTRY(VK_FORMAT_BC6H_SFLOAT_BLOCK)
+BCN_ENTRY(VK_FORMAT_BC7_UNORM_BLOCK)
+BCN_ENTRY(VK_FORMAT_BC7_SRGB_BLOCK)

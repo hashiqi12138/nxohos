@@ -1,0 +1,15 @@
+# Graveyard Keeper 2 on Android (keys in docs/ARCHITECTURE.md "Game profiles on Android")
+# Unity 6000.3.9f1 IL2CPP with FMOD on SDK 21.4.4, update 1.0.4 (shown in game as 1.007.4), 13,986 shaders from its Addressables bundles, all translated.
+# On the Y700 (2026-10-26), driven with DM_CTL: boot, the title, a new game and the opening in the Inquisition Dungeon (freeing the hero, the first item).
+# 30 fps held as on the Switch (the game asks for present interval 2; frame p50 33.3 ms, p95 35 ms, no dropped frames) over a 15-minute soak, with replay about
+# 3-6 ms and GPU about 7-11 ms a frame, footprint steady at 1.8 GB, no audio underruns, no red log line. Screen recordings found no flickering frame, standing or walking.
+# A 10-minute play session by hand on the same build: nothing wrong seen or heard, no dropped frame, no audio underrun. Not checked yet: saving and loading a game
+# (the opening reaches no save point), the areas past the dungeon, and handheld mode (played docked).
+# 2026-10-28: the game aborted about 24 minutes into play (Unity's allocator out of address space: its sdk build lacked the SDK's node area cut, sdk_patches.py). With the cut and
+# mem_map_limit, two sessions by hand from a save: 34 minutes, then 1 h 54 min at 30 fps, mapped memory at most 2.44 GB of the 3.21 GB pool, no map refused, no red log line.
+# 2026-10-28: 60 fps (fps_target 60 with present_interval display): from a save, frame p50 16.6 ms, p95 18.2 ms, no dropped frame after the load, frame work p90 about
+# 11 ms, GPU about 2.2 ms a frame, footprint 1.27 GB. The user played it and found the game's speed right at 60.
+status	playable
+tested	v262144 Lenovo Legion Y700 TB322FC (Snapdragon 8 Elite, Adreno 830, Android 16)
+package	org.nx2a.graveyardkeeper2
+orientation	landscape

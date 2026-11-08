@@ -1,0 +1,11 @@
+# NEO: The World Ends with You on Android (dm/android/tools/android_profile.py; keys in docs/ARCHITECTURE.md "Game profiles on Android")
+status	playable
+tested	v196608 Lenovo Legion Y700 TB322FC (Snapdragon 8 Elite, Adreno 830, Android 16)
+package	org.nx2a.neo
+orientation	landscape
+# the textures are BC-compressed (Unity's Switch build)
+requires	bcn
+# handheld (1280x720), as it was played on the Y700; docked (1920x1080) is a pause-menu switch away
+setting	docked=0
+setting	overlay=1
+setting	rumble=1

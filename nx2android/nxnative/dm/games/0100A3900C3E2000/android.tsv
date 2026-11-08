@@ -1,0 +1,10 @@
+# Paper Mario: The Origami King on Android (keys in docs/ARCHITECTURE.md "Game profiles on Android")
+# Intelligent Systems' engine on SDK 8.3.1; game.tsv and the shader tables are upstream's, checked by hand.
+# On the Y700 (2026-10-30), docked, driven with DM_CTL: the title, a new file, the opening drive, Peach's Castle outside and in.
+# 60 fps (30 on the Switch: patches.py and the host frame step), game time at real time (the same walk at 60 and pinned at 30; the frame step log 1.000 of real time),
+# GPU 10-12.4 ms; a 30-minute soak kept one process at 795-857 MiB with no audio underruns and no red log line. Upstream's magenta blocks from the anti-aliasing
+# pass's same-pass read (aa.bfsha 8dc20835c07cd7ff) did not show on Vulkan.
+status	playable
+tested	v65536 Lenovo Legion Y700 TB322FC (Snapdragon 8 Elite, Adreno 830, Android 16)
+package	org.nx2a.pmok
+orientation	landscape
