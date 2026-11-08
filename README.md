@@ -6,7 +6,7 @@ NVN 图形调用离线翻译成 SPIR-V 后经 Vulkan 重放上屏。
 
 > 当前状态：**M1 已跑通** —— 解包 / NSO 重写 / 着色器翻译 / dmhost 构建 /
 > HAP 打包 / 真机 Vulkan 上屏，已在真机运行《塞尔达传说：旷野之息》进入标题画面。
-> 验证记录见 `docs/verify/`（G0.1–G1.5 闸门 PASS + 真机截图）。
+> 验证记录见 `docs/verify/`（G0.1–G1.5 闸门 PASS + [BOTW 真机记录](ohos-port/docs/verify/G1.6-BOTW.md) + 真机截图）。
 
 ## 仓库布局
 

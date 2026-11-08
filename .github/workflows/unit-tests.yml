@@ -1,0 +1,47 @@
+name: unit-tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  t0:
+    name: T0 unit tests (PC, no device/keys needed)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install C compiler
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends gcc
+
+      - name: Run T0 unit tests
+        working-directory: ohos-port
+        run: |
+          python tools/verify/run_unit_tests.py
+
+      - name: Host-side syntax check of probe
+        working-directory: ohos-port
+        run: |
+          python probe/build_probe.py --host-check
+
+      - name: Verify docs gate records are present
+        working-directory: ohos-port
+        run: |
+          python -c "
+import pathlib
+need = ['G0.1','G0.2','G0.3','G0.4','G0.5','G1.3','G1.6-BOTW']
+d = pathlib.Path('docs/verify')
+missing = [n for n in need if not (d / (n + '.md')).exists()]
+if missing:
+    raise SystemExit('missing gate records: ' + ', '.join(missing))
+print('all gate records present')
+"
