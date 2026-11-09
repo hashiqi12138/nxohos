@@ -7,3 +7,8 @@ __pycache__/
 # Made from each shader build's Mac outputs (c1_guard.py, cb_extent.py; the NSP script makes them), not committed
 dm/games/*/c1_full.tsv
 dm/games/*/cb_extent.tsv
+# DevEco Studio / OpenHarmony build outputs (dm/ohos)
+dm/ohos/hap/.hvigor/
+dm/ohos/hap/.cxx/
+dm/ohos/hap/**/build/
+dm/ohos/hap/oh_modules/

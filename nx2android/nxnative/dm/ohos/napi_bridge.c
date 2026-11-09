@@ -1,5 +1,5 @@
 // The HAP's native module (libdmhost.so) and the only place ArkTS talks to the game host: the XComponent's surface, the start call,
-// and (later) touch and lifecycle. Everything else lives in the host itself (dm/host, dm/gfx) and in front_ohos.c.
+// the virtual gamepad feed, and (later) lifecycle. Everything else lives in the host itself (dm/host, dm/gfx) and in front_ohos.c.
 #include <napi/native_api.h>
 #include <pthread.h>
 #include <stdarg.h>
@@ -8,6 +8,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include "dm_input.h"
 
 void dm_ohos_front_set_surface(uint64_t surface_id, int w, int h);
 void dm_ohos_front_surface_lost(void);
@@ -67,6 +68,23 @@ static napi_value js_demo_stop(napi_env env, napi_callback_info info) {
     (void)info; napi_value undef; napi_get_undefined(env, &undef); dm_demo_stop(); return undef;
 }
 
+// setPad(buttons: number, lx: number, ly: number, rx: number, ry: number): the ArkTS virtual gamepad's
+// current state, pushed by the page's touch handlers on every change. Player 1 reads it on its next
+// controller sample; dm_input_set is lock-free atomic, so the UI thread may call it directly. Buttons
+// are the nn::hid::NpadButton bits of dm_input.h; sticks ±32767 with y flipped (up positive).
+static napi_value js_set_pad(napi_env env, napi_callback_info info) {
+    napi_value argv[5] = {0}; size_t argc = 5; napi_get_cb_info(env, info, &argc, argv, NULL, NULL);
+    napi_value undef; napi_get_undefined(env, &undef);
+    int64_t buttons = 0, lx = 0, ly = 0, rx = 0, ry = 0;
+    if (argc >= 1) napi_get_value_int64(env, argv[0], &buttons);
+    if (argc >= 2) napi_get_value_int64(env, argv[1], &lx);
+    if (argc >= 3) napi_get_value_int64(env, argv[2], &ly);
+    if (argc >= 4) napi_get_value_int64(env, argv[3], &rx);
+    if (argc >= 5) napi_get_value_int64(env, argv[4], &ry);
+    dm_input_set((uint64_t)buttons, (int32_t)lx, (int32_t)ly, (int32_t)rx, (int32_t)ry);
+    return undef;
+}
+
 // log(msg: string): the page's progress in the same hilog stream as the native module. console.info does not reach it under a tag that
 // `hilog -T` can select here (measured), so the page reports through this instead.
 static napi_value js_log(napi_env env, napi_callback_info info) {
@@ -87,7 +105,7 @@ EXTERN_C_START
 static napi_value dmhost_init(napi_env env, napi_value exports) {
     struct { const char *name; napi_callback fn; } fns[] = {
         {"setSurfaceId", js_set_surface}, {"surfaceLost", js_surface_lost}, {"startGame", js_start},
-        {"startDemo", js_demo}, {"stopDemo", js_demo_stop}, {"log", js_log},
+        {"startDemo", js_demo}, {"stopDemo", js_demo_stop}, {"setPad", js_set_pad}, {"log", js_log},
     };
     for (size_t i = 0; i < sizeof fns / sizeof fns[0]; i++) {
         napi_value fn = NULL;
