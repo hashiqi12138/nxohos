@@ -47,6 +47,7 @@ static void shake_note(void) {
 }
 void dm_input_set(uint64_t buttons, int32_t lx, int32_t ly, int32_t rx, int32_t ry) {
     uint64_t old = atomic_exchange(&g_btn, buttons); atomic_fetch_or(&g_latch, buttons & ~old); atomic_store(&g_axes, pack(lx, ly, rx, ry));
+    LOG("M2E2E publish: buttons=%#llx lx=%d ly=%d rx=%d ry=%d", (unsigned long long)buttons, lx, ly, rx, ry);
     shake_note();
 }
 void dm_pad_set_player(int p, uint64_t buttons, int32_t lx, int32_t ly, int32_t rx, int32_t ry) {
@@ -230,7 +231,8 @@ static void fill(NpadState *s, uint32_t id, uint32_t style) {
     // Player 1: the keyboard / touch path, its controller path and those of the players merged into it; another player: its own controller path
     int pl = player_of(id); uint32_t src = pl ? 1u << pl : 1u | merged_players();
     uint64_t b = 0; int32_t a[4] = {0};
-    if (!pl) { b = atomic_load(&g_btn) | atomic_exchange(&g_latch, 0); uint64_t k = atomic_load(&g_axes); for (int i = 0; i < 4; i++) a[i] = ax(k, i); }
+    if (!pl) { uint64_t latched = atomic_exchange(&g_latch, 0); b = atomic_load(&g_btn) | latched; uint64_t k = atomic_load(&g_axes); for (int i = 0; i < 4; i++) a[i] = ax(k, i);
+        static uint64_t last_latch = 0; if (latched && latched != last_latch) { LOG("M2E2E consume: latch=%#llx", (unsigned long long)latched); last_latch = latched; } }
     for (int p = 0; p < DM_PLAYERS; p++) if (src >> p & 1) {
         b |= atomic_load(&g_pad_btn[p]) | atomic_exchange(&g_pad_latch[p], 0);
         uint64_t v = atomic_load(&g_pad_axes[p]); for (int i = 0; i < 4; i++) a[i] = pick(a[i], ax(v, i));
