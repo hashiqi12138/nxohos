@@ -283,6 +283,12 @@ static uint32_t spvi_decl(spvi *c, uint32_t op, const uint32_t *ops, uint32_t no
     id = c->bound++; c->nt[c->nnt++] = (nops + 2) << 16 | op; c->nt[c->nnt++] = id; memcpy(&c->nt[c->nnt], ops, nops * 4); c->nnt += nops; return id;
 }
 static uint32_t spvi_scalar(spvi *c, uint32_t k) { uint32_t o[2] = {32, k - 1}; return spvi_decl(c, 21, o, 2, 1); }   // OpTypeInt 32, unsigned (kind 1) / signed (2)
+static uint32_t spvi_const(spvi *c, uint32_t type, uint32_t literal) {   // OpConstant has result type, result id, literal (unlike OpType*)
+    for (uint32_t i = 5; i < c->fn;) { uint32_t n = c->w[i] >> 16; if (!n) break; if ((c->w[i] & 0xffff) == 43 && n == 4 && c->w[i + 1] == type && c->w[i + 3] == literal) return c->w[i + 2]; i += n; }
+    for (uint32_t i = 0; i < c->nnt;) { uint32_t n = c->nt[i] >> 16; if ((c->nt[i] & 0xffff) == 43 && n == 4 && c->nt[i + 1] == type && c->nt[i + 3] == literal) return c->nt[i + 2]; i += n; }
+    if (c->nnt + 4 > 4096) return 0; uint32_t id = c->bound++;
+    c->nt[c->nnt++] = 4u << 16 | 43; c->nt[c->nnt++] = type; c->nt[c->nnt++] = id; c->nt[c->nnt++] = literal; return id;
+}
 static uint32_t spvi_vec4(spvi *c, uint32_t k) { uint32_t o[2] = {spvi_scalar(c, k), 4}; return spvi_decl(c, 23, o, 2, 1); }
 // the type for old with its image's sampled type made uint / int: images, sampled images, arrays of them, pointers to those
 static uint32_t spvi_type(spvi *c, uint32_t old, uint32_t k) {
@@ -370,6 +376,64 @@ static uint32_t *spv_frag_depth(const uint32_t *w, uint32_t nw, uint32_t *onw) {
         memcpy(&o[no], &w[i], n * 4); no += n; i += n; }
     o[3] = c.bound; *onw = no; free(c.nt); return o;
 }
+// Vulkan without VK_EXT_depth_clip_control clips to 0..w, while NVN's near=-w mode gives the shader -w..w. Map only the final position
+// output: before each return of a vertex entry point, and around every geometry EmitVertex (helpers included). The geometry shader's own z is
+// restored after the emit so its next vertex still sees the value it wrote, not an already-mapped one.
+static uint32_t *spv_clip_depth(const uint32_t *w, uint32_t nw, int stage, uint32_t *onw) {
+    uint32_t model = stage == 0 ? 0 : stage == 2 ? 3 : UINT32_MAX;   // ExecutionModel Vertex / Geometry
+    if (model == UINT32_MAX) return NULL;
+    uint32_t fn = nw, firstvar = nw, epfn = 0, ps = 0, member0 = 0, pstruct = 0, pos = 0, f32 = 0, v4 = 0;
+    for (uint32_t i = 5; i < nw;) {
+        uint32_t n = w[i] >> 16, op = w[i] & 0xffff; if (!n || i + n > nw) return NULL;
+        if (op == 54) { fn = i; break; }
+        if (op == 15 && n >= 3 && w[i + 1] == model) { if (epfn) return NULL; epfn = w[i + 2]; }   // one entry point of this stage
+        if (op == 72 && n == 5 && w[i + 2] == 0 && w[i + 3] == 11 && w[i + 4] == 0) {   // Member 0, BuiltIn Position
+            if (ps && ps != w[i + 1]) return NULL; ps = w[i + 1];
+        }
+        if (op == 30 && n >= 3 && w[i + 1] == ps) member0 = w[i + 2];   // OpTypeStruct's first member
+        if (op == 32 && n == 4 && w[i + 2] == 3 && w[i + 3] == ps) pstruct = w[i + 1];   // Pointer Output to that struct only, never gl_in
+        if (op == 59 && firstvar == nw) firstvar = i;   // new types/constants belong before every global variable
+        if (op == 59 && n >= 4 && w[i + 3] == 3 && w[i + 1] == pstruct) { if (pos) return NULL; pos = w[i + 2]; }
+        if (op == 22 && n == 3 && w[i + 2] == 32) f32 = w[i + 1];
+        if (op == 23 && n == 4 && f32 && w[i + 2] == f32 && w[i + 3] == 4) v4 = w[i + 1];
+        i += n;
+    }
+    if (!epfn || fn == nw || !ps || member0 != v4 || !pstruct || !pos) return NULL;
+    spvi c = {.w = w, .fn = fn, .bound = w[3]}; c.nt = malloc(4096 * 4);
+    uint32_t i32 = spvi_scalar(&c, 2), po[2] = {3, f32}, poutf = spvi_decl(&c, 32, po, 2, 1);
+    uint32_t c0 = spvi_const(&c, i32, 0), c2 = spvi_const(&c, i32, 2);
+    uint32_t c3 = spvi_const(&c, i32, 3), half = spvi_const(&c, f32, 0x3f000000);
+    if (!i32 || !poutf || !c0 || !c2 || !c3 || !half) { free(c.nt); return NULL; }
+    uint32_t nsite = 0; int in_ep = 0;
+    for (uint32_t i = fn; i < nw;) {
+        uint32_t n = w[i] >> 16, op = w[i] & 0xffff; if (!n || i + n > nw) { free(c.nt); return NULL; }
+        if (op == 54) in_ep = w[i + 2] == epfn; else if (op == 56) in_ep = 0;
+        nsite += (stage == 0 && in_ep && op == 253) || (stage == 2 && (op == 218 || op == 220));   // Return / EmitVertex / EmitStreamVertex
+        i += n;
+    }
+    if (!nsite) { uint32_t *o = malloc((size_t)nw * 4); memcpy(o, w, (size_t)nw * 4); *onw = nw; free(c.nt); return o; }
+    uint32_t *o = malloc(((size_t)nw + c.nnt + 41 * nsite) * 4), no = firstvar; memcpy(o, w, (size_t)firstvar * 4);
+    memcpy(&o[no], c.nt, c.nnt * 4); no += c.nnt;
+    memcpy(&o[no], &w[firstvar], (size_t)(fn - firstvar) * 4); no += fn - firstvar; in_ep = 0;
+    for (uint32_t i = fn; i < nw;) {
+        uint32_t n = w[i] >> 16, op = w[i] & 0xffff;
+        if (op == 54) in_ep = w[i + 2] == epfn; else if (op == 56) in_ep = 0;
+        int site = (stage == 0 && in_ep && op == 253) || (stage == 2 && (op == 218 || op == 220));
+        uint32_t restore_p = 0, restore_z = 0;
+        if (site) {
+            uint32_t pz = c.bound++, pw = c.bound++, z = c.bound++, vw = c.bound++, zh = c.bound++, wh = c.bound++, zr = c.bound++;
+            uint32_t x[38] = {6u << 16 | 65, poutf, pz, pos, c0, c2, 6u << 16 | 65, poutf, pw, pos, c0, c3,
+                              4u << 16 | 61, f32, z, pz, 4u << 16 | 61, f32, vw, pw,
+                              5u << 16 | 133, f32, zh, z, half, 5u << 16 | 133, f32, wh, vw, half,
+                              5u << 16 | 129, f32, zr, zh, wh, 3u << 16 | 62, pz, zr};   // z' = z * .5 + w * .5
+            memcpy(&o[no], x, sizeof x); no += 38; restore_p = pz; restore_z = z;
+        }
+        memcpy(&o[no], &w[i], n * 4); no += n;
+        if (site && stage == 2) { o[no++] = 3u << 16 | 62; o[no++] = restore_p; o[no++] = restore_z; }
+        i += n;
+    }
+    o[3] = c.bound; *onw = no; free(c.nt); return o;
+}
 // DM_VK_SPV_DIR=<dir> with DM_VK_SPV_ALT=1 (live, debugging): pipelines made while it is on use <dir>/<key>.spv in place of the bundle's code where the file
 // exists (same bindings), so two compilations of a shader can be compared in one run: the translator's module through spirv-opt, its GLSL through glslc...
 static VkShaderModule alt_module(vkshader_t *s) {
@@ -404,16 +468,19 @@ static VkShaderModule vk_shader_module_(vkshader_t *s, uint64_t um, uint64_t im,
 VkShaderModule vk_shader_module(vkshader_t *s, uint64_t um, uint64_t im, uint32_t xo, int fd) { extern int g_prof_on; extern uint64_t g_prof_ns[8]; struct timespec a, b; if (g_prof_on) clock_gettime(CLOCK_MONOTONIC, &a);
     VkShaderModule m = vk_shader_module_(s, um, im, xo, fd); if (g_prof_on) { clock_gettime(CLOCK_MONOTONIC, &b); g_prof_ns[3] += (uint64_t)((b.tv_sec - a.tv_sec) * 1000000000ll + (b.tv_nsec - a.tv_nsec)); } return m; }
 static VkShaderModule vk_shader_module_(vkshader_t *s, uint64_t um, uint64_t im, uint32_t xo, int fd) {
-    int dual = fd >> 1 & 1; fd &= 1;   // fd bit 1: the dual-source variant
+    int dual = fd >> 1 & 1, clip = fd >> 2 & 1; fd &= 1;   // fd bit 1: dual source; bit 2: NVN near=-w mapped to Vulkan 0..w
     if (fd && (s->stage != 1 || s->depth_repl)) fd = 0;
     if (dual && s->stage != 1) dual = 0;
-    if (!(um | im | xo | (uint32_t)fd | (uint32_t)dual) || !s->spv) return s->mod;
-    if (xo == 1u << 31) {   // DM_VK_SPV_ALT
+    if (clip && s->stage != 0 && s->stage != 2) clip = 0;
+    int vflags = fd | dual << 1 | clip << 2;
+    if (!(um | im | xo | (uint32_t)vflags) || !s->spv) return s->mod;
+    if (xo == 1u << 31 && !clip) {   // DM_VK_SPV_ALT; the alternative path has no depth rewriter, so never mix the two
         pthread_mutex_lock(&g_sh_mu); for (int i = 0; i < s->nvar; i++) if (s->var[i].um == 0 && s->var[i].im == 0 && s->var[i].xo == xo) { VkShaderModule m = s->var[i].mod; pthread_mutex_unlock(&g_sh_mu); return m; }
         VkShaderModule m = alt_module(s); if (s->nvar < 8) s->var[s->nvar++] = (typeof(s->var[0])){0, 0, xo, 0, m}; pthread_mutex_unlock(&g_sh_mu); return m; }
+    if (xo == 1u << 31) { static int warned; if (!warned++) VKLOG("[RED] alternative SPV is ignored while the clip-depth variant is active"); }
     xo &= ~(1u << 31);
     pthread_mutex_lock(&g_sh_mu);
-    for (int i = 0; i < s->nvar; i++) if (s->var[i].um == um && s->var[i].im == im && s->var[i].xo == xo && s->var[i].fd == (fd | dual << 1)) { VkShaderModule m = s->var[i].mod; pthread_mutex_unlock(&g_sh_mu); return m; }
+    for (int i = 0; i < s->nvar; i++) if (s->var[i].um == um && s->var[i].im == im && s->var[i].xo == xo && s->var[i].fd == vflags) { VkShaderModule m = s->var[i].mod; pthread_mutex_unlock(&g_sh_mu); return m; }
     uint16_t bind[64]; uint8_t kind[64]; int nb = 0;
     for (int i = 0; i < s->nbind && i < 64; i++) if ((um | im) >> i & 1) { bind[nb] = s->b[i].binding; kind[nb++] = um >> i & 1 ? 1 : 2; }
     uint32_t nw = s->nspv, *w = nb ? spv_int_images(s->spv, s->nspv, bind, kind, nb, &nw) : NULL; VkShaderModule m = s->mod;
@@ -421,12 +488,14 @@ static VkShaderModule vk_shader_module_(vkshader_t *s, uint64_t um, uint64_t im,
         if (w && s->stage == 0) { uint32_t n3 = 0, *w3 = spv_vs_init(w, nw, &n3); if (w3) { free(w); w = w3; nw = n3; } } }   // the added outputs start as (0, 0, 0, 1) too
     if (fd && (w || !(nb || xo))) { uint32_t n2 = 0, *w2 = spv_frag_depth(w ? w : s->spv, nw, &n2); free(w); w = w2; nw = n2; }
     if (dual && (w || !(nb || xo || fd))) { uint32_t n2 = 0, *w2 = spv_dual(w ? w : s->spv, nw, &n2); free(w); w = w2; nw = n2; }
+    if (clip && (w || !(nb || xo || fd || dual))) { uint32_t n2 = 0, *w2 = spv_clip_depth(w ? w : s->spv, nw, s->stage, &n2); free(w); w = w2; nw = n2; }
     if (w) { VkShaderModuleCreateInfo ci = {VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, NULL, 0, (size_t)nw * 4, w};
-        if (vkCreateShaderModule(V.dev, &ci, NULL, &m)) { m = s->mod; VKLOG("[RED] shader %016llx: its variant was refused (bindings %#llx / %#llx, outputs %#x, fragment depth %d, dual source %d)", (unsigned long long)s->key, (unsigned long long)um, (unsigned long long)im, xo, fd, dual); }
-        else VKLOG("shader %016llx: variant for bindings %#llx (uint texels) %#llx (int texels), outputs added %#x, fragment depth written %d, dual source %d", (unsigned long long)s->key, (unsigned long long)um, (unsigned long long)im, xo, fd, dual);
+        if (vkCreateShaderModule(V.dev, &ci, NULL, &m)) { m = s->mod; VKLOG("[RED] shader %016llx: its variant was refused (bindings %#llx / %#llx, outputs %#x, fragment depth %d, dual source %d, clip depth %d)", (unsigned long long)s->key, (unsigned long long)um, (unsigned long long)im, xo, fd, dual, clip); }
+        else VKLOG("shader %016llx: variant for bindings %#llx (uint texels) %#llx (int texels), outputs added %#x, fragment depth written %d, dual source %d, clip depth %d", (unsigned long long)s->key, (unsigned long long)um, (unsigned long long)im, xo, fd, dual, clip);
         free(w); }
-    else VKLOG("[RED] shader %016llx: no variant could be made (bindings %#llx / %#llx, outputs %#x, fragment depth %d, dual source %d)", (unsigned long long)s->key, (unsigned long long)um, (unsigned long long)im, xo, fd, dual);
-    if (s->nvar < 8) s->var[s->nvar++] = (typeof(s->var[0])){um, im, xo, fd | dual << 1, m};
+    else VKLOG("[RED] shader %016llx: no variant could be made (bindings %#llx / %#llx, outputs %#x, fragment depth %d, dual source %d, clip depth %d)", (unsigned long long)s->key, (unsigned long long)um, (unsigned long long)im, xo, fd, dual, clip);
+    if (clip && m == s->mod) m = VK_NULL_HANDLE;   // an unmapped shader is not a valid fallback in near=-w mode; the pipeline builder skips it
+    if (s->nvar < 8) s->var[s->nvar++] = (typeof(s->var[0])){um, im, xo, vflags, m};
     pthread_mutex_unlock(&g_sh_mu);
     return m;
 }

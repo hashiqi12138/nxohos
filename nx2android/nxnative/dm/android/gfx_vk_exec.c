@@ -947,7 +947,14 @@ static VkPipeline build_pipeline(const pkey *k, VkPipelineLayout layout, vkshade
     const vkshader_t *fs = stg[1] && !k->raster_discard ? stg[1] : NULL; uint32_t xo[3] = {0};
     if (stg[0]) xo[0] = (stg[2] ? stg[2]->in_locs : fs ? fs->in_locs : 0) & ~stg[0]->out_locs;
     if (stg[2]) xo[2] = (fs ? fs->in_locs : 0) & ~stg[2]->out_locs;
-    for (int i = 0; i < 3; i++) if (stg[i] && !(i == 1 && k->raster_discard)) ss[ns++] = (VkPipelineShaderStageCreateInfo){VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, NULL, 0, fl[i], vk_shader_module(stg[i], k->um[i], k->im[i], k->alt && !k->um[i] && !k->im[i] && !xo[i] ? 1u << 31 : xo[i], i == 1 ? (k->fdz ? 1 : 0) | (k->dual ? 2 : 0) : 0), "main", NULL};
+    int badmod = 0;
+    for (int i = 0; i < 3; i++) if (stg[i] && !(i == 1 && k->raster_discard)) {
+        int clip = k->clip_neg1 && !V.has_depth_clip_ctl && !k->raster_discard && (stg[2] ? i == 2 : i == 0);   // only the final position stage
+        VkShaderModule sm = vk_shader_module(stg[i], k->um[i], k->im[i], k->alt && !k->um[i] && !k->im[i] && !xo[i] ? 1u << 31 : xo[i], i == 1 ? (k->fdz ? 1 : 0) | (k->dual ? 2 : 0) : clip ? 4 : 0);
+        if (!sm) badmod = 1;
+        ss[ns++] = (VkPipelineShaderStageCreateInfo){VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, NULL, 0, fl[i], sm, "main", NULL};
+    }
+    if (badmod) { build_end(bs); return (VkPipeline)1; }
     VkVertexInputAttributeDescription ad[16]; VkVertexInputBindingDescription bd[17]; VkVertexInputBindingDivisorDescriptionEXT dd[17]; uint32_t ndd = 0;
     for (uint32_t i = 0; i < k->nattr; i++) ad[i] = (VkVertexInputAttributeDescription){k->attr[i].loc, k->attr[i].binding, (VkFormat)k->attr[i].fmt, k->attr[i].off};
     for (uint32_t i = 0; i < k->nbind; i++) { bd[i] = (VkVertexInputBindingDescription){k->bind[i].binding, k->bind[i].stride, (VkVertexInputRate)k->bind[i].rate};

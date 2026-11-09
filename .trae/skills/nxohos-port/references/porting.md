@@ -19,15 +19,13 @@
 | 着色器加载 | 已加载 19,592 个 shader；运行期 shader bundle 和 pipeline 创建链路已工作 |
 | 最终上屏链路 | XComponent → OHNativeWindow → VkSurfaceOHOS → swapchain → present 已跑通 |
 | 严重性能问题 | 每帧约 5.5 秒的问题已修复，通常降至约 32–90 ms/帧 |
-| 游戏画面 | 当前诊断基线可正确显示 BOTW 1.9.0 主菜单，见[真机截图](verify/20261109-BOTW-menu.png) |
+| 游戏画面 | 原始 shader 已通过深度 variant 恢复 BOTW 1.9.0 主菜单，见[原始路径截图](verify/20261109-BOTW-original-shader.png) |
 
 ### 1.2 尚未收口
 
-1. **原始 shader 渲染路径尚未正式修复。** 当前正确菜单使用“固定全屏顶点 + 简单 texture fragment”的诊断组合，不能作为最终交付状态。
-2. Maleoon 910 不支持 `VK_EXT_depth_clip_control`。NVN 默认深度约定可能产生 `z=-1, w=1`，Vulkan 默认裁剪范围却是 `0≤z≤w`，需要通用的深度映射 variant。
-3. 原始最终 vertex/fragment 必须在相同游戏阶段、相同帧序号下重新验收；启动早期 `frame0` 为黑不能用于判断最终路径好坏。
-4. 目前通常约 32–90 ms/帧，尚未达到 60 fps 的 16.7 ms/帧目标。
-5. 诊断开关、替代 SPV、PPM、临时构建目录仍需清理；虚拟手柄、完整生命周期和长时间实玩还需按游戏逐项验收。
+1. 原始 shader 主菜单已修复并验证，但实际游戏场景、转场和 geometry shader 的独立真机覆盖仍需验收。
+2. 目前通常约 32–90 ms/帧，尚未达到 60 fps 的 16.7 ms/帧目标。
+3. 诊断开关、替代 SPV、PPM、临时构建目录仍需清理；虚拟手柄、完整生命周期和长时间实玩还需按游戏逐项验收。
 
 ## 2. 总体移植架构
 
@@ -357,7 +355,7 @@ gl_Position.z = gl_Position.z * 0.5 + gl_Position.w * 0.5;
 
 后可稳定绘制品红，证明该裁剪差异真实存在。
 
-建议的正式修复位置：
+正式修复位置（已在 `fix/ohos-shader-depth` 分支实现）：
 
 - `android/gfx_vk_shader.c`：增加通用 SPIR-V 深度映射 variant，在最终位置输出阶段的 entry point return 前执行 `z'=z/2+w/2`；
 - `android/gfx_vk_exec.c::build_pipeline()`：仅在设备无 depth clip control 且 NVN 当前为 near=-w 时请求该 variant；
@@ -365,6 +363,8 @@ gl_Position.z = gl_Position.z * 0.5 + gl_Position.w * 0.5;
 - variant 必须进入模块缓存键，因为游戏可在运行期切换 depth mode。
 
 不能用 `depthClampEnable=true` 冒充修复，它会改变 3D 深度语义。也不应只对 BOTW 的最终 blit 写死补丁。
+
+真机 PID 38933 已验证：原始 bundle 在关闭替代 SPV 的情况下，`frame5` 主菜单正确；1,800 次 present 时 `no program=0/no pipeline=0`。截图见[原始 shader 验收帧](verify/20261109-BOTW-original-shader.png)。
 
 ### 6.3 当前可用基线与正式验收的差别
 
@@ -374,7 +374,7 @@ gl_Position.z = gl_Position.z * 0.5 + gl_Position.w * 0.5;
 - 简单 `texture(tex,uv)` fragment；
 - 菜单加载完成后的 `frame5`，而非启动早期 `frame0`。
 
-这证明纹理和 present 基线可用，但还没有证明原始 shader 已恢复。下一步应在同一段菜单、同一类后帧上，对原始 bundle 与深度映射 variant 做单变量比较，成功后关闭所有替代 SPV 再验收。
+该基线证明了纹理和 present 可用。随后实现的通用深度 variant 已在相同菜单阶段恢复原始 shader；诊断基线不再作为当前运行配置，只保留作历史对照。
 
 ### 6.4 当前诊断绘制方式的风险
 
@@ -389,7 +389,7 @@ gl_Position.z = gl_Position.z * 0.5 + gl_Position.w * 0.5;
 5. **性能数据偏乐观**：替代 shader 减少了矩阵读取和 fragment 运算，诊断期间的帧时间不能代表原始路径性能，正式优化后必须重新测量。
 6. **验收误判**：该基线只能证明 HDR 源纹理、纹理绑定、采样和 present 可用，不能证明原始渲染正确，也不能作为发布配置保留。
 
-因此，最终必须恢复原始 shader，以通用深度映射 variant 解决裁剪差异，并在菜单、实际场景、转场和不同分辨率下重新验收；诊断 env 和替代 SPV 应全部关闭。
+原始 shader 已通过通用深度映射 variant 恢复主菜单；实际场景、转场和不同分辨率仍需继续验收。诊断 env 和替代 SPV 不得重新作为运行配置启用。
 
 ## 7. 真机调试方法
 
@@ -464,14 +464,12 @@ glslangValidator -V --target-env vulkan1.2 -S vert -o <key>.spv <shader.vert>
 
 按优先级：
 
-1. 实现并审核无 `VK_EXT_depth_clip_control` 时的通用深度映射 variant；
-2. 在菜单后帧重新比较原始 shader，确认是否还存在独立问题；
-3. 移除替代 shader/direct present，仅保留必要通用修复验收；
-4. 保存正式真机截图、当前 PID 日志、性能统计和版本哈希；
-5. 清理诊断 env、临时 SPV/PPM 和构建目录；
-6. 继续降低 replay、pool 同步和 GPU 成本，目标 16.7 ms/帧；
-7. 完成输入、音频、存档、生命周期和长时间实玩验收。
+1. 验证实际游戏场景、转场和 geometry shader 的独立真机覆盖；
+2. 保存后续场景的真机截图、当前 PID 日志、性能统计和版本哈希；
+3. 清理诊断 env、临时 SPV/PPM 和构建目录；
+4. 继续降低 replay、pool 同步和 GPU 成本，目标 16.7 ms/帧；
+5. 完成输入、音频、存档、生命周期和长时间实玩验收。
 
 ---
 
-**当前结论：nxohos 的平台、打包、数据、宿主和 present 主链路已经打通，BOTW 也已证明能够在真机上显示正确菜单；但项目仍处于“原始渲染修复与正式验收阶段”，还不能把当前诊断基线标记为最终可发布版本。**
+**当前结论：nxohos 的平台、打包、数据、宿主和 present 主链路已经打通，BOTW 原始 shader 主菜单也已通过通用深度 variant 恢复；项目进入实际场景、转场、性能和长期运行验收阶段，尚不能标记为最终可发布版本。**
