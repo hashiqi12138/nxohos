@@ -647,7 +647,13 @@ static VkSampler make_sampler(const samp_par *p) {
     ci.mipLodBias = p->lod_bias;
     ci.anisotropyEnable = p->aniso > 1.0f; ci.maxAnisotropy = p->aniso > V.max_aniso ? V.max_aniso : p->aniso;
     ci.compareEnable = p->cmp_mode == 1; ci.compareOp = cmp_op(p->cmp_func);
-    ci.minLod = p->lod_min; ci.maxLod = p->minf <= 1 ? 0.25f : p->lod_max;   // no mipmap filter: level 0 only (GL's rule)
+    // GL/NVN defaults are lod_min = -1000 and lod_max = 1000; Vulkan requires
+    // 0 <= minLod <= maxLod. A non-mipmapped filter also sets maxLod = 0.25, so
+    // the raw pair (-1000 .. 0.25) is doubly invalid: a driver that rejects the
+    // sampler leaves its bindings reading the dummy view.
+    ci.minLod = p->lod_min > 0.f ? p->lod_min : 0.f;
+    ci.maxLod = p->minf <= 1 ? 0.25f : (p->lod_max > 0.f ? p->lod_max : 1000.f);   // no mipmap filter: level 0 only (GL's rule)
+    if (ci.maxLod < ci.minLod) ci.maxLod = ci.minLod;
     int border = ci.addressModeU == VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER || ci.addressModeV == VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER || ci.addressModeW == VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER;
     ci.borderColor = VK_BORDER_COLOR_FLOAT_TRANSPARENT_BLACK;
     if (border) {
@@ -659,7 +665,8 @@ static VkSampler make_sampler(const samp_par *p) {
             cb.pNext = (void *)ci.pNext; ci.pNext = &cb;
         }
     }
-    VkSampler s; if (vkCreateSampler(V.dev, &ci, NULL, &s)) return VK_NULL_HANDLE;
+    VkSampler s; VkResult sr = vkCreateSampler(V.dev, &ci, NULL, &s);
+    if (sr) { VKRED_ONCE(99, "vkCreateSampler failed (%d): minf %d magf %d lod %g..%g aniso %g", sr, p->minf, p->magf, p->lod_min, p->lod_max, p->aniso); return VK_NULL_HANDLE; }
     return s;
 }
 volatile int g_vk_samp_log;   // DM_VK_SAMP_LOG=<n> (live, gfx_vk_exec.c x_read): the next n sampler registrations, in time order with the replay's lines
