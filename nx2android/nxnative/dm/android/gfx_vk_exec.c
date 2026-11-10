@@ -119,7 +119,14 @@ static void ubo_log(const vkshader_t *s, int st, int reg, uint64_t a, uint64_t n
 // DM_VK_TEXDUMP=<pool hex>+<offset hex> (read when a pass dump starts; the trace prints both): during the dump, the first sampled image there is blitted (level 0, up to 6 layers)
 // into RGBA16F images and dumped with the passes, so a compressed texture (BC6H cube maps...) can be looked at decoded by the GPU
 static long long g_td_off = -1; static unsigned long long g_td_pool; static vkimg_t *g_td_im; static int g_td_done;
-void vk_texdump_note(vkimg_t *im) { if (g_td_off >= 0 && !g_td_done && !g_td_im && im && im->off == g_td_off && im->pool == g_td_pool) g_td_im = im; }
+void vk_texdump_note(vkimg_t *im) {
+    if (!im || g_td_done || g_td_im) return;
+    // DM_VK_TEXDUMP_SIZE=WxH (diagnostic): dump the first sampled image of that size, without
+    // needing its pool+offset -- used to compare a GPU image with its CPU-decoded upload bytes.
+    const char *sz = getenv("DM_VK_TEXDUMP_SIZE");
+    if (sz && *sz) { int w = 0, h = 0; if (sscanf(sz, "%dx%d", &w, &h) == 2 && im->w == (uint32_t)w && im->h == (uint32_t)h) g_td_im = im; }
+    if (g_td_off >= 0 && im->off == g_td_off && im->pool == g_td_pool) g_td_im = im;
+}
 void vk_watch(const vkimg_t *im, const char *what) {
     if (g_watch_off < 0 || !im || im->off != g_watch_off || g_watch_n <= 0) return;
     g_watch_n--; VKLOG("watch: present %llu pass %d (%ux%u): %s %ux%u fmt %d pool %#llx+%#llx (image %p, nvn flags %#x, %d overlapping)", (unsigned long long)g_tex_frame, g_sub_pass - 1, S.pass_w, S.pass_h, what, im->w, im->h, im->fmt,
