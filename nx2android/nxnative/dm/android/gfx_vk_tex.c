@@ -274,6 +274,23 @@ static void pkg_upload_(vkimg_t *im, const tex_t *t, const vkfmt_t *f) {
                 for (uint32_t y = 0; y < by * z; y++) memcpy(dst + y * pitch, t->mem + (size_t)y * stride, pitch);
             } else if (nvn_deswizzle(&t->d, lv, ly, t->mem, dst, pitch)) { free(blocks); VKRED_ONCE(13, "deswizzle refused texture format %#x target %d", t->d.format, t->d.target); return; }
             if (blocks) { dst = vk_scratch((size_t)w * h * z * f->dbpp, 16, &sb, &so); bc_decode(f, blocks, pitch, w, h, z, dst); free(blocks); }   // (BC the device lacks)
+            // DM_VK_DUMPBC=1 (start-up, diagnostic): write the first CPU-decoded BC textures, level 0
+            // layer 0, as linear RGBA8 bytes, next to the pass dumps. Default off; at most 12 files.
+            { static int dn, on = -1; if (on < 0) { const char *de = getenv("DM_VK_DUMPBC"); on = de && atoi(de); }
+              if (on && dn < 12 && f->dec && f->dbpp == 4 && lv == 0 && ly == 0 && w >= 32 && h >= 32) {
+                  const char *root = getenv("DM_ROOT"); char path[1024];
+                  snprintf(path, sizeof path, "%s/bc_%02d.ppm", root && *root ? root : ".", dn);
+                  FILE *fp = fopen(path, "wb");
+                  if (!fp) VKLOG("cannot write decoded BC texture to %s", path);
+                  else { uint8_t *line = malloc((size_t)w * 3); int ok = line && fprintf(fp, "P6\n%u %u\n255\n", w, h) > 0;
+                      if (ok) for (uint32_t y = 0; y < h && ok; y++) {
+                          for (uint32_t x = 0; x < w; x++) { const uint8_t *p = dst + ((size_t)y * w + x) * 4;
+                              line[(size_t)3 * x] = p[0]; line[(size_t)3 * x + 1] = p[1]; line[(size_t)3 * x + 2] = p[2]; }
+                          ok = fwrite(line, 1, (size_t)w * 3, fp) == (size_t)w * 3; }
+                      if (ok) { VKLOG("decoded BC texture %ux%u (nvn %#x) dumped to %s", w, h, t->d.format, path); dn++; }
+                      else VKLOG("short write dumping decoded BC texture to %s", path);
+                      free(line); fclose(fp); }
+              } }
             VkBufferImageCopy r = {so, 0, 0, {im->aspect & VK_IMAGE_ASPECT_COLOR_BIT ? VK_IMAGE_ASPECT_COLOR_BIT : VK_IMAGE_ASPECT_DEPTH_BIT, lv, ly, 1}, {0, 0, 0}, {w, h, z}};
             vkCmdCopyBufferToImage(cb, sb, im->img, VK_IMAGE_LAYOUT_GENERAL, 1, &r);
         }
