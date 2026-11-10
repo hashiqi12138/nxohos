@@ -99,7 +99,9 @@ void dm_ohos_game_start(const char *root, const char *save, const char *temp) {
         struct stat st; snprintf(g_buf[2], sizeof g_buf[2], "%s/aoc", root);
         if (!stat(g_buf[2], &st) && S_ISDIR(st.st_mode)) setenv("DM_AOC_DIR", g_buf[2], 1);
     }
-    unsetenv("DM_CTL");
+#ifdef DM_RELEASE
+    unsetenv("DM_CTL");   // as Android's front_android.c: a release build takes no remote key presses (the control file is a development tool)
+#endif
     LOG("front: root %s", root);
     for (int i = 0; i < 600 && !dm_front_window(); i++) usleep(20 * 1000);   // the XComponent surface normally arrives in a few frames
     if (!dm_front_window()) LOG("[ERR] front: no window after 12 s: the game starts headless (nothing will be shown)");

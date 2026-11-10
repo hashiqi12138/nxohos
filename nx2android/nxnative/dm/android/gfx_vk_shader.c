@@ -438,7 +438,8 @@ static uint32_t *spv_clip_depth(const uint32_t *w, uint32_t nw, int stage, uint3
 // exists (same bindings), so two compilations of a shader can be compared in one run: the translator's module through spirv-opt, its GLSL through glslc...
 static VkShaderModule alt_module(vkshader_t *s) {
     const char *dir = getenv("DM_VK_SPV_DIR"); char path[512]; if (!dir) return s->mod;
-    snprintf(path, sizeof path, "%s/%016llx.spv", dir, (unsigned long long)s->key); FILE *f = fopen(path, "rb"); if (!f) return s->mod;
+    snprintf(path, sizeof path, "%s/%016llx.spv", dir, (unsigned long long)s->key); FILE *f = fopen(path, "rb");
+    if (!f) { const char *seed = getenv("DM_VK_SPV_SEED"); if (seed && s->key == strtoull(seed, NULL, 16)) { f = fopen(path, "wb"); if (f) { fclose(f); VKLOG("shader %016llx: made an alternative-code placeholder at %s", (unsigned long long)s->key, path); } } return s->mod; }
     fseek(f, 0, SEEK_END); long n = ftell(f); fseek(f, 0, SEEK_SET); uint32_t *w = n > 20 && !(n & 3) ? malloc((size_t)n) : NULL; VkShaderModule m = s->mod;
     if (w && fread(w, 1, (size_t)n, f) == (size_t)n) { VkShaderModuleCreateInfo ci = {VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, NULL, 0, (size_t)n, w};
         for (uint32_t i = 5, nw = (uint32_t)(n / 4); i < nw;) { uint32_t k = w[i] >> 16; if (!k) break; if ((w[i] & 0xffff) == 71 && k >= 4 && w[i + 2] == 34) w[i + 3] = (uint32_t)s->set; i += k; }   // the stage's set, as at load
@@ -489,7 +490,14 @@ static VkShaderModule vk_shader_module_(vkshader_t *s, uint64_t um, uint64_t im,
     if (fd && (w || !(nb || xo))) { uint32_t n2 = 0, *w2 = spv_frag_depth(w ? w : s->spv, nw, &n2); free(w); w = w2; nw = n2; }
     if (dual && (w || !(nb || xo || fd))) { uint32_t n2 = 0, *w2 = spv_dual(w ? w : s->spv, nw, &n2); free(w); w = w2; nw = n2; }
     if (clip && (w || !(nb || xo || fd || dual))) { uint32_t n2 = 0, *w2 = spv_clip_depth(w ? w : s->spv, nw, s->stage, &n2); free(w); w = w2; nw = n2; }
-    if (w) { VkShaderModuleCreateInfo ci = {VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, NULL, 0, (size_t)nw * 4, w};
+    if (w) {
+        const char *dd = getenv("DM_VK_SPV_DUMP");   // diagnostics: the exact bytes given to the driver, including every variant rewrite
+        if (dd) { char path[512]; int pn = snprintf(path, sizeof path, "%s/%016llx_%016llx_%016llx_%x_%x.spv", dd, (unsigned long long)s->key, (unsigned long long)um, (unsigned long long)im, xo, vflags);
+            if (pn < 0 || pn >= (int)sizeof path) VKLOG("[RED] shader %016llx: variant dump path is too long", (unsigned long long)s->key);
+            else { FILE *f = fopen(path, "wb"); size_t written = f ? fwrite(w, 4, nw, f) : 0; int close_rc = f ? fclose(f) : -1;
+                if (!f || written != nw || close_rc) VKLOG("[RED] shader %016llx: could not dump variant to %s", (unsigned long long)s->key, path);
+                else VKLOG("shader %016llx: dumped variant to %s", (unsigned long long)s->key, path); } }
+        VkShaderModuleCreateInfo ci = {VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, NULL, 0, (size_t)nw * 4, w};
         if (vkCreateShaderModule(V.dev, &ci, NULL, &m)) { m = s->mod; VKLOG("[RED] shader %016llx: its variant was refused (bindings %#llx / %#llx, outputs %#x, fragment depth %d, dual source %d, clip depth %d)", (unsigned long long)s->key, (unsigned long long)um, (unsigned long long)im, xo, fd, dual, clip); }
         else VKLOG("shader %016llx: variant for bindings %#llx (uint texels) %#llx (int texels), outputs added %#x, fragment depth written %d, dual source %d, clip depth %d", (unsigned long long)s->key, (unsigned long long)um, (unsigned long long)im, xo, fd, dual, clip);
         free(w); }

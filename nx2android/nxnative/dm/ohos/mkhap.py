@@ -57,7 +57,8 @@ shutil.rmtree(build, ignore_errors=True)
 shutil.copytree(HAP_SRC, build)
 app_json = os.path.join(build, 'AppScope', 'app.json5')   # the cloud debug page refuses a versionCode it already has
 txt = open(app_json, encoding='utf-8').read()
-vc = int(time.time())   # seconds since the epoch: grows on every build (a clock wrap after 99999 s made a build smaller than the one before), and stays
+# DM_VERSION_CODE overrides the clock: a device installed from another build dir may already have a higher versionCode ("install version downgrade")
+vc = int(os.environ.get('DM_VERSION_CODE') or time.time())   # seconds since the epoch: grows on every build (a clock wrap after 99999 s made a build smaller than the one before), and stays
                         # under AppGallery's 2,100,000,000 limit until 2036
 open(app_json, 'w', encoding='utf-8').write(re.sub(r'"versionCode"\s*:\s*\d+', '"versionCode": %d' % vc, txt, count=1))
 libdir = os.path.join(build, 'entry', 'libs', 'arm64-v8a'); os.makedirs(libdir, exist_ok=True)

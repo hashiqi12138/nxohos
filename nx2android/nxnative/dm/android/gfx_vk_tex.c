@@ -170,12 +170,26 @@ static VkFormat srgb_twin(VkFormat f) {
 }
 // DM_VK_UBWC (start-up, bits): 1, uncompressed colour images get a format list (their format and its sRGB twin) instead of a free MUTABLE_FORMAT, which Adreno
 // needs to keep UBWC framebuffer compression; views in another format then use the image's own (vk_tex_view). 2, depth / stencil images are made without
-// MUTABLE_FORMAT and EXTENDED_USAGE (their views always take the image's own format). Unicorn Overlord on an Adreno 730: 1 cut GPU time by 35-40%. Both are the
-// default (3): Super Mario Bros. Wonder's world map on the Adreno 830 took 8.7-8.9 ms of GPU a frame instead of 11.8, the same picture (1 alone: 9.5-10.0 ms).
-// Xenoblade Chronicles 3's field took 22.9-23.0 ms against 23.0-23.6 (its own shading dominates), with clouds in every frame of a sky turn and no idle flicker;
-// Graveyard Keeper 2, Advance Wars and DKCR drew the same pictures. A colour view in another format than the image's and its twin is logged [RED] (vk_tex_view):
-// such a game wants DM_VK_UBWC=2 in its profile
-static int ubwc_mode(void) { static int v = -1; if (v < 0) { const char *e = getenv("DM_VK_UBWC"); v = e ? atoi(e) : 3; } return v; }
+// MUTABLE_FORMAT and EXTENDED_USAGE (their views always take the image's own format). Unicorn Overlord on an Adreno 730: 1 cut GPU time by 35-40%; Super Mario
+// Bros. Wonder's world map on an Adreno 830 took 8.7-8.9 ms of GPU a frame instead of 11.8 (1 alone: 9.5-10.0 ms). Xenoblade Chronicles 3, Graveyard Keeper 2,
+// Advance Wars and DKCR drew the same pictures.
+//   UBWC is Adreno's compression, so only Qualcomm devices get bit 1 by default; every other GPU gets 2. On Maleoon 910 bit 1 made colour views fall back to
+// the image's own format, and BOTW's whole 3D picture came out as a grid of yellow / magenta squares: with DM_VK_UBWC=2 (bit 1 off, depth untouched) or 0 the
+// squares are gone (same scene, three frames each, verified on the device). A colour view in another format than the image's and its twin is logged [RED]
+// (vk_tex_view): on Adreno such a game wants DM_VK_UBWC=2 (or 0) in its profile, which this default no longer forces on other vendors.
+#define UBWC_QUALCOMM_VENDOR_ID 0x5143u
+static int ubwc_mode(void) {
+    static int v = -1;
+    if (v < 0) {
+        const char *e = getenv("DM_VK_UBWC");
+        // vk_init() fills V.props before any image can be made (img_new needs V.dev). The chosen
+        // value is logged once so a device's effective mode is visible in its startup log.
+        v = e ? atoi(e) : (V.props.vendorID == UBWC_QUALCOMM_VENDOR_ID ? 3 : 2);
+        VKLOG("UBWC format list: colour %s, depth %s (vendor %#x, DM_VK_UBWC %s)",
+              v & 1 ? "on" : "off", v & 2 ? "on" : "off", V.props.vendorID, e ? e : "default");
+    }
+    return v;
+}
 static vkimg_t *img_new(const tex_t *t, const vkfmt_t *f) {
     vkimg_t *im = calloc(1, sizeof *im);
     const nvn_texdesc *d = &t->d;

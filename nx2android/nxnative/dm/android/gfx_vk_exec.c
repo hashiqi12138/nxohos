@@ -81,7 +81,7 @@ uint64_t vk_replay_ns(void) { return g_vkst.ns_exec; }   // the replay time so f
 // flicker experiments (DM_CTL env lines, read every submission): DM_VK_X_NOSETC no descriptor set reuse, DM_VK_X_NODRVC no driver segment reuse, DM_VK_X_LANDCUT deferred
 // uniform updates land at each cut, DM_VK_X_NOKEEP no pass kept for the same targets, DM_VK_X_NOSHC no shadow reuse
 static int g_fdz = 1;  // DM_VK_FDZ (live): fragment-depth variants for draws on depth written by fragment shaders (pipeline key fdz)
-static int g_x_nosetc, g_x_nodrvc, g_x_landcut, g_x_nokeep, g_x_nobc, g_x_cutany, g_lrz_touch, g_xfb_on = 1, g_x_nogs, g_spv_alt; int g_x_noshc;   // g_xfb_on: DM_VK_XFB=0 captures no transform feedback (A/B)
+static int g_x_nosetc, g_x_nodrvc, g_x_landcut, g_x_nokeep, g_x_nobc, g_x_cutany, g_lrz_touch, g_xfb_on = 1, g_x_nogs, g_spv_alt, g_x_noclipmap; int g_x_noshc;   // g_xfb_on: DM_VK_XFB=0 captures no transform feedback (A/B)
 static int g_x_nosetmemo, g_x_setverify;   // DM_VK_X_NOSETMEMO=1 (live, A/B): no per-stage set memo; DM_VK_X_SETVERIFY=1 (live): one memo hit in 64 checked (see stage_set)
 static int g_vbound = 1;   // DM_VK_VBOUND (see vbuf_bound)
 // DM_VK_PROF_SLOW=1 (live): a submission whose replay took over 40 ms logs where it went: pipelines built on the replay thread, textures (vk_tex: images made and
@@ -138,7 +138,7 @@ static void x_read(void) { const char *c = getenv("DM_VK_CB_DRAWS"); g_x_cbdraws
     { const char *tf = getenv("DM_VK_TRACE_FRAME"); snprintf(g_x_traceframe, sizeof g_x_traceframe, "%s", tf && strcmp(tf, "0") ? tf : ""); }
     { const char *tz = getenv("DM_VK_TRACE_SIZE"); snprintf(g_x_tracesize, sizeof g_x_tracesize, "%s", tz ? tz : ""); } const char *e; g_x_nobar = (e = getenv("DM_VK_X_NOBAR")) && atoi(e); g_x_depth = (e = getenv("DM_VK_X_DEPTH")) && atoi(e); g_x_color = (e = getenv("DM_VK_X_COLOR")) && atoi(e);
     g_x_nosetc = (e = getenv("DM_VK_X_NOSETC")) && atoi(e); g_x_nodrvc = (e = getenv("DM_VK_X_NODRVC")) && atoi(e); g_x_landcut = (e = getenv("DM_VK_X_LANDCUT")) && atoi(e);
-    g_x_nokeep = (e = getenv("DM_VK_X_NOKEEP")) && atoi(e); g_x_nobc = (e = getenv("DM_VK_X_NOBC")) && atoi(e); g_x_noshc = (e = getenv("DM_VK_X_NOSHC")) && atoi(e); g_x_cutany = (e = getenv("DM_VK_X_CUTANY")) && atoi(e); g_x_nogs = (e = getenv("DM_VK_X_NOGS")) && atoi(e); g_spv_alt = (e = getenv("DM_VK_SPV_ALT")) && atoi(e); g_rd_touch = !((e = getenv("DM_VK_RD_TOUCH")) && !atoi(e));
+    g_x_nokeep = (e = getenv("DM_VK_X_NOKEEP")) && atoi(e); g_x_nobc = (e = getenv("DM_VK_X_NOBC")) && atoi(e); g_x_noshc = (e = getenv("DM_VK_X_NOSHC")) && atoi(e); g_x_cutany = (e = getenv("DM_VK_X_CUTANY")) && atoi(e); g_x_nogs = (e = getenv("DM_VK_X_NOGS")) && atoi(e); g_spv_alt = (e = getenv("DM_VK_SPV_ALT")) && atoi(e); g_x_noclipmap = (e = getenv("DM_VK_X_NOCLIPMAP")) && atoi(e); g_rd_touch = !((e = getenv("DM_VK_RD_TOUCH")) && !atoi(e));
     g_lrz_touch = !((e = getenv("DM_VK_LRZ_TOUCH")) && !atoi(e)); g_fdz = !((e = getenv("DM_VK_FDZ")) && !atoi(e)); g_xfb_on = !((e = getenv("DM_VK_XFB")) && !atoi(e));
     g_psplit = (e = getenv("DM_VK_PASS_SPLIT")) ? atoi(e) : 0; g_setsplit = (e = getenv("DM_VK_SETSPLIT")) && atoi(e); g_psplit_depth = (e = getenv("DM_VK_PASS_SPLIT_DEPTH")) && atoi(e);
     g_x_rdkeep = (e = getenv("DM_VK_X_RDKEEP")) && atoi(e); g_vbound = !((e = getenv("DM_VK_VBOUND")) && !atoi(e)); g_x_logfs = (e = getenv("DM_VK_LOG_FS")) ? strtoull(e, NULL, 16) : 0; g_samp_snap = !((e = getenv("DM_NVN_SAMP_SNAP")) && !atoi(e)); g_lin_back = !((e = getenv("DM_VK_LIN_BACK")) && !atoi(e)); g_async_pipe = !((e = getenv("DM_VK_ASYNC_PIPE")) && !atoi(e)); g_prof_on = (e = getenv("DM_VK_PROF_SLOW")) && atoi(e); { extern volatile int g_vk_samp_log; if ((e = getenv("DM_VK_SAMP_LOG")) && atoi(e) > 0) { g_vk_samp_log = atoi(e); setenv("DM_VK_SAMP_LOG", "0", 1); } } g_x_nosetmemo = (e = getenv("DM_VK_X_NOSETMEMO")) && atoi(e); g_x_setverify = (e = getenv("DM_VK_X_SETVERIFY")) && atoi(e);
@@ -783,7 +783,7 @@ typedef struct {
     uint32_t nbind; struct { uint32_t binding, stride, rate, divisor; } bind[17];
     uint32_t ncol, cfmt[8], dfmt, samples, a2c, blend_en, logic_en, logic_op, wmask[8];
     struct { uint32_t src, dst, srca, dsta, eq, eqa; } bl[8];
-    uint32_t clip_neg1, alt, fdz, dual;   // fdz: the fragment shader's variant that writes gl_FragDepth = gl_FragCoord.z (fdz below); dual: its dual-source variant (below)
+    uint32_t clip_neg1, clip_map, alt, fdz, dual;   // clip_map: no-extension near=-w rewrite; fdz: fragment depth variant; dual: dual-source variant
     uint64_t um[3], im[3];   // each stage's sampled bindings given integer views (vk_shader_module)
 } pkey;
 static nvn_hmap g_pipes = {.klen = sizeof(pkey)}; static pthread_mutex_t g_pipe_mu = PTHREAD_MUTEX_INITIALIZER;   // the replay thread and the prewarm threads
@@ -841,7 +841,7 @@ static VkPipeline graphics_pipeline(const pkey *k, VkPipelineLayout layout) {
     if (p) { g_last_k = *k; g_last_p = p; return p == (void *)1 ? VK_NULL_HANDLE : p; }
     if (async_pipe(k)) return VK_NULL_HANDLE;
     vkshader_t *stg[3] = {S.sh[0], S.sh[1], S.sh[2]};
-    uint64_t tb = g_prof_on ? tick() : 0; p = build_pipeline(k, layout, stg); if (g_prof_on) g_prof_ns[0] += tick() - tb; g_vkst.pipes_built++;
+    uint64_t tb = g_prof_on ? tick() : 0; p = build_pipeline(k, layout, stg); if (g_prof_on) g_prof_ns[0] += tick() - tb;   // pipes_built is counted once, atomically, in build_pipeline
     pthread_mutex_lock(&g_pipe_mu);
     VkPipeline had = nvn_hm_get(&g_pipes, k);
     if (had) { if (p != (void *)1) vkDestroyPipeline(V.dev, p, NULL); p = had; }   // a prewarm thread made it meanwhile
@@ -852,7 +852,10 @@ static VkPipeline graphics_pipeline(const pkey *k, VkPipelineLayout layout) {
 // ---- pipeline prewarm: every pipeline the game needed is recorded (DM_ROOT/vk_pipelines.bin) and made again at the next boot on background
 // threads, before the game reaches it, so a scene seen once never stalls a frame on a pipeline compile again (the driver's compile, not the
 // pipeline cache's lookup, is the cost: tens of milliseconds per pipeline on Adreno). DM_VK_NOPREWARM=1 turns it off.
-#define PIPE_MAGIC 0x31455050u   // "PPE1"; the header also holds sizeof(pkey), so a changed key layout starts a new file
+#define PIPE_MAGIC 0x32455050u   // "PPE2"; the header also holds sizeof(pkey), so a changed key layout starts a new file.
+                                 // sizeof(pkey) did NOT change here (clip_map filled the padding before um[]), so
+                                 // the magic is the only thing that invalidates PPE1 records: their zero vertex
+                                 // stream still sits at binding 16, out of range, and must not be prewarmed
 static FILE *g_prec;
 // The records are written by a thread of their own: a flush to the app's files folder (FUSE) took tens of milliseconds, and made under g_pipe_mu it held up the replay's
 // pipeline lookups (a 66 ms frame with no pipeline built in it)
@@ -918,7 +921,7 @@ static void prewarm_start(void) {
 // at its title scene, with no log line to say which pipeline or which thread; and a pipeline that crashes is never recorded for the prewarm, so every run met it again.
 // A slot per thread in a build: the crash dump prints each (the crashing thread's marked), with the shaders and the state that pick the driver's compile
 enum { NBUILD = 16 };
-static struct { _Atomic int tid; volatile int phase; char what[400]; } g_build[NBUILD];   // phase 0: claimed, 1: making shader modules, 2: in the driver's pipeline compile
+static struct { _Atomic int tid; volatile int phase; char what[640]; } g_build[NBUILD];   // phase 0: claimed, 1: making shader modules, 2: in the driver's pipeline compile
 static int build_begin(void) {   // the slot, or -1 when all are taken (nothing noted)
     int me = gettid(); for (int i = 0; i < NBUILD; i++) { int z = 0; if (atomic_compare_exchange_strong(&g_build[i].tid, &z, me)) { g_build[i].phase = 0; return i; } }
     return -1;
@@ -933,8 +936,9 @@ static void build_dump(void) {   // (the crash handler: no locks, no allocation)
     if (!n) fprintf(stderr, "[dm] [vk] no pipeline was being built\n");
 }
 static VkPipeline build_pipeline(const pkey *k, VkPipelineLayout layout, vkshader_t *const stg[3]) {
-    VkPipeline p;
+    VkPipeline p = VK_NULL_HANDLE;
     int bs = build_begin();
+    char what[640] = "";   // a local copy of the crash-dump slot: build_end() releases it before a failure is logged
     if (bs >= 0) { snprintf(g_build[bs].what, sizeof g_build[bs].what, "graphics pipeline, shaders %016llx %016llx %016llx; topology %u, polygon mode %u, samples %u, "
             "%u colour targets (formats %u %u %u %u), depth format %u; raster discard %u, fragment depth variant %u, dual source %u, transform feedback %d, logic op %u, "
             "vertex attributes %u in %u bindings, integer-texel views %#llx/%#llx %#llx/%#llx, alternative code %u",
@@ -949,7 +953,7 @@ static VkPipeline build_pipeline(const pkey *k, VkPipelineLayout layout, vkshade
     if (stg[2]) xo[2] = (fs ? fs->in_locs : 0) & ~stg[2]->out_locs;
     int badmod = 0;
     for (int i = 0; i < 3; i++) if (stg[i] && !(i == 1 && k->raster_discard)) {
-        int clip = k->clip_neg1 && !V.has_depth_clip_ctl && !k->raster_discard && (stg[2] ? i == 2 : i == 0);   // only the final position stage
+        int clip = k->clip_map && (stg[2] ? i == 2 : i == 0);   // only the final position stage
         VkShaderModule sm = vk_shader_module(stg[i], k->um[i], k->im[i], k->alt && !k->um[i] && !k->im[i] && !xo[i] ? 1u << 31 : xo[i], i == 1 ? (k->fdz ? 1 : 0) | (k->dual ? 2 : 0) : clip ? 4 : 0);
         if (!sm) badmod = 1;
         ss[ns++] = (VkPipelineShaderStageCreateInfo){VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, NULL, 0, fl[i], sm, "main", NULL};
@@ -985,10 +989,38 @@ static VkPipeline build_pipeline(const pkey *k, VkPipelineLayout layout, vkshade
     if (!prp && !V.has_dynrender) { build_end(bs); return (VkPipeline)1; }   // no compatible render pass and no dynamic rendering: no valid pipeline (pass_commit skips such passes)
     VkGraphicsPipelineCreateInfo ci = {VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO, prp ? NULL : &rci, 0, ns, ss, &vi, &ia, NULL, &vs, &rs, &ms, &ds, &cb, &dy, layout, prp, 0, VK_NULL_HANDLE, -1};
     if (bs >= 0) g_build[bs].phase = 2;
+    if (bs >= 0) memcpy(what, g_build[bs].what, sizeof what);   // snapshot while this thread still owns the slot
     VkResult r = vkCreateGraphicsPipelines(V.dev, V.pcache, 1, &ci, NULL, &p);
     build_end(bs);
     static uint64_t n; uint64_t c = __atomic_add_fetch(&n, 1, __ATOMIC_RELAXED);
-    if (r) { LOG("[RED] [vk] graphics pipeline failed (%d): shaders %016llx %016llx %016llx", r, (unsigned long long)k->key[0], (unsigned long long)k->key[1], (unsigned long long)k->key[2]); p = (VkPipeline)1; }
+    if (r) {
+        static uint64_t nfail; uint64_t nf = __atomic_add_fetch(&nfail, 1, __ATOMIC_RELAXED);
+        if (nf <= 64 || nf % 100 == 0) {   // a failure is cached: log the first ones in full, then sample
+            struct rusage ru = {0}; getrusage(RUSAGE_SELF, &ru);
+            uint64_t h = 1469598103934665603ull; const uint8_t *kb = (const uint8_t *)k;
+            for (size_t i = 0; i < sizeof *k; i++) { h ^= kb[i]; h *= 1099511628211ull; }
+            LOG("[RED] [vk] graphics pipeline failed (%d) #%llu: shaders %016llx %016llx %016llx", (int)r,
+                (unsigned long long)nf, (unsigned long long)k->key[0], (unsigned long long)k->key[1], (unsigned long long)k->key[2]);
+            LOG("[RED] [vk] failed pipeline context: present %llu pass %d thread %d slot %d, this is graphics pipeline %llu (%llu built in all), %s, pcache %p, pkey %016llx, maxrss %ld kB",
+                (unsigned long long)g_tex_frame, g_sub_pass - 1, (int)gettid(), bs, (unsigned long long)c,
+                (unsigned long long)__atomic_load_n(&g_vkst.pipes_built, __ATOMIC_RELAXED),
+                prp ? "render pass" : "dynamic rendering", (void *)V.pcache,
+                (unsigned long long)h, (long)ru.ru_maxrss);
+            LOG("[RED] [vk] failed pipeline state: clip_neg1=%u clip_map=%u raster_discard=%u depth_clamp=%u depth_test=%u depth_write=%u samples=%u",
+                k->clip_neg1, k->clip_map, k->raster_discard, k->depth_clamp, k->dt, k->dw, k->samples);
+            LOG("[RED] [vk] failed pipeline description: %s", bs >= 0 ? what : "(no free build slot: all 16 busy, no state recorded)");
+            char ab[320] = "", bb[240] = ""; size_t an = 0, bn = 0;
+            for (uint32_t i = 0; i < k->nattr && i < 16 && an + 48 < sizeof ab; i++) {
+                int w = snprintf(ab + an, sizeof ab - an, "%u:%u/%u/%u ", k->attr[i].loc, k->attr[i].binding, k->attr[i].fmt, k->attr[i].off);
+                if (w <= 0) break; an += (size_t)w; }
+            for (uint32_t i = 0; i < k->nbind && i < 17 && bn + 48 < sizeof bb; i++) {
+                int w = snprintf(bb + bn, sizeof bb - bn, "%u:%u/%u/%u ", k->bind[i].binding, k->bind[i].stride, k->bind[i].rate, k->bind[i].divisor);
+                if (w <= 0) break; bn += (size_t)w; }
+            LOG("[RED] [vk] failed pipeline vertex input: attrs [loc:bind/fmt/off] %s; bindings [bind/stride/rate/divisor] %s; cfmt %u %u %u %u %u %u %u %u; limits col %u attr %u bind %u",
+                ab, bb, k->cfmt[0], k->cfmt[1], k->cfmt[2], k->cfmt[3], k->cfmt[4], k->cfmt[5], k->cfmt[6], k->cfmt[7],
+                V.props.limits.maxColorAttachments, V.props.limits.maxVertexInputAttributes, V.props.limits.maxVertexInputBindings);
+        }
+        p = (VkPipeline)1; }
     else if (c % 200 == 0) VKLOG("%llu graphics pipelines", (unsigned long long)c);
     __atomic_add_fetch(&g_vkst.pipes_built, 1, __ATOMIC_RELAXED);
     return p;   // (VkPipeline)1 = failed
@@ -1396,17 +1428,39 @@ static int prepare_draw(int prim, int indexed) {
     k.sf[0] = S.ds.sf_f; k.sf[1] = S.ds.sf_b; k.sfail[0] = S.ds.fail_f; k.szfail[0] = S.ds.zfail_f; k.szpass[0] = S.ds.zpass_f; k.sfail[1] = S.ds.fail_b; k.szfail[1] = S.ds.zfail_b; k.szpass[1] = S.ds.zpass_b;
     // vertex input: every location the vertex shader reads
     vkshader_t *vsh = S.sh[0]; uint32_t in_mask = vsh ? vsh->local[0] : 0, int_mask = vsh ? vsh->local[1] | vsh->local[2] : 0, sint_mask = vsh ? vsh->local[1] : 0;
-    uint32_t used_streams = 0; int need_zero = 0;
+    uint32_t used_streams = 0, zero_attr[16], nzero = 0;
+    uint32_t maxbind = V.props.limits.maxVertexInputBindings; if (maxbind > 16) maxbind = 16;
+    int zero_binding = -1, zero_shared = 0;
     for (int loc = 0; loc < 16; loc++) {
         if (!(in_mask >> loc & 1)) continue;
         va_st a; memcpy(&a, &S.vattr[loc], 4);
         VkFormat f = a.fmt ? vertex_format(a.fmt, int_mask >> loc & 1, sint_mask >> loc & 1) : VK_FORMAT_UNDEFINED;
-        if (f == VK_FORMAT_UNDEFINED || !S.vbuf[a.stream].address) { k.attr[k.nattr++] = (typeof(k.attr[0])){(uint32_t)loc, 16, int_mask >> loc & 1 ? VK_FORMAT_R32G32B32A32_UINT : VK_FORMAT_R32G32B32A32_SFLOAT, 0}; need_zero = 1; continue; }
+        if (f == VK_FORMAT_UNDEFINED || !S.vbuf[a.stream].address) {
+            // reads the zero buffer: the binding is filled in below, once every real stream is known,
+            // so it can never collide with one of them (a later location may still use that stream)
+            zero_attr[nzero++] = k.nattr;
+            k.attr[k.nattr++] = (typeof(k.attr[0])){(uint32_t)loc, 0, int_mask >> loc & 1 ? VK_FORMAT_R32G32B32A32_UINT : VK_FORMAT_R32G32B32A32_SFLOAT, 0};
+            continue; }
         k.attr[k.nattr++] = (typeof(k.attr[0])){(uint32_t)loc, a.stream, f, a.offset};
         used_streams |= 1u << a.stream;
     }
-    for (int s = 0; s < 16; s++) if (used_streams >> s & 1) k.bind[k.nbind++] = (typeof(k.bind[0])){(uint32_t)s, S.vstream[s].stride, S.vstream[s].divisor ? 1u : 0u, S.vstream[s].divisor};
-    if (need_zero) k.bind[k.nbind++] = (typeof(k.bind[0])){16, 0, 0, 0};
+    for (int s = 0; s < (int)maxbind; s++) if (used_streams >> s & 1) k.bind[k.nbind++] = (typeof(k.bind[0])){(uint32_t)s, S.vstream[s].stride, S.vstream[s].divisor ? 1u : 0u, S.vstream[s].divisor};
+    if (nzero) {
+        // NVN has 16 vertex streams, 0..15. The synthetic zero stream used to be binding 16, but
+        // Vulkan requires binding < maxVertexInputBindings (16 on Maleoon 910): such a pipeline is
+        // rejected there with the generic VK_ERROR_OUT_OF_HOST_MEMORY (-1), and all of its draws
+        // are skipped for the whole run (5 BOTW scene pipelines, 2268 skipped draws). Give the zero
+        // stream a legal binding no real stream took. PIPE_MAGIC was bumped: recorded keys with
+        // binding 16 have the same layout and would otherwise be prewarmed as invalid pipelines.
+        for (uint32_t s = 0; s < maxbind; s++) if (!(used_streams >> s & 1)) { zero_binding = (int)s; break; }
+        if (zero_binding < 0) {
+            // all 16 streams taken: the missing attributes read stream 0 instead of zeros (degraded,
+            // but a duplicate binding description would make the whole pipeline invalid)
+            zero_binding = 0; zero_shared = 1; VKRED_ONCE(88, "no free vertex input binding for the zero stream: sharing binding 0");
+        }
+        for (uint32_t i = 0; i < nzero; i++) k.attr[zero_attr[i]].binding = (uint32_t)zero_binding;
+        if (!zero_shared) k.bind[k.nbind++] = (typeof(k.bind[0])){(uint32_t)zero_binding, 0, 0, 0};
+    }
     // attachments and blending
     k.ncol = (uint32_t)S.ncol; k.dfmt = S.dfmt; k.samples = S.samples ? S.samples : 1; k.a2c = S.ms.a2c;
     k.logic_en = S.color.logic_op != 3 && S.color.logic_op != 0 && 0;   // logic ops: not on mobile render targets in version 1
@@ -1427,6 +1481,7 @@ static int prepare_draw(int prim, int indexed) {
     k.dual = (k.blend_en & 1) && S.sh[1] && !k.raster_discard && (SRC1F(k.bl[0].src) || SRC1F(k.bl[0].dst) || SRC1F(k.bl[0].srca) || SRC1F(k.bl[0].dsta));
     #undef SRC1F
     k.clip_neg1 = !g_depth_zero;
+    k.clip_map = k.clip_neg1 && !V.has_depth_clip_ctl && !k.raster_discard && !g_x_noclipmap;
     // layout and pipeline
     VkDescriptorSetLayout dsl[5] = {0}; int nsets = 0;
     for (int st = 0; st < 3; st++) if (S.sh[st] && !(st == 1 && k.raster_discard)) { dsl[S.sh[st]->set] = S.sh[st]->dsl; if (S.sh[st]->set + 1 > nsets) nsets = S.sh[st]->set + 1; }
@@ -1482,10 +1537,10 @@ static int prepare_draw(int prim, int indexed) {
     // vertex buffers
     for (uint32_t i = 0; i < k.nbind; i++) {
         uint32_t b = k.bind[i].binding; VkBuffer buf; VkDeviceSize off;
-        if (b == 16) { buf = vk_zero_buffer(); off = 0; }
+        if (!zero_shared && zero_binding >= 0 && b == (uint32_t)zero_binding) { buf = vk_zero_buffer(); off = 0; }
         else if (!vk_buf_at(S.vbuf[b].address, 1, &buf, &off)) { buf = vk_zero_buffer(); off = 0; VKRED_ONCE(51, "vertex buffer outside the memory pools"); }
         if (g_var_now == 5) { buf = vk_zero_buffer(); off = 0; }
-        if (!(dbg_draw() & 2) && b < 17) { int fresh = bc_fresh(); if (fresh || g_bc.vb[b] != buf || g_bc.vo[b] != off) { vkCmdBindVertexBuffers(cb, b, 1, &buf, &off); g_bc.vb[b] = buf; g_bc.vo[b] = off; } }
+        if (!(dbg_draw() & 2) && b < maxbind) { int fresh = bc_fresh(); if (fresh || g_bc.vb[b] != buf || g_bc.vo[b] != off) { vkCmdBindVertexBuffers(cb, b, 1, &buf, &off); g_bc.vb[b] = buf; g_bc.vo[b] = off; } }
     }
     (void)indexed;
     return 1;
