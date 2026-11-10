@@ -119,7 +119,14 @@ static int swap_make(void) {
 // frame the game produced (this file) is black, or it is not and the present path is at fault.
 static VkBuffer g_sb; static VkDeviceMemory g_sbm; static void *g_sbp; static int g_shot_n, g_shot_total; static int g_shot_w, g_shot_h;
 static int shot_on(void) {
-    const char *d = getenv("DM_VK_SHOT"); if (!d || !*d || g_shot_n >= 10) return 0;
+    // DM_VK_SHOTS=N (a DM_CTL "env" line): grab each of the next N presents, at any point in a
+    // run, so a frame-by-frame A/B is possible. Without it the first frames and then one every
+    // DM_VK_SHOT_EVERY presents are kept; the cap keeps the sandbox from filling with PPMs.
+    const char *d = getenv("DM_VK_SHOT"); if (!d || !*d) return 0;
+    static uint64_t until; const char *k = getenv("DM_VK_SHOTS");
+    if (k && atoi(k) > 0) { until = (uint64_t)g_shot_total + (uint64_t)atoi(k); setenv("DM_VK_SHOTS", "0", 1); }
+    if ((uint64_t)g_shot_total < until) return 1;
+    if (g_shot_n >= 96) return 0;
     const char *e = getenv("DM_VK_SHOT_EVERY"); int every = e && atoi(e) > 0 ? atoi(e) : 600;
     return g_shot_total <= 3 || (g_shot_total && g_shot_total % every == 0);   // the first frames and then one every N presents (default 600)
 }

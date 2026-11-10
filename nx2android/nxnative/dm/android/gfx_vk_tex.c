@@ -287,7 +287,17 @@ static void pkg_upload_(vkimg_t *im, const tex_t *t, const vkfmt_t *f) {
                           for (uint32_t x = 0; x < w; x++) { const uint8_t *p = dst + ((size_t)y * w + x) * 4;
                               line[(size_t)3 * x] = p[0]; line[(size_t)3 * x + 1] = p[1]; line[(size_t)3 * x + 2] = p[2]; }
                           ok = fwrite(line, 1, (size_t)w * 3, fp) == (size_t)w * 3; }
-                      if (ok) { VKLOG("decoded BC texture %ux%u (nvn %#x) dumped to %s", w, h, t->d.format, path); dn++; }
+                      if (ok) { VKLOG("decoded BC texture %ux%u (nvn %#x) dumped to %s", w, h, t->d.format, path); dn++;
+                          // a second PPM with alpha as grey: a BC3/BC1 alpha decoded to all-zero
+                          // would make the artwork invisible and leave only the UI's solid background
+                          char apath[1024]; snprintf(apath, sizeof apath, "%s/bca_%02d.ppm", root && *root ? root : ".", dn - 1);
+                          FILE *af = fopen(apath, "wb");
+                          if (af && fprintf(af, "P6\n%u %u\n255\n", w, h) > 0) {
+                              for (uint32_t y = 0; y < h; y++) { for (uint32_t x = 0; x < w; x++) {
+                                      uint8_t a = dst[((size_t)y * w + x) * 4 + 3];
+                                      line[(size_t)3 * x] = a; line[(size_t)3 * x + 1] = a; line[(size_t)3 * x + 2] = a; }
+                                  fwrite(line, 1, (size_t)w * 3, af); }
+                              fclose(af); } else if (af) fclose(af); }
                       else VKLOG("short write dumping decoded BC texture to %s", path);
                       free(line); fclose(fp); }
               } }
@@ -549,6 +559,14 @@ VkImageView vk_tex_view(const tex_t *t, const view_t *vw, int dim, int arrayed, 
     uci.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
     if (as_attachment) uci.usage = (fp.optimalTilingFeatures & VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT ? VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT : 0) | (fp.optimalTilingFeatures & VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT ? VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT : 0);
     else if ((t->d.flags & NVN_TEXTURE_FLAGS_IMAGE) && (fp.optimalTilingFeatures & VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT)) uci.usage |= VK_IMAGE_USAGE_STORAGE_BIT;
+    // DM_VK_LOGVIEW=1 (start-up, diagnostic): the first sampled views, with the format actually
+    // used, the channel mapping and the image's storage key (for DM_VK_TEXDUMP). Default off.
+    { static int vn, last = -1; const char *vl = getenv("DM_VK_LOGVIEW"); int want = vl ? atoi(vl) : 0;
+      if (want != last) { last = want; vn = 0; }   // a DM_CTL "env" line re-arms the 80-line budget in the current scene
+      if (want > 0 && !as_attachment && vn < 80) { vn++;
+          VKLOG("view: nvn %#x imfmt %d fmt %d swz %d/%d/%d/%d %ux%u lv%u ly%u pool %#llx+%#llx tswz %d vswz %d",
+                t->d.format, im->fmt, fmt, swz.r, swz.g, swz.b, swz.a, im->w, im->h, lv0, ly0,
+                (unsigned long long)(uintptr_t)im->pool, (unsigned long long)im->off, t->set_swz, vw && vw->set_swizzle); } }
     VkImageViewCreateInfo ci = {VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, &uci, 0, im->img, type, fmt, swz, {aspect, lv0, nlv, ly0, nly}};
     VkImageView view; VkResult r = vkCreateImageView(V.dev, &ci, NULL, &view);
     if (r) { pthread_mutex_unlock(&g_view_mu); VKRED_ONCE(15, "vkCreateImageView failed (%d): type %d format %d levels %u+%u layers %u+%u of image %ux%ux%u", r, type, fmt, lv0, nlv, ly0, nly, im->w, im->h, im->layers); return VK_NULL_HANDLE; }
