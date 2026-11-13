@@ -339,14 +339,15 @@ static uint32_t *spv_int_images(const uint32_t *w, uint32_t nw, const uint16_t *
 }
 // A variant of a fragment shader that writes gl_FragDepth = gl_FragCoord.z before each return of its entry point (DepthReplacing): the same depth, tested after the
 // shader instead of by Adreno's early culling (gfx_vk_exec.c fdz says when). NULL when the shader writes its depth already or the module is not as expected
-static uint32_t *spv_frag_depth(const uint32_t *w, uint32_t nw, uint32_t *onw) {
+static uint32_t *spv_frag_depth(const uint32_t *w, uint32_t nw, int quant16, uint32_t *onw) {
     spvi c = {.w = w, .fn = nw, .bound = w[3]};
-    uint32_t ep = 0, epfn = 0, firsttype = 0, coord = 0, c2 = 0;
+    uint32_t ep = 0, epfn = 0, firsttype = 0, firstvar = 0, coord = 0, c2 = 0;
     for (uint32_t i = 5; i < nw;) { uint32_t n = w[i] >> 16, op = w[i] & 0xffff; if (!n || i + n > nw) return NULL;
         if (op == 15) { if (ep || n < 3 || w[i + 1] != 4) return NULL; ep = i; epfn = w[i + 2]; }   // one entry point, a Fragment one
         if (op == 71 && n >= 4 && w[i + 2] == 11 && w[i + 3] == 22) return NULL;   // BuiltIn FragDepth: written already
         if (op == 71 && n >= 4 && w[i + 2] == 11 && w[i + 3] == 15) coord = w[i + 1];   // BuiltIn FragCoord
         if (!firsttype && ((op >= 19 && op <= 39) || (op >= 41 && op <= 52) || op == 59)) firsttype = i;   // the first type, constant or variable: the annotations end here
+        if (!firstvar && op == 59) firstvar = i;
         if (op == 54) { c.fn = i; break; }   // the first OpFunction
         i += n; }
     if (!ep || !firsttype || c.fn == nw) return NULL;
@@ -357,22 +358,36 @@ static uint32_t *spv_frag_depth(const uint32_t *w, uint32_t nw, uint32_t *onw) {
     if (!f32 || !i32 || !v4 || !pin4 || !pinf || !poutf || c.nnt + 16 > 4096) { free(c.nt); return NULL; }
     for (uint32_t i = 5; i < c.fn;) { uint32_t n = w[i] >> 16; if ((w[i] & 0xffff) == 43 && n == 4 && w[i + 1] == i32 && w[i + 3] == 2) c2 = w[i + 2]; i += n; }   // OpConstant int 2
     if (!c2) { c2 = c.bound++; c.nt[c.nnt++] = 4u << 16 | 43; c.nt[c.nnt++] = i32; c.nt[c.nnt++] = c2; c.nt[c.nnt++] = 2; }
+    uint32_t scale = quant16 ? spvi_const(&c, f32, 0x477fff00u) : 0;
+    uint32_t half = quant16 ? spvi_const(&c, f32, 0x3f000000u) : 0;
+    uint32_t inv = quant16 ? spvi_const(&c, f32, 0x37800080u) : 0;
+    uint32_t ndecl = c.nnt;
     int newcoord = !coord; if (newcoord) { coord = c.bound++; c.nt[c.nnt++] = 4u << 16 | 59; c.nt[c.nnt++] = pin4; c.nt[c.nnt++] = coord; c.nt[c.nnt++] = 1; }   // OpVariable Input
     uint32_t dv = c.bound++; c.nt[c.nnt++] = 4u << 16 | 59; c.nt[c.nnt++] = poutf; c.nt[c.nnt++] = dv; c.nt[c.nnt++] = 3;   // OpVariable Output
     uint32_t nret = 0; for (uint32_t i = c.fn; i < nw;) { uint32_t n = w[i] >> 16; if (!n) { free(c.nt); return NULL; } nret += (w[i] & 0xffff) == 253; i += n; }
-    uint32_t *o = malloc(((size_t)nw + c.nnt + 16 + 12 * nret) * 4), no = 5; memcpy(o, w, 20);
+    uint32_t *o = malloc(((size_t)nw + c.nnt + 16 + (quant16 ? 35 : 12) * nret) * 4), no = 5; memcpy(o, w, 20);
     for (uint32_t i = 5; i < c.fn;) { uint32_t n = w[i] >> 16;
+        if (i == firstvar) { memcpy(&o[no], c.nt, ndecl * 4); no += ndecl; }
         if (i == firsttype) { uint32_t d[8] = {4u << 16 | 71, dv, 11, 22, 4u << 16 | 71, coord, 11, 15}; memcpy(&o[no], d, (newcoord ? 8 : 4) * 4); no += newcoord ? 8 : 4; }   // BuiltIn FragDepth (FragCoord)
         if (i == ep) { o[no++] = (n + 1 + newcoord) << 16 | 15; memcpy(&o[no], &w[i + 1], (n - 1) * 4); no += n - 1; o[no++] = dv; if (newcoord) o[no++] = coord;   // the entry point lists them
                        o[no++] = 3u << 16 | 16; o[no++] = epfn; o[no++] = 12; }   // OpExecutionMode DepthReplacing
         else { memcpy(&o[no], &w[i], n * 4); no += n; }
         i += n; }
-    memcpy(&o[no], c.nt, c.nnt * 4); no += c.nnt;
+    if (!firstvar) { memcpy(&o[no], c.nt, ndecl * 4); no += ndecl; }
+    memcpy(&o[no], c.nt + ndecl, (c.nnt - ndecl) * 4); no += c.nnt - ndecl;
     int in_ep = 0;
     for (uint32_t i = c.fn; i < nw;) { uint32_t n = w[i] >> 16, op = w[i] & 0xffff;
         if (op == 54) in_ep = w[i + 2] == epfn; else if (op == 56) in_ep = 0;   // OpFunction / OpFunctionEnd
-        if (op == 253 && in_ep) { uint32_t a = c.bound++, b = c.bound++, x[12] = {5u << 16 | 65, pinf, a, coord, c2, 4u << 16 | 61, f32, b, a, 3u << 16 | 62, dv, b};   // AccessChain .z, Load, Store
-                                  memcpy(&o[no], x, sizeof x); no += 12; }
+        if (op == 253 && in_ep) { uint32_t a = c.bound++, b = c.bound++, x[9] = {5u << 16 | 65, pinf, a, coord, c2, 4u << 16 | 61, f32, b, a};
+            memcpy(&o[no], x, sizeof x); no += 9;
+            if (quant16) {   // 仅诊断：将窗口深度显式量化到 D16 格点，仍使用原比较函数。
+                uint32_t mul = c.bound++, add = c.bound++, qi = c.bound++, qf = c.bound++, z = c.bound++;
+                uint32_t q[23] = {5u << 16 | 133, f32, mul, b, scale, 5u << 16 | 129, f32, add, mul, half,
+                    4u << 16 | 110, i32, qi, add, 4u << 16 | 111, f32, qf, qi, 5u << 16 | 133, f32, z, qf, inv};
+                memcpy(&o[no], q, sizeof q); no += 23; b = z;
+            }
+            o[no++] = 3u << 16 | 62; o[no++] = dv; o[no++] = b;
+        }
         memcpy(&o[no], &w[i], n * 4); no += n; i += n; }
     o[3] = c.bound; *onw = no; free(c.nt); return o;
 }
@@ -435,15 +450,26 @@ static uint32_t *spv_clip_depth(const uint32_t *w, uint32_t nw, int stage, uint3
     o[3] = c.bound; *onw = no; free(c.nt); return o;
 }
 // DM_VK_SPV_DIR=<dir> with DM_VK_SPV_ALT=1 (live, debugging): pipelines made while it is on use <dir>/<key>.spv in place of the bundle's code where the file
-// exists (same bindings), so two compilations of a shader can be compared in one run: the translator's module through spirv-opt, its GLSL through glslc...
+// exists (same bindings). DM_VK_SPV_KEY=<hex key> restricts replacement to one shader. Required normal variants take precedence.
+// Alternatives (including misses) are cached for the process lifetime: restart after changing the key, directory or file.
 static VkShaderModule alt_module(vkshader_t *s) {
-    const char *dir = getenv("DM_VK_SPV_DIR"); char path[512]; if (!dir) return s->mod;
-    snprintf(path, sizeof path, "%s/%016llx.spv", dir, (unsigned long long)s->key); FILE *f = fopen(path, "rb");
-    if (!f) { const char *seed = getenv("DM_VK_SPV_SEED"); if (seed && s->key == strtoull(seed, NULL, 16)) { f = fopen(path, "wb"); if (f) { fclose(f); VKLOG("shader %016llx: made an alternative-code placeholder at %s", (unsigned long long)s->key, path); } } return s->mod; }
-    fseek(f, 0, SEEK_END); long n = ftell(f); fseek(f, 0, SEEK_SET); uint32_t *w = n > 20 && !(n & 3) ? malloc((size_t)n) : NULL; VkShaderModule m = s->mod;
-    if (w && fread(w, 1, (size_t)n, f) == (size_t)n) { VkShaderModuleCreateInfo ci = {VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, NULL, 0, (size_t)n, w};
-        for (uint32_t i = 5, nw = (uint32_t)(n / 4); i < nw;) { uint32_t k = w[i] >> 16; if (!k) break; if ((w[i] & 0xffff) == 71 && k >= 4 && w[i + 2] == 34) w[i + 3] = (uint32_t)s->set; i += k; }   // the stage's set, as at load
-        if (vkCreateShaderModule(V.dev, &ci, NULL, &m)) m = s->mod; else VKLOG("shader %016llx: alternative code from %s", (unsigned long long)s->key, path); }
+    const char *only = getenv("DM_VK_SPV_KEY");
+    if (only) { char *end; uint64_t key = strtoull(only, &end, 16); if (end == only || *end || s->key != key) return VK_NULL_HANDLE; }
+    const char *dir = getenv("DM_VK_SPV_DIR"); char path[512]; if (!dir) return VK_NULL_HANDLE;
+    int pn = snprintf(path, sizeof path, "%s/%016llx.spv", dir, (unsigned long long)s->key);
+    if (pn < 0 || pn >= (int)sizeof path) return VK_NULL_HANDLE;
+    FILE *f = fopen(path, "rb");
+    if (!f) { const char *seed = getenv("DM_VK_SPV_SEED"); if (seed && s->key == strtoull(seed, NULL, 16)) { f = fopen(path, "wb"); if (f) { fclose(f); VKLOG("shader %016llx: made an alternative-code placeholder at %s", (unsigned long long)s->key, path); } } return VK_NULL_HANDLE; }
+    if (fseek(f, 0, SEEK_END)) { fclose(f); return VK_NULL_HANDLE; }
+    long n = ftell(f); if (fseek(f, 0, SEEK_SET)) { fclose(f); return VK_NULL_HANDLE; }
+    uint32_t *w = n > 20 && n <= 64 * 1024 * 1024 && !(n & 3) ? malloc((size_t)n) : NULL; VkShaderModule m = VK_NULL_HANDLE;
+    if (w && fread(w, 1, (size_t)n, f) == (size_t)n && w[0] == 0x07230203u) {
+        int valid = 1;
+        for (uint32_t i = 5, nw = (uint32_t)(n / 4); i < nw;) { uint32_t k = w[i] >> 16; if (!k || k > nw - i) { valid = 0; break; } if ((w[i] & 0xffff) == 71 && k >= 4 && w[i + 2] == 34) w[i + 3] = (uint32_t)s->set; i += k; }
+        VkShaderModuleCreateInfo ci = {VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, NULL, 0, (size_t)n, w};
+        if (valid && vkCreateShaderModule(V.dev, &ci, NULL, &m) == VK_SUCCESS) VKLOG("shader %016llx: alternative code from %s", (unsigned long long)s->key, path);
+        else m = VK_NULL_HANDLE;
+    }
     free(w); fclose(f); return m;
 }
 // A fragment shader's dual-source variant (gfx_vk_exec.c pkey dual): its output at location 1 becomes location 0, index 1, the second source of target 0's blend.
@@ -469,17 +495,22 @@ static VkShaderModule vk_shader_module_(vkshader_t *s, uint64_t um, uint64_t im,
 VkShaderModule vk_shader_module(vkshader_t *s, uint64_t um, uint64_t im, uint32_t xo, int fd) { extern int g_prof_on; extern uint64_t g_prof_ns[8]; struct timespec a, b; if (g_prof_on) clock_gettime(CLOCK_MONOTONIC, &a);
     VkShaderModule m = vk_shader_module_(s, um, im, xo, fd); if (g_prof_on) { clock_gettime(CLOCK_MONOTONIC, &b); g_prof_ns[3] += (uint64_t)((b.tv_sec - a.tv_sec) * 1000000000ll + (b.tv_nsec - a.tv_nsec)); } return m; }
 static VkShaderModule vk_shader_module_(vkshader_t *s, uint64_t um, uint64_t im, uint32_t xo, int fd) {
-    int dual = fd >> 1 & 1, clip = fd >> 2 & 1; fd &= 1;   // fd bit 1: dual source; bit 2: NVN near=-w mapped to Vulkan 0..w
+    int dual = fd >> 1 & 1, clip = fd >> 2 & 1, quant16 = fd >> 3 & 1; fd &= 1;   // fd bit 1: dual source; bit 2: NVN near=-w mapped to Vulkan 0..w
     if (fd && (s->stage != 1 || s->depth_repl)) fd = 0;
     if (dual && s->stage != 1) dual = 0;
     if (clip && s->stage != 0 && s->stage != 2) clip = 0;
-    int vflags = fd | dual << 1 | clip << 2;
+    int vflags = fd | dual << 1 | clip << 2 | (fd && quant16) << 3;
     if (!(um | im | xo | (uint32_t)vflags) || !s->spv) return s->mod;
-    if (xo == 1u << 31 && !clip) {   // DM_VK_SPV_ALT; the alternative path has no depth rewriter, so never mix the two
-        pthread_mutex_lock(&g_sh_mu); for (int i = 0; i < s->nvar; i++) if (s->var[i].um == 0 && s->var[i].im == 0 && s->var[i].xo == xo) { VkShaderModule m = s->var[i].mod; pthread_mutex_unlock(&g_sh_mu); return m; }
-        VkShaderModule m = alt_module(s); if (s->nvar < 8) s->var[s->nvar++] = (typeof(s->var[0])){0, 0, xo, 0, m}; pthread_mutex_unlock(&g_sh_mu); return m; }
-    if (xo == 1u << 31) { static int warned; if (!warned++) VKLOG("[RED] alternative SPV is ignored while the clip-depth variant is active"); }
+    if (xo == 1u << 31 && !vflags && !(um | im)) {   // ALT cannot bypass required depth, clip or dual-source rewrites.
+        pthread_mutex_lock(&g_sh_mu);
+        VkShaderModule m = VK_NULL_HANDLE; int found = 0;
+        for (int i = 0; i < s->nvar; i++) if (s->var[i].um == 0 && s->var[i].im == 0 && s->var[i].xo == xo && s->var[i].fd == 0) { m = s->var[i].mod; found = 1; break; }
+        if (!found) { m = alt_module(s); if (s->nvar < 8) s->var[s->nvar++] = (typeof(s->var[0])){0, 0, xo, 0, m}; }
+        pthread_mutex_unlock(&g_sh_mu);
+        if (m) return m;   // Missing/invalid alternatives continue through the normal variant path.
+    }
     xo &= ~(1u << 31);
+    if (!(um | im | xo | (uint32_t)vflags)) return s->mod;
     pthread_mutex_lock(&g_sh_mu);
     for (int i = 0; i < s->nvar; i++) if (s->var[i].um == um && s->var[i].im == im && s->var[i].xo == xo && s->var[i].fd == vflags) { VkShaderModule m = s->var[i].mod; pthread_mutex_unlock(&g_sh_mu); return m; }
     uint16_t bind[64]; uint8_t kind[64]; int nb = 0;
@@ -487,7 +518,7 @@ static VkShaderModule vk_shader_module_(vkshader_t *s, uint64_t um, uint64_t im,
     uint32_t nw = s->nspv, *w = nb ? spv_int_images(s->spv, s->nspv, bind, kind, nb, &nw) : NULL; VkShaderModule m = s->mod;
     if (xo && (w || !nb)) { uint32_t n2 = 0, *w2 = spv_add_outputs(w ? w : s->spv, nw, xo, &n2); free(w); w = w2; nw = n2;
         if (w && s->stage == 0) { uint32_t n3 = 0, *w3 = spv_vs_init(w, nw, &n3); if (w3) { free(w); w = w3; nw = n3; } } }   // the added outputs start as (0, 0, 0, 1) too
-    if (fd && (w || !(nb || xo))) { uint32_t n2 = 0, *w2 = spv_frag_depth(w ? w : s->spv, nw, &n2); free(w); w = w2; nw = n2; }
+    if (fd && (w || !(nb || xo))) { uint32_t n2 = 0, *w2 = spv_frag_depth(w ? w : s->spv, nw, quant16, &n2); free(w); w = w2; nw = n2; }
     if (dual && (w || !(nb || xo || fd))) { uint32_t n2 = 0, *w2 = spv_dual(w ? w : s->spv, nw, &n2); free(w); w = w2; nw = n2; }
     if (clip && (w || !(nb || xo || fd || dual))) { uint32_t n2 = 0, *w2 = spv_clip_depth(w ? w : s->spv, nw, s->stage, &n2); free(w); w = w2; nw = n2; }
     if (w) {

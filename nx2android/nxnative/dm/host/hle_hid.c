@@ -133,7 +133,11 @@ static void *ctl_main(void *arg) {
     { FILE *f = fopen(path, "r"); if (f) { if (!fseek(f, 0, SEEK_END)) off = ftell(f); fclose(f); } }
     for (;;) {
         FILE *f = fopen(path, "r");
+#ifndef DM_OHOS
         if (f && !fseek(f, 0, SEEK_END) && ftell(f) < off) off = 0;
+#endif
+        // OHOS 的 hdc 覆盖上传会暂时截断文件；保留已消费偏移，避免重放旧诊断指令。
+        // OHOS 控制文件仅追加；需要换文件时重启进程。
         if (f && !fseek(f, off, SEEK_SET)) {
             while (fgets(line, sizeof line, f)) {
                 size_t n = strlen(line); if (!n || line[n - 1] != '\n') break;   // a line still being written: read it next time

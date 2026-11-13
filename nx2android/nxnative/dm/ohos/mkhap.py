@@ -54,7 +54,7 @@ build = ascii_build_dir()
 if os.path.exists(build) and not os.path.basename(os.path.normpath(build)).startswith('ohos_build'):
     sys.exit('mkhap.py: DM_HAP_BUILD_DIR=%s does not look like a build folder (the name must start with ohos_build): nothing was deleted' % build)
 shutil.rmtree(build, ignore_errors=True)
-shutil.copytree(HAP_SRC, build)
+shutil.copytree(HAP_SRC, build, ignore=shutil.ignore_patterns('.hvigor'))   # stale Hvigor caches can pin the original project path
 app_json = os.path.join(build, 'AppScope', 'app.json5')   # the cloud debug page refuses a versionCode it already has
 txt = open(app_json, encoding='utf-8').read()
 # DM_VERSION_CODE overrides the clock: a device installed from another build dir may already have a higher versionCode ("install version downgrade")

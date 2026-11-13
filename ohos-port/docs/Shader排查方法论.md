@@ -176,6 +176,15 @@ DM_CTL=/data/storage/el2/base/haps/entry/files/dm/fs.tsv
 
 > 注意：pass 编号**每帧会变**，跨帧对比要用尺寸 / 格式而不是编号；`DM_VK_PASSDUMP_SKIP=WxH` 可以按尺寸定位起点。
 
+### 证据校验补充（2026-11-11）
+
+- `pass_NN.ppm` 中 NN 是导出数组下标，并非 submission pass 编号。必须同时保存日志里的 `pass dump NN is ... pass M` 与下一行格式元数据。
+- 未指定 `DM_VK_PASSDUMP_SIZE` 时，当前实现自动导出深度图，`DM_VK_PASSDUMP_DEPTH=0` 也不会阻止；深度图经过范围拉伸，能显示人物/场景轮廓，不能据此认定插画或颜色合成已正确。
+- PPM 颜色图丢弃 alpha；透明层必须单独核对 alpha、实际 view 与实际 sampler 参数。格式 9/76/122 等不能未经导出代码核验就按 RGBA8 解释。
+- OHOS 日志中 `present 0` 曾来自遗漏 `vk_tex_sweep()` 导致共享 `g_tex_frame` 不递增。应用存活和前端 presents 增长不能替代共享帧生命周期验证。
+- `DM_VK_RT_DUP=1` 只改动态渲染附件的 storeOp；传统 render pass 的 `rp_get()` 硬编码 STORE，因此旧 mode 1 的无效对照不能排除重复附件。新增 mode 2 仅用于传统路径的 exact-view 重复槽 UNUSED 诊断，保留 shader location 空洞并重定向 clear；出现可写槽丢弃告警时不能直接作为通用修复。
+- Vulkan 普通 sampler 的约束是 `maxLod >= minLod`，不能仅因 `minLod` 为负认定非法。NVN 的合法 `lod_max=0` 不应被默认转换为 1000。实际 NVN 参数、实际 Vulkan 参数和受影响 draw 需分别取证。
+
 ---
 
 **一句话**：改 shader 靠「定位 - 注入 - variant 分发」的宿主侧改写框架；验证靠「字节 → 驱动 → 计数 → 像素」四层证据链；测试靠「单变量 A/B + 缓存键隔离 + 最小重制」收敛根因。

@@ -3,6 +3,7 @@
 #include "dm.h"
 #include <TargetConditionals.h>
 #include <fcntl.h>
+#include <errno.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -669,7 +670,7 @@ static void map_image(module_t *m, const char *dir) {
         m->base = a + pre;
         memcpy(m->base, raw, fl); memcpy(a, raw + fl, sz - fl); free(raw); install_key_page(m);
         uint64_t rx = (m->text_end + 0x3FFF) & ~0x3FFFull;
-        if (mprotect(m->base, rx, PROT_READ | PROT_EXEC)) die("%s mprotect text", m->name);
+        if (mprotect(m->base, rx, PROT_READ | PROT_EXEC)) { int err = errno; die("%s mprotect text: errno=%d (%s) base=%p rx=%#llx image=%#llx page=%ld", m->name, err, strerror(err), (void *)m->base, (unsigned long long)rx, (unsigned long long)m->size, sysconf(_SC_PAGESIZE)); }
         if (mprotect(a, m->patch_len, PROT_READ | PROT_EXEC)) die("%s mprotect patch", m->name);
         if (pre > m->patch_len && mprotect(a + m->patch_len, pre - m->patch_len, PROT_NONE)) die("%s mprotect gap", m->name);
         return;
@@ -679,7 +680,7 @@ static void map_image(module_t *m, const char *dir) {
     if (m->base == MAP_FAILED) die("%s mmap", m->name);
     memcpy(m->base, raw, sz); free(raw); install_key_page(m);
     uint64_t rx = (m->text_end + 0x3FFF) & ~0x3FFFull;
-    if (mprotect(m->base, rx, PROT_READ | PROT_EXEC)) die("%s mprotect text", m->name);
+    if (mprotect(m->base, rx, PROT_READ | PROT_EXEC)) { int err = errno; die("%s mprotect text: errno=%d (%s) base=%p rx=%#llx image=%#llx page=%ld", m->name, err, strerror(err), (void *)m->base, (unsigned long long)rx, (unsigned long long)m->size, sysconf(_SC_PAGESIZE)); }
     uint64_t po = m->patch_off & ~0x3FFFull;
     if (mprotect(m->base + po, m->size - po, PROT_READ | PROT_EXEC)) die("%s mprotect patch", m->name);
 }

@@ -144,7 +144,7 @@ static void shot_setup(int w, int h) {
     g_shot_w = w; g_shot_h = h;
 }
 static void shot_write(void) {
-    const char *d = getenv("DM_VK_SHOT"); if (!d || g_shot_n >= 10) return;
+    const char *d = getenv("DM_VK_SHOT"); if (!d || g_shot_n >= 96) return;
     char p[600]; snprintf(p, sizeof p, "%s/frame%d.ppm", d, g_shot_n);
     FILE *f = fopen(p, "wb"); if (!f) { VKLOG("shot: cannot open %s", p); return; }
     fprintf(f, "P6\n%d %d\n255\n", g_shot_w, g_shot_h);
@@ -321,6 +321,11 @@ uint64_t mtl_present(const tex_t *t, double period, const int crop[4]) {
     }
     { void vk_pass_dump_poll(uint64_t done); uint64_t vk_fence_done(void); vk_pass_dump_poll(vk_fence_done()); }   // same present-side dump lifecycle as gfx_vk_present.c
     if (!im) { VKRED_ONCE(77, "present: no image for the window texture"); return present_enqueue(NULL, NULL, n); }
+    if (im->layout != VK_IMAGE_LAYOUT_GENERAL) return present_enqueue(NULL, NULL, n);   // not drawn into yet, as on Android
+    // Advance the shared replay frame lifecycle on the caller, never on the
+    // asynchronous window thread. Depth-variant age and texture retirement
+    // both depend on the frame counter advanced by vk_tex_sweep().
+    { void vk_pass_frame(void); void vk_tex_sweep(void); vk_pass_frame(); vk_tex_sweep(); }
     return present_enqueue(im, crop, n);
 }
 void mtl_present_wait(uint64_t tk) {   // NVN acquire: the window texture's last present has been blitted, the game may draw into it again

@@ -68,9 +68,13 @@ static void bc_target(vkfmt_t *o) {
     case VK_FORMAT_BC1_RGBA_UNORM_BLOCK: case VK_FORMAT_BC1_RGBA_SRGB_BLOCK: o->dec = 2; o->vk = rgba; o->dbpp = 4; break;
     case VK_FORMAT_BC2_UNORM_BLOCK: case VK_FORMAT_BC2_SRGB_BLOCK: o->dec = 3; o->vk = rgba; o->dbpp = 4; break;
     case VK_FORMAT_BC3_UNORM_BLOCK: case VK_FORMAT_BC3_SRGB_BLOCK: o->dec = 4; o->vk = rgba; o->dbpp = 4; break;
-    case VK_FORMAT_BC4_UNORM_BLOCK: o->dec = 5; o->vk = VK_FORMAT_R8_UNORM; o->dbpp = 1; break;
+    // Expand unsigned RGTC to RGBA8 instead of R8/RG8: BOTW views these
+    // one/two-channel textures through swizzles such as (ONE,ONE,ONE,R); some
+    // drivers do not reliably apply component swizzles to single-channel
+    // CPU-decoded images. Keep signed RGTC on its mandatory sampled formats.
+    case VK_FORMAT_BC4_UNORM_BLOCK: o->dec = 5; o->vk = VK_FORMAT_R8G8B8A8_UNORM; o->dbpp = 4; break;
     case VK_FORMAT_BC4_SNORM_BLOCK: o->dec = 6; o->vk = VK_FORMAT_R8_SNORM; o->dbpp = 1; break;
-    case VK_FORMAT_BC5_UNORM_BLOCK: o->dec = 7; o->vk = VK_FORMAT_R8G8_UNORM; o->dbpp = 2; break;
+    case VK_FORMAT_BC5_UNORM_BLOCK: o->dec = 7; o->vk = VK_FORMAT_R8G8B8A8_UNORM; o->dbpp = 4; break;
     case VK_FORMAT_BC5_SNORM_BLOCK: o->dec = 8; o->vk = VK_FORMAT_R8G8_SNORM; o->dbpp = 2; break;
     case VK_FORMAT_BC6H_UFLOAT_BLOCK: o->dec = 9; o->vk = VK_FORMAT_R16G16B16A16_SFLOAT; o->dbpp = 8; break;
     case VK_FORMAT_BC6H_SFLOAT_BLOCK: o->dec = 10; o->vk = VK_FORMAT_R16G16B16A16_SFLOAT; o->dbpp = 8; break;
@@ -87,8 +91,16 @@ static void bc_decode(const vkfmt_t *f, const uint8_t *src, size_t pitch, uint32
         case 1: case 2: bcdec_bc1(b, t, 16); if (f->dec == 1) for (int i = 0; i < 16; i++) t[i * 4 + 3] = 255; break;   // BC1 RGB: no alpha
         case 3: bcdec_bc2(b, t, 16); break;
         case 4: bcdec_bc3(b, t, 16); break;
-        case 5: case 6: bcdec_bc4(b, t, 4, f->dec == 6); break;
-        case 7: case 8: bcdec_bc5(b, t, 8, f->dec == 8); break;
+        case 5: {
+            uint8_t r[16]; bcdec_bc4(b, r, 4, 0);
+            for (int i = 0; i < 16; i++) { t[i * 4] = r[i]; t[i * 4 + 1] = 0; t[i * 4 + 2] = 0; t[i * 4 + 3] = 255; }
+            break; }
+        case 6: bcdec_bc4(b, t, 4, 1); break;
+        case 7: {
+            uint8_t rg[32]; bcdec_bc5(b, rg, 8, 0);
+            for (int i = 0; i < 16; i++) { t[i * 4] = rg[i * 2]; t[i * 4 + 1] = rg[i * 2 + 1]; t[i * 4 + 2] = 0; t[i * 4 + 3] = 255; }
+            break; }
+        case 8: bcdec_bc5(b, t, 8, 1); break;
         case 9: case 10: {
             uint16_t h3[16 * 3]; bcdec_bc6h_half(b, h3, 12, f->dec == 10);
             for (int i = 0; i < 16; i++) { uint16_t px[4] = {h3[i * 3], h3[i * 3 + 1], h3[i * 3 + 2], 0x3c00}; memcpy(t + i * 8, px, 8); }   // alpha 1.0
@@ -506,6 +518,14 @@ static VkComponentSwizzle apply(VkComponentSwizzle outer, const VkComponentMappi
     default: return outer;
     }
 }
+// Startup-only A/B: descriptor caches do not support a live mode switch.
+static pthread_once_t g_swizzle_once = PTHREAD_ONCE_INIT;
+static int g_legacy_swizzle, g_swizzle_log;
+static void swizzle_init(void) {
+    const char *s = getenv("DM_VK_LEGACY_SWIZZLE");
+    g_legacy_swizzle = s && !strcmp(s, "1");
+    s = getenv("DM_VK_LOGVIEW"); g_swizzle_log = s && atoi(s) > 0;
+}
 __thread VkFormat vk_view_fmt; __thread uint32_t vk_view_layers;
 VkImageView vk_tex_view(const tex_t *t, const view_t *vw, int dim, int arrayed, int as_attachment, vkimg_t **img_out) {
     vkimg_t *im = vk_tex(t); if (img_out) *img_out = im;
@@ -541,16 +561,28 @@ VkImageView vk_tex_view(const tex_t *t, const view_t *vw, int dim, int arrayed, 
         aspect = (!f->depth || t->stencil || (vw && vw->set_dsmode && vw->dsmode == 1)) ? VK_IMAGE_ASPECT_STENCIL_BIT : VK_IMAGE_ASPECT_DEPTH_BIT;   // (STENCIL8 alone may be stored combined)
     VkComponentMapping swz = f->swz;
     if (!as_attachment) {
-        if (t->set_swz) { VkComponentMapping o = swz; swz.r = apply(swz_comp(t->swz & 7), &o, VK_COMPONENT_SWIZZLE_R); swz.g = apply(swz_comp(t->swz >> 3 & 7), &o, VK_COMPONENT_SWIZZLE_G);
+        pthread_once(&g_swizzle_once, swizzle_init);
+        // An explicit view swizzle overrides the texture's; both select from the format mapping.
+        if (t->set_swz && (g_legacy_swizzle || !(vw && vw->set_swizzle))) { VkComponentMapping o = swz; swz.r = apply(swz_comp(t->swz & 7), &o, VK_COMPONENT_SWIZZLE_R); swz.g = apply(swz_comp(t->swz >> 3 & 7), &o, VK_COMPONENT_SWIZZLE_G);
                           swz.b = apply(swz_comp(t->swz >> 6 & 7), &o, VK_COMPONENT_SWIZZLE_B); swz.a = apply(swz_comp(t->swz >> 9 & 7), &o, VK_COMPONENT_SWIZZLE_A); }
         if (vw && vw->set_swizzle) { VkComponentMapping o = swz; swz.r = apply(swz_comp(vw->swz[0]), &o, VK_COMPONENT_SWIZZLE_R); swz.g = apply(swz_comp(vw->swz[1]), &o, VK_COMPONENT_SWIZZLE_G);
                                      swz.b = apply(swz_comp(vw->swz[2]), &o, VK_COMPONENT_SWIZZLE_B); swz.a = apply(swz_comp(vw->swz[3]), &o, VK_COMPONENT_SWIZZLE_A); }
     } else swz = (VkComponentMapping){0};
     VkFormat fmt = f->vk;
     const vkfmt_t *imf = vk_fmt(im->nvn_format);   // (a BC format decoded on the CPU counts as compressed: its view keeps the decoded image's format)
-    if ((im->aspect & ~VK_IMAGE_ASPECT_COLOR_BIT) || (f->compressed || f->dec) != (imf->compressed || imf->dec) || (f->dec && f->dbpp != imf->dbpp)) fmt = im->fmt;   // depth views and block-size changes keep the image's format
+    if ((im->aspect & ~VK_IMAGE_ASPECT_COLOR_BIT) || (f->compressed || f->dec) != (imf->compressed || imf->dec) || (f->dec && f->vk != imf->vk) || (f->dec && f->dbpp != imf->dbpp)) fmt = im->fmt;   // depth views and block-size changes keep the image's format
     if (im->fixed_fmt && fmt != im->fmt && fmt != srgb_twin(im->fmt)) { fmt = im->fmt; static int n; if (n++ < 8) VKLOG("[RED] view format %d of a format-listed image (%d, DM_VK_UBWC): the image's own used", f->vk, im->fmt); }
     pthread_mutex_lock(&g_view_mu);
+    // Count before cache hits; the startup logging flag avoids per-hit environment reads.
+    if (!as_attachment && t->set_swz && vw && vw->set_swizzle) {
+        static uint64_t hits;
+        uint64_t n = ++hits;
+        if (g_swizzle_log && (n <= 32 || !(n & (n - 1))))
+            VKLOG("swizzle-double: hits=%llu legacy=%d nvn=%#x viewfmt=%#x packed=%#x view=%u/%u/%u/%u base=%d/%d/%d/%d final=%d/%d/%d/%d %ux%u pool=%#llx+%#llx",
+                  (unsigned long long)n, g_legacy_swizzle, t->d.format, vw->set_format ? vw->format : t->d.format, (unsigned)t->swz,
+                  vw->swz[0], vw->swz[1], vw->swz[2], vw->swz[3], f->swz.r, f->swz.g, f->swz.b, f->swz.a,
+                  swz.r, swz.g, swz.b, swz.a, im->w, im->h, (unsigned long long)(uintptr_t)im->pool, (unsigned long long)im->off);
+    }
     vview *head = nvn_hm_get(&g_views, &im);
     for (vview *v = head; v; v = v->next)
         if (v->type == type && v->fmt == fmt && v->lv0 == lv0 && v->nlv == nlv && v->ly0 == ly0 && v->nly == nly && v->aspect == aspect && v->attach == (as_attachment != 0) && !memcmp(&v->swz, &swz, sizeof swz)) { pthread_mutex_unlock(&g_view_mu); vk_view_fmt = fmt; vk_view_layers = nly; return v->v; }
@@ -647,12 +679,10 @@ static VkSampler make_sampler(const samp_par *p) {
     ci.mipLodBias = p->lod_bias;
     ci.anisotropyEnable = p->aniso > 1.0f; ci.maxAnisotropy = p->aniso > V.max_aniso ? V.max_aniso : p->aniso;
     ci.compareEnable = p->cmp_mode == 1; ci.compareOp = cmp_op(p->cmp_func);
-    // GL/NVN defaults are lod_min = -1000 and lod_max = 1000; Vulkan requires
-    // 0 <= minLod <= maxLod. A non-mipmapped filter also sets maxLod = 0.25, so
-    // the raw pair (-1000 .. 0.25) is doubly invalid: a driver that rejects the
-    // sampler leaves its bindings reading the dummy view.
-    ci.minLod = p->lod_min > 0.f ? p->lod_min : 0.f;
-    ci.maxLod = p->minf <= 1 ? 0.25f : (p->lod_max > 0.f ? p->lod_max : 1000.f);   // no mipmap filter: level 0 only (GL's rule)
+    // 非 mip 过滤忽略 LOD 范围，只读基础层；保留 mip 过滤的显式零上限。
+    // Vulkan 允许负 minLod，但要求 maxLod >= minLod。
+    ci.minLod = p->minf <= 1 ? 0.f : p->lod_min;
+    ci.maxLod = p->minf <= 1 ? 0.25f : p->lod_max;
     if (ci.maxLod < ci.minLod) ci.maxLod = ci.minLod;
     int border = ci.addressModeU == VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER || ci.addressModeV == VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER || ci.addressModeW == VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER;
     ci.borderColor = VK_BORDER_COLOR_FLOAT_TRANSPARENT_BLACK;
