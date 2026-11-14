@@ -85,6 +85,12 @@ static int g_fdz;  // DM_VK_FDZ（实时）：Adreno 深度剔除规避默认仅
 static int g_x_nosetc, g_x_nodrvc, g_x_landcut, g_x_nokeep, g_x_nobc, g_x_cutany, g_lrz_touch, g_xfb_on = 1, g_x_nogs, g_spv_alt, g_x_noclipmap; int g_x_noshc;   // g_xfb_on: DM_VK_XFB=0 captures no transform feedback (A/B)
 static int g_x_nosetmemo, g_x_setverify;   // DM_VK_X_NOSETMEMO=1 (live, A/B): no per-stage set memo; DM_VK_X_SETVERIFY=1 (live): one memo hit in 64 checked (see stage_set)
 static int g_x_rtdup;   // DM_VK_RT_DUP (live): 1 changes dynamic stores only; 2 removes exact duplicate views in traditional render passes
+static int g_x_rtalias;   // DM_VK_RT_ALIAS (live, default 1): aliased colour slots store through a scratch image copied back after the pass
+static int g_x_rtaliasfmt;   // DM_VK_RT_ALIAS_FMT (live): force the scratch's VkFormat (diagnostic; copy-back skipped when it differs from the target)
+static int g_x_rtmaxcol;   // DM_VK_RT_MAXCOL (live): colour slots at/above this ordinal store through a scratch image copied back after the pass (0 = off)
+// mode 8 (default on Maleoon 0x19e5): the fog pass renders with the aliased slot dropped (five colour attachments, which the Maleoon tile store handles), then a
+// second one-attachment pass re-runs the captured draws writing only that slot, so its true store lands (a layer copy would be wrong: the shader writes different data per layer).
+static struct { int idxed; p_draw d; p_draw_idx di; } P_sp[16]; static int P_nsp, P_sp_capture, P_sp_owe, P_sp_slot;
 static int g_x_fsoutmask;   // DM_VK_FS_OUT_MASK=1: diagnostic, disable writes to locations absent from the fragment shader
 static uint64_t g_x_depthvs; static unsigned g_x_depthfunc;   // DM_VK_X_DEPTHFUNC=VS十六进制:NVN比较函数；仅诊断，默认关闭
 static int g_vbound = 1;   // DM_VK_VBOUND (see vbuf_bound)
@@ -157,7 +163,10 @@ static void x_read(void) { const char *c = getenv("DM_VK_CB_DRAWS"); g_x_cbdraws
     g_lrz_touch = !((e = getenv("DM_VK_LRZ_TOUCH")) && !atoi(e)); g_fdz = (e = getenv("DM_VK_FDZ")) ? (atoi(e) == 2 ? 2 : !!atoi(e)) : V.props.vendorID == 0x5143u; g_xfb_on = !((e = getenv("DM_VK_XFB")) && !atoi(e));
     g_psplit = (e = getenv("DM_VK_PASS_SPLIT")) ? atoi(e) : 0; g_setsplit = (e = getenv("DM_VK_SETSPLIT")) && atoi(e); g_psplit_depth = (e = getenv("DM_VK_PASS_SPLIT_DEPTH")) && atoi(e);
     g_x_rdkeep = (e = getenv("DM_VK_X_RDKEEP")) && atoi(e); g_vbound = !((e = getenv("DM_VK_VBOUND")) && !atoi(e)); g_x_logfs = (e = getenv("DM_VK_LOG_FS")) ? strtoull(e, NULL, 16) : 0; g_samp_snap = !((e = getenv("DM_NVN_SAMP_SNAP")) && !atoi(e)); g_lin_back = !((e = getenv("DM_VK_LIN_BACK")) && !atoi(e)); g_async_pipe = !((e = getenv("DM_VK_ASYNC_PIPE")) && !atoi(e)); g_prof_on = (e = getenv("DM_VK_PROF_SLOW")) && atoi(e); { extern volatile int g_vk_samp_log; if ((e = getenv("DM_VK_SAMP_LOG")) && atoi(e) > 0) { g_vk_samp_log = atoi(e); setenv("DM_VK_SAMP_LOG", "0", 1); } } g_x_nosetmemo = (e = getenv("DM_VK_X_NOSETMEMO")) && atoi(e); g_x_setverify = (e = getenv("DM_VK_X_SETVERIFY")) && atoi(e);
-    g_x_rtdup = (e = getenv("DM_VK_RT_DUP")) ? atoi(e) : 0;
+    g_x_rtdup = (e = getenv("DM_VK_RT_DUP")) ? atoi(e) : (V.props.vendorID == 0x19e5u ? 8 : 0);
+    g_x_rtalias = (e = getenv("DM_VK_RT_ALIAS")) ? atoi(e) : 1;
+    g_x_rtaliasfmt = (e = getenv("DM_VK_RT_ALIAS_FMT")) ? atoi(e) : 0;
+    g_x_rtmaxcol = (e = getenv("DM_VK_RT_MAXCOL")) ? atoi(e) : 0;
     g_x_fsoutmask = (e = getenv("DM_VK_FS_OUT_MASK")) && atoi(e);
     g_x_depthvs = 0; g_x_depthfunc = 0;
     if ((e = getenv("DM_VK_X_DEPTHFUNC"))) { unsigned long long vs; unsigned func;
@@ -194,7 +203,7 @@ static void render_cond(const p_render_cond *rc) {
 void vk_exec_reset(void) {   // a new submission: NVN state does not carry over between command buffers, the replay starts from the defaults
     static int inited; if (!inited) { inited = 1; state_reset(); crash_add_note_hook(build_dump); prewarm_start(); compute_warm_start(); }
     g_rc_npend = 0; g_rc_skip = 0;
-    S.pass_open = 0; S.bound_pipe = VK_NULL_HANDLE; g_cb_draws = 0; g_ord_parts = 0; g_psplit_now = 0; g_set_epoch++; x_read();
+    S.pass_open = 0; S.bound_pipe = VK_NULL_HANDLE; g_cb_draws = 0; g_ord_parts = 0; g_psplit_now = 0; P_sp_capture = 0; P_sp_owe = 0; P_nsp = 0; g_set_epoch++; x_read();
     if (g_prof_on) { extern uint64_t g_pkg_ns, g_pkg_n; memset(g_prof_ns, 0, sizeof g_prof_ns); g_prof_t0 = tick(); g_prof_pkg0 = g_pkg_ns; g_prof_npkg0 = g_pkg_n; g_prof_pipes0 = g_vkst.pipes_built; }
     { extern volatile int g_vk_samp_log; if (g_vk_samp_log > 0) VKLOG("submission begins (present %llu, thread %d)", (unsigned long long)g_tex_frame, (int)gettid()); }
 }
@@ -255,8 +264,36 @@ static VkFramebuffer fb_get(const fbkey *k) {
     pthread_mutex_unlock(&g_rp_mu); return fb;
 }
 // the attachments begin_pass found, for the render pass begin: each colour slot's (and the depth's) image, view, view format and layers, size at the view's level
-static struct { vkimg_t *im; VkImageView v; uint32_t fmt, layers, w, h; } P_att[9];
+static struct { vkimg_t *im; vkimg_t *oim; VkImageView v; uint32_t fmt, layers, w, h; } P_att[9];
 static int P_dup_owner[8];   // diagnostic mode 2: exact-view duplicates retain their colour slot as UNUSED
+// Aliased colour attachments: the same image bound twice in one pass through different layer views (BOTW's fog history array as MRT2 layer0 + MRT3 layer1).
+// Maleoon's tile store corrupts the pass's OTHER targets in that configuration (whole 16x8 zero tiles in the scene's fog target). The later slot renders into a
+// scratch image of the same format instead and its store is copied back onto its layer after the pass, so every write still lands. DM_VK_RT_ALIAS=0 leaves the alias as is.
+static struct { VkImage img; VkDeviceMemory mem; VkImageView view; uint32_t slot, fmt, w, h, layers; vkimg_t im; } P_scr[64]; static int P_nscr;
+static struct { vkimg_t *dst; VkImage src; uint32_t ly, nly, w, h, fmt; } P_alias[8]; static int P_nalias;
+static struct { vkimg_t *im; uint32_t src_ly, dst_ly, w, h; } P_dupcopy[8]; static int P_ndupcopy;   // mode 6: dropped dup slot's layer restored from its owner's layer after the pass
+static VkImageView alias_scratch(int slot, VkCommandBuffer cb, VkFormat fmt, uint32_t w, uint32_t h, uint32_t layers, vkimg_t **im_out, VkImage *img_out) {
+    for (int i = 0; i < P_nscr; i++) if (P_scr[i].slot == (uint32_t)slot && P_scr[i].fmt == (uint32_t)fmt && P_scr[i].w == w && P_scr[i].h == h && P_scr[i].layers == layers) {
+        *im_out = &P_scr[i].im; *img_out = P_scr[i].img; return P_scr[i].view; }
+    if (P_nscr == 64) { static int said; if (!said++) VKLOG("RT_ALIAS: scratch pool exhausted; alias left as is"); return VK_NULL_HANDLE; }
+    typeof(P_scr[0]) *s = &P_scr[P_nscr];
+    VkImageUsageFlags u = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+    VkImageCreateInfo ic = {VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, NULL, 0, VK_IMAGE_TYPE_2D, fmt, {w, h, 1}, 1, layers, VK_SAMPLE_COUNT_1_BIT,
+        VK_IMAGE_TILING_OPTIMAL, u, VK_SHARING_MODE_EXCLUSIVE, 0, NULL, VK_IMAGE_LAYOUT_UNDEFINED};
+    if (vkCreateImage(V.dev, &ic, NULL, &s->img)) return VK_NULL_HANDLE;
+    VkMemoryRequirements rq; vkGetImageMemoryRequirements(V.dev, s->img, &rq);
+    VkMemoryAllocateInfo ma = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, NULL, rq.size, vk_mem_type(rq.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, 0)};
+    if (vkAllocateMemory(V.dev, &ma, NULL, &s->mem) || vkBindImageMemory(V.dev, s->img, s->mem, 0)) { vkDestroyImage(V.dev, s->img, NULL); s->img = VK_NULL_HANDLE; return VK_NULL_HANDLE; }
+    VkImageViewCreateInfo vi = {VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, NULL, 0, s->img, VK_IMAGE_VIEW_TYPE_2D, fmt,
+        {VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY}, {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, layers}};
+    if (vkCreateImageView(V.dev, &vi, NULL, &s->view)) { vkDestroyImage(V.dev, s->img, NULL); vkFreeMemory(V.dev, s->mem, NULL); s->img = VK_NULL_HANDLE; return VK_NULL_HANDLE; }
+    VkImageMemoryBarrier b = {VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, NULL, 0, VK_ACCESS_TRANSFER_WRITE_BIT, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL, VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, s->img, {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, layers}};
+    vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 1, &b);
+    s->slot = (uint32_t)slot; s->fmt = (uint32_t)fmt; s->w = w; s->h = h; s->layers = layers;
+    s->im.usage = u; s->im.img = s->img; s->im.mem = s->mem; s->im.fmt = fmt;
+    s->im.vtype = VK_IMAGE_VIEW_TYPE_2D; s->im.aspect = VK_IMAGE_ASPECT_COLOR_BIT; s->im.w = w; s->im.h = h; s->im.d = 1; s->im.layers = layers; s->im.levels = 1; s->im.samples = 1; s->im.layout = VK_IMAGE_LAYOUT_GENERAL;
+    P_nscr++; *im_out = &s->im; *img_out = s->img; return s->view;
+}
 
 // Before a pass that goes on with a depth buffer (loads it), one texel of its depth is copied out: a transfer read makes Adreno's driver drop the buffer's
 // low-resolution depth (LRZ), which it otherwise kept from earlier passes even within one command buffer. NEO's menu → field wipe drew whole 32x32 squares of
@@ -545,7 +582,7 @@ void vk_prof_end(void) {
 // target back to its storage, at its stride, marked as written by the GPU (the pools' copy-back carries it to the CPU). DM_VK_LIN_BACK=0 (live, A/B): not
 static void lin_back(void) {
     for (int i = 0; i < S.ncol && i < 8; i++) {
-        vkimg_t *im = P_att[i].im; const tex_t *t = S.rt_has_col[i] ? &S.rt_col[i] : NULL; const vkfmt_t *f = t ? vk_fmt(t->d.format) : NULL;
+        vkimg_t *im = P_att[i].oim; const tex_t *t = S.rt_has_col[i] ? &S.rt_col[i] : NULL; const vkfmt_t *f = t ? vk_fmt(t->d.format) : NULL;
         if (!im || !t || !t->mem || !(t->d.flags & NVN_TEXTURE_FLAGS_LINEAR_RENDER_TARGET) || !f || !f->bpb || f->bw > 1 || im->levels != 1 || im->layers != 1 || im->d != 1) continue;
         size_t stride = t->d.stride ? t->d.stride : (size_t)im->w * f->bpb, len = stride * (im->h - 1) + (size_t)im->w * f->bpb; VkBuffer b; VkDeviceSize o;
         if (stride % f->bpb || stride < (size_t)im->w * f->bpb || !vk_buf_at((uint64_t)(uintptr_t)t->mem, len, &b, &o) || o % f->bpb) continue;
@@ -556,13 +593,54 @@ static void lin_back(void) {
         { static int n; if (n++ < 4) VKLOG("linear render target %ux%u (nvn format %#x, stride %zu) copied back to its storage %p", im->w, im->h, t->d.format, stride, (void *)t->mem); }
     }
 }
+static int begin_pass(void);
+static void draw(const p_draw *d);
+static void draw_idx(const p_draw_idx *d);
 void vk_end_pass(void) {
     if (g_x_listpasses && S.pass_open == 1) { Dl_info di; void *ra = __builtin_return_address(0); uintptr_t base = dladdr((void *)vk_end_pass, &di) ? (uintptr_t)di.dli_fbase : 0; VKLOG("    ended from %#llx (%llu draws)", (unsigned long long)((uintptr_t)ra - base), (unsigned long long)g_pass_draws); }   // (DM_VK_TRACE_PASS=-2: who ends each pass)
     if (S.pass_open == 2 && P_cleared) (void)pass_commit();   // only clears: the pass still runs, for its load ops
-    if (S.pass_open == 1) { if (S.rp_pass) vkCmdEndRenderPass(vk_cmd()); else vkCmdEndRendering(vk_cmd()); void vk_pass_ts(int end, uint32_t w, uint32_t h, uint32_t fmt, uint32_t draws); vk_pass_ts(1, S.pass_w, S.pass_h, (uint32_t)S.cfmt[0], (uint32_t)g_pass_draws | (g_pass_draws ? (uint32_t)((g_pass_bb[2] - g_pass_bb[0]) & 0xffff) << 16 : 0));  pass_dump(); if (g_x_tracepass >= 0 && g_sub_pass - 1 == g_x_tracepass) { setenv("DM_VK_TRACE_PASS", "-1", 1); g_x_tracepass = -1; } }
+    if (S.pass_open == 1) { if (S.rp_pass) vkCmdEndRenderPass(vk_cmd()); else vkCmdEndRendering(vk_cmd()); void vk_pass_ts(int end, uint32_t w, uint32_t h, uint32_t fmt, uint32_t draws); vk_pass_ts(1, S.pass_w, S.pass_h, (uint32_t)S.cfmt[0], (uint32_t)g_pass_draws | (g_pass_draws ? (uint32_t)((g_pass_bb[2] - g_pass_bb[0]) & 0xffff) << 16 : 0));
+        if (P_nalias) {   // the aliased slots' stores land on their layer now, before anything samples or dumps it
+            VkCommandBuffer cb = vk_cmd(); vk_img_barrier_all(cb);
+            for (int k = 0; k < P_nalias; k++) {
+                if (P_alias[k].fmt != P_alias[k].dst->fmt) {
+                    VkFormatProperties sf, df; vkGetPhysicalDeviceFormatProperties(V.pd, (VkFormat)P_alias[k].fmt, &sf); vkGetPhysicalDeviceFormatProperties(V.pd, P_alias[k].dst->fmt, &df);
+                    if (!(sf.optimalTilingFeatures & VK_FORMAT_FEATURE_BLIT_SRC_BIT) || !(df.optimalTilingFeatures & VK_FORMAT_FEATURE_BLIT_DST_BIT)) {
+                        static int saidb; if (!saidb++) VKLOG("RT_ALIAS: no blit %u -> %u; copy-back skipped", P_alias[k].fmt, P_alias[k].dst->fmt);
+                        continue;
+                    }
+                    VkImageBlit bl = {{VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, P_alias[k].nly}, {{0, 0, 0}, {(int32_t)P_alias[k].w, (int32_t)P_alias[k].h, 1}},
+                                      {VK_IMAGE_ASPECT_COLOR_BIT, 0, P_alias[k].ly, P_alias[k].nly}, {{0, 0, 0}, {(int32_t)P_alias[k].w, (int32_t)P_alias[k].h, 1}}};
+                    vkCmdBlitImage(cb, P_alias[k].src, VK_IMAGE_LAYOUT_GENERAL, P_alias[k].dst->img, VK_IMAGE_LAYOUT_GENERAL, 1, &bl, VK_FILTER_NEAREST);
+                    continue;
+                }
+                VkImageCopy r = {{VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, P_alias[k].nly}, {0, 0, 0}, {VK_IMAGE_ASPECT_COLOR_BIT, 0, P_alias[k].ly, P_alias[k].nly}, {0, 0, 0}, {P_alias[k].w, P_alias[k].h, 1}};
+                vkCmdCopyImage(cb, P_alias[k].src, VK_IMAGE_LAYOUT_GENERAL, P_alias[k].dst->img, VK_IMAGE_LAYOUT_GENERAL, 1, &r);
+            }
+            vk_img_barrier_all(cb); P_nalias = 0;
+        }
+        if (P_ndupcopy) {   // mode 6: land the dropped dup slots' layers from their owners' layers, before anything samples or dumps them
+            VkCommandBuffer cb = vk_cmd(); vk_img_barrier_all(cb);
+            for (int k = 0; k < P_ndupcopy; k++) {
+                VkImageCopy r = {{VK_IMAGE_ASPECT_COLOR_BIT, 0, P_dupcopy[k].src_ly, 1}, {0, 0, 0}, {VK_IMAGE_ASPECT_COLOR_BIT, 0, P_dupcopy[k].dst_ly, 1}, {0, 0, 0}, {P_dupcopy[k].w, P_dupcopy[k].h, 1}};
+                vkCmdCopyImage(cb, P_dupcopy[k].im->img, VK_IMAGE_LAYOUT_GENERAL, P_dupcopy[k].im->img, VK_IMAGE_LAYOUT_GENERAL, 1, &r);
+            }
+            vk_img_barrier_all(cb); P_ndupcopy = 0;
+        }
+        pass_dump(); if (g_x_tracepass >= 0 && g_sub_pass - 1 == g_x_tracepass) { setenv("DM_VK_TRACE_PASS", "-1", 1); g_x_tracepass = -1; } }
     if (S.pass_open == 1 && g_lin_back && g_pass_draws) lin_back();
     if (S.pass_open == 1) crumb_mark(0);
     S.pass_open = 0; S.bound_pipe = VK_NULL_HANDLE; g_tf_in_pass = 0;
+    if (P_sp_owe) {   // mode 8: re-run the fog draws in a one-attachment pass so the dropped slot's true store lands
+        P_sp_owe = 0; P_sp_capture = 0;
+        uint8_t save[8]; memcpy(save, S.rt_has_col, sizeof save); int save_n = S.rt_n;
+        for (int i = 0; i < 8; i++) S.rt_has_col[i] = (i == P_sp_slot);
+        if (begin_pass()) {
+            for (int k = 0; k < P_nsp; k++) { if (P_sp[k].idxed) draw_idx(&P_sp[k].di); else draw(&P_sp[k].d); }
+            vk_end_pass();
+        }
+        memcpy(S.rt_has_col, save, sizeof save); S.rt_n = save_n; P_nsp = 0;
+    }
 }
 // a pass end before something that reads or writes pool memory other than through a uniform binding (copies, fills, dispatches, buffer ↔ texture
 // copies, the submission's end): the deferred uniform updates land first (draws read them through their shadows, so ordinary pass ends keep them)
@@ -574,9 +652,10 @@ static int begin_pass(void) {
     VkCommandBuffer cb = vk_cmd();
     VkRenderingAttachmentInfo *ca = P_ca; memset(ca, 0, sizeof P_ca);
     memset(P_att, 0, sizeof P_att);
+    P_nalias = 0; P_ndupcopy = 0;
     for (int i = 0; i < 8; i++) P_dup_owner[i] = -1;
     VkRenderingAttachmentInfo da = {0}, sa = {0};
-    uint32_t w = UINT32_MAX, h = UINT32_MAX, layers = UINT32_MAX, samples = 1; int ncol = 0, have = 0;
+    uint32_t w = UINT32_MAX, h = UINT32_MAX, layers = UINT32_MAX, samples = 1; int ncol = 0, have = 0, ord = 0;
     for (int i = 0; i < S.rt_n; i++) {
         S.cfmt[i] = VK_FORMAT_UNDEFINED;
         ca[i].sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO; ca[i].imageLayout = VK_IMAGE_LAYOUT_GENERAL; ca[i].loadOp = VK_ATTACHMENT_LOAD_OP_LOAD; ca[i].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
@@ -603,7 +682,54 @@ static int begin_pass(void) {
                 continue;
             }
         }
-        ca[i].imageView = v; S.cfmt[i] = vk_view_fmt; P_att[i].im = im;   // (the view's format: a render pass's attachment and its pipelines take it)
+        // Mode 3: drop any slot whose IMAGE already backs an earlier slot, even through a different layer view (BOTW's fog history array bound as
+        // MRT2 layer0 + MRT3 layer1). Tests whether aliased attachments in one pass corrupt the Maleoon tile store for the other targets too.
+        if (g_x_rtdup == 3) {
+            int dup = 0; for (int j = 0; j < i; j++) if (P_att[j].im == im) { dup = 1; break; }
+            if (dup) { static int reports3; if (reports3++ < 8) VKLOG("RT_DUP mode 3: slot %d repeats an earlier slot's image; UNUSED", i); continue; }
+        }
+        // Mode 6/7 (superseded diagnostics): drop dup-image slots like mode 3 and restore the dropped slot's layer by copying the owner's layer after the pass.
+        // The copy removes the rectangles but ghosts (the fog shader writes DIFFERENT data per history layer); mode 8 re-renders the slot instead and is the fix.
+        if (g_x_rtdup == 6 || g_x_rtdup == 7 || g_x_rtdup == 8) {
+            int owner = -1; for (int j = 0; j < i; j++) if (P_att[j].im == im && ca[j].imageView) { owner = j; break; }
+            if (owner >= 0 && (g_x_rtdup == 6 || im->layers == 2)) {
+                if (g_x_rtdup == 8) {
+                    P_sp_owe = 1; P_sp_slot = i; P_sp_capture = 1; P_nsp = 0;
+                    static int r8; if (r8++ < 8) VKLOG("RT_DUP mode 8: slot %d repeats slot %d's image; dropped, re-rendered in a second pass", i, owner);
+                    continue;
+                }
+                uint32_t sly = S.rt_has_cview[owner] && S.rt_cview[owner].set_layers ? S.rt_cview[owner].min_layer : 0;
+                uint32_t dly = S.rt_has_cview[i] && S.rt_cview[i].set_layers ? S.rt_cview[i].min_layer : 0;
+                if (sly != dly && P_ndupcopy < 8) {
+                    P_dupcopy[P_ndupcopy].im = im; P_dupcopy[P_ndupcopy].src_ly = sly; P_dupcopy[P_ndupcopy].dst_ly = dly; P_dupcopy[P_ndupcopy].w = iw; P_dupcopy[P_ndupcopy].h = ih; P_ndupcopy++;
+                    static int r6; if (r6++ < 8) VKLOG("RT_DUP mode 6: slot %d repeats slot %d's image; layer %u copied from layer %u after the pass", i, owner, dly, sly);
+                } else { static int r6b; if (r6b++ < 8) VKLOG("RT_DUP mode 6: slot %d repeats slot %d's image (same layer %u); UNUSED", i, owner, dly); }
+                continue;
+            }
+        }
+        // Mode 4: drop the last colour slot, aliased or not: separates "six attachments corrupt the tile store" from "the alias corrupts it".
+        if (g_x_rtdup == 4 && i == S.rt_n - 1) { static int reports4; if (reports4++ < 8) VKLOG("RT_DUP mode 4: last colour slot %d UNUSED", i); continue; }
+        // Mode 5: drop the second-to-last colour slot (neither aliased nor sampled): isolates the attachment-count hypothesis.
+        if (g_x_rtdup == 5 && i == S.rt_n - 2) { static int reports5; if (reports5++ < 8) VKLOG("RT_DUP mode 5: colour slot %d UNUSED", i); continue; }
+        VkImageView use_v = v; vkimg_t *use_im = im; uint32_t use_fmt = vk_view_fmt;
+        if ((g_x_rtalias || g_x_rtmaxcol) && g_x_rtdup != 8) {
+            int owner = -1; for (int j = 0; j < i; j++) if (P_att[j].im == im && ca[j].imageView) { owner = j; break; }
+            int force = g_x_rtmaxcol && ord >= g_x_rtmaxcol;
+            if ((owner >= 0 || force) && P_nalias < 8) {
+                uint32_t nly = vk_view_layers ? vk_view_layers : 1; vkimg_t *sim; VkImage si;
+                VkFormat sfmt = g_x_rtaliasfmt ? (VkFormat)g_x_rtaliasfmt : (VkFormat)vk_view_fmt;
+                VkImageView sv = alias_scratch(i, cb, sfmt, iw, ih, nly, &sim, &si);
+                if (sv) {
+                    uint32_t ly0 = S.rt_has_cview[i] && S.rt_cview[i].set_layers ? S.rt_cview[i].min_layer : 0;
+                    P_alias[P_nalias].dst = im; P_alias[P_nalias].src = si; P_alias[P_nalias].ly = ly0; P_alias[P_nalias].nly = nly; P_alias[P_nalias].w = iw; P_alias[P_nalias].h = ih; P_alias[P_nalias].fmt = (uint32_t)sfmt; P_nalias++;
+                    use_v = sv; use_im = sim; use_fmt = (uint32_t)sfmt;
+                    static int reportsA; if (force) VKLOG("RT_MAXCOL: slot %d (ordinal %d) via scratch fmt %u + copy-back", i, ord, (unsigned)sfmt);
+                    else if (owner != 0 || reportsA++ < 64) VKLOG("RT_ALIAS: slot %d shares slot %d's image (layer %u); scratch fmt %u%s", i, owner, ly0, (unsigned)sfmt, sfmt == (VkFormat)vk_view_fmt ? " + copy-back" : " + blit-back");
+                }
+            }
+        }
+        ca[i].imageView = use_v; S.cfmt[i] = use_fmt; P_att[i].im = use_im; P_att[i].oim = im;   // (the view's format: a render pass's attachment and its pipelines take it)
+        ord++;
         // Legacy mode 1 changes only dynamic-rendering store operations.
         // rp_get hardcodes STORE, so mode 1 is not a traditional-render-pass
         // duplicate-attachment test. Mode 2 above tests actual UNUSED slots.
@@ -1787,6 +1913,7 @@ static void vbuf_bound(VkCommandBuffer cb, uint32_t first, uint32_t nvert, uint3
     }
 }
 static void draw(const p_draw *d) {
+    if (P_sp_capture && P_nsp < 16) { P_sp[P_nsp].idxed = 0; P_sp[P_nsp].d = *d; P_nsp++; }
     if (d->mdi_cnt) VKRED_ONCE(52, "multi-draw indirect with a count: drawn once");
     int prim = d->prim;
     // before prepare_draw, whose driver segment carries it (c0 + 0x644): set after it, each draw's segment had the draw before's. An indirect draw's is in GPU memory: 0
@@ -1821,6 +1948,7 @@ static void draw(const p_draw *d) {
     if (!(dbg_draw() & 1) && g_ok) { int xf = xfb_begin(cb); vkCmdDraw(cb, (uint32_t)d->count, inst, (uint32_t)d->first, (uint32_t)d->base_instance); if (xf) xfb_end(cb, prim, (uint32_t)d->count, inst); }
 }
 static void draw_idx(const p_draw_idx *d) {
+    if (P_sp_capture && P_nsp < 16) { P_sp[P_nsp].idxed = 1; P_sp[P_nsp].di = *d; P_nsp++; }
     if (d->mdi_cnt) VKRED_ONCE(55, "multi-draw indirect (indexed) with a count: drawn once");
     int prim = d->prim;
     g_draw_binst = d->ind ? 0 : (uint32_t)d->base_instance;   // before prepare_draw (see draw)
