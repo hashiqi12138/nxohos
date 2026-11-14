@@ -4,8 +4,7 @@
 // SetResultHandledByApplication only write SDK-internal switches and are not taken over.
 #include "hle.h"
 
-// Logged at the first call only: Unity 6's player (Graveyard Keeper 2) calls oe::Initialize again every frame, a log line per frame.
-#define once(what) do { static int seen_; if (!seen_++) LOG("init takeover: %s (no-op)", what); } while (0)
+static void once(const char *what) { LOG("init takeover: %s (no-op)", what); }
 
 HLE_FORCE("nndiagStartup", "connect to the lm log service; the host prints diagnostic logs itself", void, h_nndiagStartup, void) { once("nndiagStartup"); }
 HLE_FORCE("_ZN2nn2oe10InitializeEv", "connect to the am/oe environment services; environment queries are wired one by one to host defaults", void, h_oe_Initialize, void) { once("oe::Initialize"); }

@@ -10,13 +10,14 @@
 #include "front.h"
 #include <math.h>
 #include <pthread.h>
+#include <stdatomic.h>
 enum { F_EMPTY, F_DOWN, F_LIFTED };
 static struct { int st, reported, again; float x, y, ax, ay; } g_f[16];   // again/ax/ay: the same id was pressed again before End went out (the next read reports End first, then the new Start)
 static struct { int down, pend; float x, y; } g_gf[16];   // the gesture recognizer's own view of the fingers; pend: pressed since its last sample (a press and lift between two samples still counts once)
 static pthread_mutex_t g_tl = PTHREAD_MUTEX_INITIALIZER;
 static int64_t g_tsamp; static uint64_t g_tlast_ns;
 
-void dm_touch_set(const dm_touch *t, int n) {
+static void touch_apply(const dm_touch *t, int n) {
     pthread_mutex_lock(&g_tl);
     int seen[16] = {0};
     for (int i = 0; i < n; i++) {
@@ -36,33 +37,33 @@ void dm_touch_set(const dm_touch *t, int n) {
     }
     pthread_mutex_unlock(&g_tl);
 }
-
-int dm_opmode(void);   // hle_oe.c: 0 handheld, 1 console
-static int32_t clampi(float v, int hi) { int32_t r = (int32_t)(v * (float)(hi + 1)); return r < 0 ? 0 : r > hi ? hi : r; }
-// The panel is 1280x720 in both modes. DM_TOUCH_DOCKED=screen (a profile env, Android, where docked play has a touch screen too): in console mode a point is given as
-// the game's own player turns it into a pixel of the 1920x1080 console screen. Unity 2019.4's player takes the panel's values as screen pixels with the panel's flip:
-// main+0x55c5ac stores (x, 720 - y) unscaled in its bottom-up screen space, so in Unpacking a tap at 47% of the height pressed the item at 65% ((360 + y) / 1080). So x is
-// the screen column and y the screen row less 360 (from -360 up: Unity converts the int signed). The Switch never shows this: its screen cannot be touched when docked
-static int touch_docked_screen(void) { static int v = -1; if (v < 0) { const char *e = getenv("DM_TOUCH_DOCKED"); v = e && !strcmp(e, "screen"); } return v && dm_opmode() == 1; }
-static void touch_xy(float nx, float ny, int32_t *x, int32_t *y) {
-    if (!touch_docked_screen()) { *x = clampi(nx, 1279); *y = clampi(ny, 719); return; }
-    *x = clampi(nx, 1919); *y = clampi(ny, 1079) - 360;
+// The front ends' touches (the Mac mouse, the iPhone's screen) go through dm_touch_set, which DM_REC sees (hle_hid.c sets the observer); DM_KEYS and DM_CTL touch through
+// dm_touch_script, which it does not, so a recording never holds scripted input
+void (*_Atomic dm_touch_observer)(const dm_touch *t, int n);
+void dm_touch_set(const dm_touch *t, int n) {
+    touch_apply(t, n);
+    void (*o)(const dm_touch *, int) = atomic_load_explicit(&dm_touch_observer, memory_order_relaxed); if (o) o(t, n);
 }
+void dm_touch_script(const dm_touch *t, int n) { touch_apply(t, n); }
+
+static int32_t clampi(float v, int hi) { int32_t r = (int32_t)(v * (float)(hi + 1)); return r < 0 ? 0 : r > hi ? hi : r; }
 // Fill one TouchScreenState<max> (out is 0x10 + 0x28 · max bytes; max 1–16); now_ns is used for delta_time. Returns the number of touch points written.
-// Fingers beyond max are left for a later read (their Start / End is not used up)
-int touch_fill_n(void *out, int max, uint64_t now_ns) {
+// Fingers beyond max are left for a later read (their Start / End is not used up). points 0 is a read in console mode, when the screen is out of reach: the state
+// has no touch points and the fingers are left as they are, but it takes the next sample number, so the numbers rise from read to read whatever the mode. Unity's
+// touch reader (Aokana main+0xd2bde0) takes a state only if its number is above the last one it took, empty states included
+int touch_fill_n(void *out, int max, uint64_t now_ns, int points) {
     if (max < 1) max = 1; else if (max > 16) max = 16;
     uint8_t *o = out; memset(o, 0, 0x10 + 0x28 * (size_t)max);
     pthread_mutex_lock(&g_tl);
     int64_t samp = ++g_tsamp; int64_t dt = g_tlast_ns ? (int64_t)(now_ns - g_tlast_ns) : 0; g_tlast_ns = now_ns;
     int k = 0;
-    for (int id = 0; id < 16 && k < max; id++) {
+    for (int id = 0; points && id < 16 && k < max; id++) {
         if (g_f[id].st == F_EMPTY) continue;
         uint32_t attr = 0;
         if (!g_f[id].reported) { attr |= 1; g_f[id].reported = 1; }          // Start (reported for the first time this time)
         else if (g_f[id].st == F_LIFTED) attr |= 2;                         // End (Start already reported, already lifted)
         uint8_t *s = o + 0x10 + 0x28 * k++;
-        int32_t x, y, d = 30, zero = 0, fid = id; touch_xy(g_f[id].x, g_f[id].y, &x, &y);
+        int32_t x = clampi(g_f[id].x, 1279), y = clampi(g_f[id].y, 719), d = 30, zero = 0, fid = id;
         memcpy(s + 0x00, &dt, 8); memcpy(s + 0x08, &attr, 4); memcpy(s + 0x0c, &fid, 4);
         memcpy(s + 0x10, &x, 4); memcpy(s + 0x14, &y, 4); memcpy(s + 0x18, &d, 4); memcpy(s + 0x1c, &d, 4); memcpy(s + 0x20, &zero, 4);
         if (attr & 2) {                                                      // End has been reported: release; if the same id was pressed again in the meantime, turn it into a new press
@@ -82,7 +83,7 @@ int touch_fill_n(void *out, int max, uint64_t now_ns) {
     }
     return k;
 }
-int touch_fill(void *out, uint64_t now_ns) { return touch_fill_n(out, 16, now_ns); }   // TouchScreenState<16>, 0x290 bytes
+int touch_fill(void *out, uint64_t now_ns) { return touch_fill_n(out, 16, now_ns, 1); }   // TouchScreenState<16>, 0x290 bytes
 
 // Gestures: nn::hid::GetGestureStates hands the game the newest entries of a gesture recognizer's history (newest first, 16 kept), which Horizon's hid builds from the touch screen.
 // Taiko Risshiden V DX reads its taps, pans and swipes only there (main+0x42f1ac acts on types 5–9; its GetTouchScreenState read only tracks the finger), so its menus took no touch while

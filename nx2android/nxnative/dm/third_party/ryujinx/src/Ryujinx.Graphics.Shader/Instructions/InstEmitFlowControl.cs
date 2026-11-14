@@ -54,12 +54,6 @@ namespace Ryujinx.Graphics.Shader.Instructions
                 }
             }
 
-            // nxnative: the chained form is not used. When the target blocks end by jumping past the later targets (the cases of a switch), the structured program
-            // lost the jumps to the next target: Xenoblade Chronicles 3's movie shader (16653b901bfc4560) picks the byte of a word through a 3-entry jump table in c1,
-            // and its second and third cases became unreachable code (every other pair of pixels unset: vertical stripes over every movie). The sequential branches below
-            // are always correct
-            allTargetsSinglePred = false;
-
             if (allTargetsSinglePred)
             {
                 // Chain blocks, each target block will check if the BRX target address

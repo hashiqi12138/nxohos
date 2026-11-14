@@ -108,7 +108,7 @@ void dm_ohos_game_start(const char *root, const char *save, const char *temp) {
     // the same layout as the Android pack: mods/ holds the rewritten modules (load_modules reads <dir>/<name>.patched.bin)
     snprintf(g_buf[3], sizeof g_buf[3], "%s/mods", root);
     int argc = 2; static char *argv[8]; argv[0] = (char *)"dmhost"; argv[1] = g_buf[3];
-    int dm_main(int, char **);   // host/main.c
-    dm_main(argc, argv);
+    int main(int, char **);   // host/main.c
+    main(argc, argv);
     LOG("front: the game returned");
 }

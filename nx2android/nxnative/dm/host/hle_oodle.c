@@ -9,7 +9,7 @@
 // while they are scanned, about 4.7 GB, so they are never written out). Request: u64 compressed length, u64 decompressed length, the compressed bytes; answer: u64 bytes decoded (0 on failure),
 // then those bytes.
 // Job file: "DMOJ", u32 count, then per record u32 compressed length, u32 raw length and the compressed bytes. Output: "DMOR", u32 count, then per record u32 decoded length
-// (0 = failed; 0xffffffff = left out, no BNSH in it, with DM_OODLE_JOB_BNSH=1) and the decoded bytes.
+// (0 = failed) and the decoded bytes.
 #include "hle.h"
 #include <unistd.h>
 
@@ -157,17 +157,14 @@ void dm_oodle_job_maybe(void) {
     FILE *out = fopen(outp, "wb"); if (!out) die("DM_OODLE_JOB: cannot write %s", outp);
     uint32_t hdr[2] = {0x524f4d44, n}; fwrite(hdr, 4, 2, out);
     size_t scratch_n = 16u << 20; void *scratch = malloc(scratch_n);   // the decoder's work memory, so Oodle never calls its allocator
-    uint32_t bad = 0; uint64_t raw_total = 0; const char *bo = getenv("DM_OODLE_JOB_BNSH"); int bnsh_only = bo && atoi(bo);
+    uint32_t bad = 0; uint64_t raw_total = 0;
     for (uint32_t i = 0; i < n; i++) {
         uint32_t cl = rd32(in), rl = rd32(in);
         uint8_t *c = malloc(cl ? cl : 1), *r = malloc(rl ? rl : 1);
         if (fread(c, 1, cl, in) != cl) die("DM_OODLE_JOB: record %u ends early", i);
         int64_t got = dec_run(c, cl, r, rl, scratch, (int64_t)scratch_n);
         uint32_t ol = got == (int64_t)rl ? rl : 0;
-        if (!ol && rl && bad++ < 8) LOG("[RED] DM_OODLE_JOB: record %u (%u → %u bytes) failed (decoder returned %lld)", i, cl, rl, (long long)got);
-        // DM_OODLE_JOB_BNSH=1: a record that holds no BNSH shader file is written as length 0xffffffff and no bytes (the porter decodes Pokémon Legends: Arceus's GFPAK entries
-        // on the Android device, 3 GB decoded, of which only the shader entries come back)
-        if (ol && bnsh_only && !memmem(r, ol, "BNSH", 4)) { uint32_t none = 0xffffffffu; fwrite(&none, 4, 1, out); free(c); free(r); continue; }
+        if (!ol && bad++ < 8) LOG("[RED] DM_OODLE_JOB: record %u (%u → %u bytes) failed (decoder returned %lld)", i, cl, rl, (long long)got);
         fwrite(&ol, 4, 1, out); if (ol) fwrite(r, 1, ol, out);
         raw_total += ol; free(c); free(r);
     }

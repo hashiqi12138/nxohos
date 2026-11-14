@@ -160,13 +160,6 @@ namespace Ryujinx.Graphics.Shader.Translation
             ThisInputAttributesComponents |= ~UInt128.Zero >> (128 - Constants.MaxAttributes * 4);
         }
 
-        // nxnative: the attributes a passthrough geometry shader forwards when the next stage is not known (TranslatorContext.Translate)
-        public void SetPassthroughWithoutNextStage(int mask)
-        {
-            _nextUsedInputAttributes = mask;
-            PassthroughAttributes = mask & ~UsedOutputAttributes;
-        }
-
         public void SetAllOutputUserAttributes()
         {
             UsedOutputAttributes |= Constants.AllAttributesMask;

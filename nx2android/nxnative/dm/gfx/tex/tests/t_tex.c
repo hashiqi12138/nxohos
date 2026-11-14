@@ -45,7 +45,85 @@ static void roundtrip(const char *tag, int target, int fmt, uint32_t w, uint32_t
     free(st);
 }
 
+// Compare both copy directions against byte addresses, independently of move()'s segment arithmetic.
+// Comparing all storage bytes and padded rows also checks that tails leave unrelated data untouched.
+static void differential(const nvn_texdesc *d, unsigned level, unsigned layer) {
+    uint32_t rb, rows, slices, bpb; uint64_t base; unsigned th, td;
+    int rc = nvn_deswizzle_geom(d, level, layer, &rb, &rows, &slices, &base, &th, &td, &bpb);
+    CHECK(!rc, "D geometry failed"); if (rc) return;
+    nvn_texlayout L; nvn_tex_layout(d, &L);
+    size_t pitch = rb + 1 + (rnd() & 31), nlin = pitch * rows * slices, nst = L.size + 32;
+    uint8_t *storage = malloc(nst), *expected = malloc(nst), *linear = malloc(nlin + 32), *out = malloc(nlin + 32);
+    for (size_t i = 0; i < nst; i++) storage[i] = rnd();
+    memset(linear, 0xAB, nlin + 32); memset(out, 0xAB, nlin + 32);
+    uint32_t lb = nvn_tex_level_gobs(d, level) * 64;
+    if (lb < rb) lb = rb;
+    for (uint32_t z = 0; z < slices; z++) for (uint32_t y = 0; y < rows; y++) for (uint32_t x = 0; x < rb; x++)
+        linear[((size_t)z * rows + y) * pitch + x] = storage[base + nvn_bl_offset(x, y, z, lb, rows, th, td)];
+    CHECK(!nvn_deswizzle(d, level, layer, storage, out, pitch) && !memcmp(linear, out, nlin + 32),
+          "D read differs target %d format %#x flags %#x mip %u layer %u", d->target, d->format, d->flags, level, layer);
+    for (size_t i = 0; i < nlin; i++) linear[i] = rnd();
+    memcpy(expected, storage, nst);
+    for (uint32_t z = 0; z < slices; z++) for (uint32_t y = 0; y < rows; y++) for (uint32_t x = 0; x < rb; x++)
+        expected[base + nvn_bl_offset(x, y, z, lb, rows, th, td)] = linear[((size_t)z * rows + y) * pitch + x];
+    CHECK(!nvn_swizzle(d, level, layer, linear, pitch, storage) && !memcmp(storage, expected, nst),
+          "D write differs target %d format %#x flags %#x mip %u layer %u", d->target, d->format, d->flags, level, layer);
+    CHECK(nvn_swizzle(d, level, layer, linear, rb - 1, storage) == -1 && !memcmp(storage, expected, nst),
+          "D short source pitch accepted");
+    CHECK(nvn_deswizzle(d, level, layer, storage, out, rb - 1) == -1,
+          "D short destination pitch accepted");
+    free(storage); free(expected); free(linear); free(out);
+}
+
+static void differential_shapes(void) {
+    static const int formats[] = {0x01, 0x0D, 0x19, 0x1D, 0x22, 0x25, 0x29, 0x2E, 0x42, 0x44, 0x82, 0x85};
+    static const int targets[] = {0, 1, 2, 3, 4, 7, 8, 9};
+    static const uint32_t widths[] = {1, 3, 7, 15, 16, 17, 31, 32, 33, 63, 64, 65, 127, 129};
+    unsigned cases = 0;
+    for (unsigned i = 0; i < 256; i++) {
+        nvn_texdesc d = {0};
+        d.target = targets[i % 8]; d.format = formats[(i / 8) % 12];
+        d.width = widths[rnd() % 14]; d.height = 1 + rnd() % 65; d.depth = 1 + rnd() % 9; d.levels = 4;
+        if (d.target == 3) d.height = 3;
+        if (d.target == 9) d.depth = 12;
+        if ((i / 8) & 1) d.pkg_layout = 1 + (rnd() % 4) + (d.target == 2 ? (rnd() % 3) * 16 : 0);
+        if ((i / 16) & 1) d.flags = 0x20;
+        nvn_texlayout L; nvn_tex_layout(&d, &L);
+        for (unsigned l = 0; l < d.levels; l++) {
+            differential(&d, l, L.layers - 1); cases++;
+        }
+    }
+    // Sparse levels wide enough for padded GOB columns, followed by their mip tails.
+    nvn_texdesc sparse = {1, 0x7D, 0x20, 0, 1024, 1024, 1, 5, 0, 0};
+    for (unsigned l = 0; l < sparse.levels; l++) { differential(&sparse, l, 0); cases++; }
+    printf("  D %u layouts: both directions equal byte-address oracle, including pitch padding and tails\n", cases);
+}
+
 int main(void) {
+    printf("D differential copy checks\n");
+    differential_shapes();
+    printf("L linear render targets without the separate LINEAR flag\n");
+    {
+        // Persona 5 Royal asks for 16x16 RGBA8, flags 0x44, stride 128: 2 KB,
+        // including row padding. Treating it as block-linear returned only 1 KB.
+        nvn_texdesc d = {1, 0x25, 0x44, 0, 16, 16, 1, 1, 128, 0};
+        nvn_texlayout L; nvn_tex_layout(&d, &L);
+        CHECK(L.size == 2048 && L.layer_size == 2048 && L.align == 128,
+              "L render target storage %llu alignment %u, expected 2048 / 128", (unsigned long long)L.size, L.align);
+        CHECK(nvn_tex_level_gobs(&d, 0) == 0 && nvn_tex_level_offset(&d, 0) == 0,
+              "L linear render target must not have block-linear GOB columns");
+        uint8_t storage[2048] = {0}, pixels[1024] = {0};
+        CHECK(nvn_deswizzle(&d, 0, 0, storage, pixels, 64) == -1,
+              "L linear render target must not be deswizzled");
+        d.stride = 0; nvn_tex_layout(&d, &L);
+        CHECK(L.size == 2048 && L.align == 128, "L implicit render target stride must align to 128");
+        d.flags |= 0x10; nvn_tex_layout(&d, &L);
+        CHECK(L.size == 2048 && L.align == 128, "L both linear flags must keep render target alignment");
+        d.flags = 0x10; nvn_tex_layout(&d, &L);
+        CHECK(L.size == 1024 && L.align == 32, "L ordinary linear texture keeps 32-byte alignment");
+        d.flags = 0x44; d.stride = 256; nvn_tex_layout(&d, &L);
+        CHECK(L.size == 4096, "L explicit padded stride must be preserved");
+    }
     printf("A round trip (random data, non-power-of-2 sizes)\n");
     roundtrip("2D 100×37 R8 4 levels", 1, 0x01, 100, 37, 1, 4);
     roundtrip("2D 100×37 RG8 4 levels", 1, 0x0D, 100, 37, 1, 4);
@@ -77,6 +155,18 @@ int main(void) {
         CHECK(got == B[i].want, "B%u got %llu expected %llu", i, (unsigned long long)got, (unsigned long long)B[i].want);
         printf("  B%u (%u,%u,%u) → %llu %s  %s\n", i, B[i].x, B[i].y, B[i].z, (unsigned long long)got, got == B[i].want ? "✓" : "✗", B[i].how);
     }
+    // The Switch 2's order inside a GOB (nvn_deswizzle.h): bits 5 and 6 of the offset exchanged, x%32/16 at 64 and y%4/2 at 32. Where only one of the two is set the orders differ
+    printf("B2 address formula, the Switch 2's order inside a GOB: (x%%64/32)·256 + (y%%8/4)·128 + (x%%32/16)·64 + (y%%4/2)·32 + (y%%2)·16 + x%%16\n");
+    struct { uint32_t x, y; uint64_t want, x1; } B2[] = {{16, 0, 64, 32}, {0, 2, 32, 64}, {21, 5, 213, 181}, {17, 3, 113, 113}, {70, 9, 1558, 1558}};
+    nvn_gob_switch2 = 1;
+    for (unsigned i = 0; i < sizeof B2 / sizeof *B2; i++) {
+        uint64_t got = nvn_bl_offset(B2[i].x, B2[i].y, 0, 128, 32, 1, 0);
+        CHECK(got == B2[i].want, "B2 (%u,%u) got %llu expected %llu", B2[i].x, B2[i].y, (unsigned long long)got, (unsigned long long)B2[i].want);
+        printf("  B2 (%u,%u) → %llu %s (the X1's order: %llu)\n", B2[i].x, B2[i].y, (unsigned long long)got, got == B2[i].want ? "✓" : "✗", (unsigned long long)B2[i].x1);
+    }
+    nvn_gob_switch2 = 0;
+    for (unsigned i = 0; i < sizeof B2 / sizeof *B2; i++)
+        CHECK(nvn_bl_offset(B2[i].x, B2[i].y, 0, 128, 32, 1, 0) == B2[i].x1, "B2 (%u,%u) in the X1's order expected %llu", B2[i].x, B2[i].y, (unsigned long long)B2[i].x1);
 
     // ---------- E hand-built 3D: place markers into block-linear storage at hand-calculated addresses, decode, and verify where the markers land (round trip A only proves self-consistency, not whether the layout is right) ----------
     // Source of the block height / block depth rule: deko3d dk_image.cpp - for 3D textures block height is fixed at 1 GOB, block depth = pickTileSize(depth + depth/2).
@@ -111,6 +201,34 @@ int main(void) {
         printf("  E 32³ RGBA16F (the shape of a 32³ color lookup table) block height/depth %u/%u, storage %llu (expected 0/4, 262144)\n", L.tileH, L.tileD, (unsigned long long)L.size);
     }
 
+    // Packaged 32³ RGBA8: markers computed independently with block height/depth 0/0 or 2/1.
+    // For byte 0x12, (20,11,3) is at depth block 8192 + column 4096 + GOB 2560 + intra-GOB 112 = 14960.
+    // For byte 0x00, the same voxel is at slice 12288 + row 1024 + column 512 + intra-GOB 112 = 13936.
+    printf("E packaged 3D block dimensions and mip reductions\n");
+    for (unsigned c = 0; c < 2; c++) {
+        nvn_texdesc d = {2, 0x25, 0, 0, 32, 32, 32, 3, 0, c ? 0x13 : 1};
+        nvn_texlayout L; nvn_tex_layout(&d, &L);
+        CHECK(L.size == 151552, "E packaged storage %llu expected 151552", (unsigned long long)L.size);
+        for (unsigned l = 0; l < 3; l++) {
+            unsigned th, td; nvn_tex_level_tiles(&d, l, &th, &td);
+            CHECK(th == (c ? 2 - l : 0) && td == (c ? 1 : 0),
+                  "E packaged byte %#x mip %u block %u/%u", d.pkg_layout - 1, l, th, td);
+        }
+        CHECK(nvn_tex_level_offset(&d, 1) == 131072 && nvn_tex_level_offset(&d, 2) == 147456,
+              "E packaged mip offsets must be 131072 / 147456");
+        static const uint32_t xyz[3][3] = {{20,11,3}, {5,2,1}, {31,31,31}};
+        static const uint64_t addr[2][3] = {{13936,4196,131068}, {14960,2148,131068}};
+        uint8_t *st = calloc(L.size, 1), *lin = calloc(131072, 1);
+        for (unsigned i = 0; i < 3; i++) for (unsigned k = 0; k < 4; k++) st[addr[c][i] + k] = (uint8_t)(i * 16 + k + 1);
+        CHECK(!nvn_deswizzle(&d, 0, 0, st, lin, 128), "E packaged deswizzle failed");
+        for (unsigned i = 0; i < 3; i++) {
+            const uint8_t *p = lin + ((size_t)xyz[i][2] * 32 + xyz[i][1]) * 128 + xyz[i][0] * 4;
+            int ok = 1; for (unsigned k = 0; k < 4; k++) ok &= p[k] == (uint8_t)(i * 16 + k + 1);
+            CHECK(ok, "E packaged byte %#x marker %u at %llu decoded at the wrong voxel", d.pkg_layout - 1, i, (unsigned long long)addr[c][i]);
+        }
+        free(st); free(lin);
+    }
+
     // ---------- S sparse layout: Monster Hunter Rise's streamed 1024×1024 ASTC 6×6 sRGB textures (flag SPARSE, packaged block height 8 GOBs), level 0 checked against the game's data ----------
     // A 64 KB tile is 16 GOBs × 8 GOBs here. Level 0 (171 block columns = 43 GOBs) is padded to 48 GOBs × 3 block rows = 9 tiles: its dumped data decodes with no all-zero block that way
     // (2,183 unpadded). Level 1 (86 = 22 GOBs → 32, 2 block rows) is 4 tiles; level 2 (43 block columns, less than a tile's 64) starts the mip tail, packed as before; storage in whole tiles
@@ -126,6 +244,38 @@ int main(void) {
         d.flags = 0; nvn_tex_layout(&d, &L);   // the same texture not sparse keeps the packed layout
         CHECK(nvn_tex_level_offset(&d, 1) == 0x81000 && L.size == 0xBC400 && nvn_tex_level_gobs(&d, 0) == 43, "S not sparse: level 1 %#llx storage %#llx, expected 0x81000 / 0xbc400",
               (unsigned long long)nvn_tex_level_offset(&d, 1), (unsigned long long)L.size);
+    }
+
+    // ---------- P pick: every step-th block of every step-th block row (nvn_deswizzle_pick), against the level decoded whole, in both GOB orders ----------
+    printf("P pick (every step-th block, against the whole level)\n");
+    for (int sw2 = 0; sw2 < 2; sw2++) {
+        nvn_gob_switch2 = sw2;
+        static const struct { int target, fmt; uint32_t w, h, depth, levels; unsigned level, layer; uint32_t step; } c[] = {
+            {1, 0x4D, 1048, 1088, 1, 1, 0, 0, 17}, {4, 0x50, 524, 544, 3, 1, 0, 2, 9}, {1, 0x42, 256, 256, 1, 9, 1, 0, 4}, {1, 0x25, 64, 40, 1, 1, 0, 0, 2}, {1, 0x25, 200, 320, 1, 3, 2, 0, 3}, {4, 0x4B, 2448, 3056, 2, 1, 0, 1, 48}};
+        for (unsigned k = 0; k < sizeof c / sizeof c[0]; k++) {
+            nvn_texdesc d = {c[k].target, c[k].fmt, 0, 0, c[k].w, c[k].h, c[k].depth, c[k].levels, 0, 0};
+            nvn_texlayout L; nvn_tex_layout(&d, &L);
+            uint8_t *st = malloc(L.size); for (uint64_t i = 0; i < L.size; i++) st[i] = rnd();
+            uint32_t rb, rows, sl; dims(&d, c[k].level, &rb, &rows, &sl);
+            int bw, bh, bpb = nvn_fmt_bpb(d.format, &bw, &bh); uint32_t bx = rb / (uint32_t)bpb, nx = bx / c[k].step, ny = rows / c[k].step;
+            uint8_t *lin = malloc((size_t)rb * rows), *got = malloc((size_t)nx * ny * (size_t)bpb + 16); memset(got + (size_t)nx * ny * (size_t)bpb, 0xAB, 16);
+            CHECK(!nvn_deswizzle(&d, c[k].level, c[k].layer, st, lin, rb), "P case %u decode failed", k);
+            CHECK(!nvn_deswizzle_pick(&d, c[k].level, c[k].layer, st, c[k].step, got, nx, ny), "P case %u pick failed", k);
+            int ok = 1;
+            for (uint32_t j = 0; j < ny; j++) for (uint32_t i = 0; i < nx; i++)
+                ok &= !memcmp(got + ((size_t)j * nx + i) * (size_t)bpb, lin + (size_t)(j * c[k].step + c[k].step / 2) * rb + (size_t)(i * c[k].step + c[k].step / 2) * (size_t)bpb, (size_t)bpb);
+            for (int i = 0; i < 16; i++) ok &= got[(size_t)nx * ny * (size_t)bpb + (size_t)i] == 0xAB;
+            CHECK(ok && nx && ny, "P case %u (GOB order %d): %ux%u format %#x level %u layer %u step %u: a picked block is not the level's", k, sw2, c[k].w, c[k].h, c[k].fmt, c[k].level, c[k].layer, c[k].step);
+            free(st); free(lin); free(got);
+        }
+    }
+    nvn_gob_switch2 = 0;
+    {   // refused: a block size that is not 1, 2, 4, 8 or 16 bytes (RGB8), a 3D texture, step 0
+        uint8_t st[4096] = {0}, out[64];
+        nvn_texdesc rgb = {1, 0x19, 0, 0, 8, 8, 1, 1, 0, 0}, vol = {2, 0x25, 0, 0, 8, 8, 4, 1, 0, 0}, ok8 = {1, 0x25, 0, 0, 8, 8, 1, 1, 0, 0};
+        int bw, bh; CHECK(nvn_fmt_bpb(0x19, &bw, &bh) == 3, "P format 0x19 (RGB8) is expected to be 3 bytes a texel");
+        CHECK(nvn_deswizzle_pick(&rgb, 0, 0, st, 2, out, 4, 4) == -1 && nvn_deswizzle_pick(&vol, 0, 0, st, 2, out, 4, 4) == -1 && nvn_deswizzle_pick(&ok8, 0, 0, st, 0, out, 4, 4) == -1
+              && !nvn_deswizzle_pick(&ok8, 0, 0, st, 2, out, 4, 4), "P pick refuses a 3-byte block, a 3D texture and step 0, and takes RGBA8");
     }
 
     printf("%s: %d/%d checks passed\n", fails ? "RED" : "all passed", checks - fails, checks);

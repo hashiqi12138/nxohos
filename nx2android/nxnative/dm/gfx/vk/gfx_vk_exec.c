@@ -8,8 +8,18 @@
 #include <math.h>
 #include <stdbool.h>
 #include <string.h>
+#include <stdio.h>
 #include <sys/resource.h>
 #include <unistd.h>
+
+// OHOS port: the refactor branch's crash helpers, mapped to main's crash.c. The pipeline-build note becomes the dump hook;
+// a thread's name comes from /proc (main's crash.c has no per-thread name lookup).
+static void crash_add_note_hook(void (*fn)(void)) { extern void crash_set_dump_hook(void (*)(void)); crash_set_dump_hook(fn); }
+static void crash_thread_name(unsigned tid, char *out, size_t n) {
+    char p[64]; snprintf(p, sizeof p, "/proc/self/task/%u/comm", tid); out[0] = 0;
+    FILE *f = fopen(p, "r"); if (f) { if (fgets(out, (int)n, f)) out[strcspn(out, "\n")] = 0; fclose(f); }
+    if (!out[0]) snprintf(out, n, "?");
+}
 
 VkPipelineLayout vk_pipeline_layout(VkDescriptorSetLayout sets[5], int nsets);
 void vk_shader_c1(vkshader_t *s, VkBuffer *buf, VkDeviceSize *off, VkDeviceSize *len);
@@ -1831,12 +1841,6 @@ static void tf_state(const p_tf_state *t) {
     }
 }
 static void draw(const p_draw *d);
-static void draw_tf(const p_draw_tf *t) {
-    int i = tf_ctl_slot(t->ctl, 0);
-    if (i < 0) { VKRED_ONCE(86, "DrawTransformFeedback with a control buffer no capture ended into (%#llx): nothing drawn", (unsigned long long)t->ctl); return; }
-    p_draw d = {t->prim, 0, (int32_t)g_tf_ctl[i].verts, 1, 0, 0, 0, 0, 0};
-    if (d.count) draw(&d);
-}
 static void trace_draw(const char *kind, int prim, uint32_t count, uint32_t inst, int itype) {
     VKLOG("draw: %s prim %d count %u instances %u itype %d; shaders %016llx %016llx %016llx; targets %d (formats %d %d %d %d) depth format %d samples %u, pass %ux%u; viewport %.0f %.0f %.0f %.0f; streams:",
           kind, prim, count, inst, itype, (unsigned long long)(S.sh[0] ? S.sh[0]->key : 0), (unsigned long long)(S.sh[1] ? S.sh[1]->key : 0), (unsigned long long)(S.sh[2] ? S.sh[2]->key : 0),
@@ -2303,11 +2307,10 @@ static void bind_handles_rec(uint32_t op, const void *a) {
     for (int i = 0; i < b->n; i++) {
         int slot = b->first + i;
         uint64_t *d = NULL;
-        uint64_t *q = NULL;
-        if (op == OP_BIND_TEX || op == OP_BIND_TEX1) { if (slot >= 0 && slot < 256) { d = &S.tex[st][slot]; q = &S.tex_sseq[st][slot]; } }
-        else if (op == OP_BIND_SAMP) { if (slot >= 0 && slot < 128) { d = &S.samp[st][slot]; q = &S.samp_sseq[st][slot]; } }
+        if (op == OP_BIND_TEX || op == OP_BIND_TEX1) { if (slot >= 0 && slot < 256) d = &S.tex[st][slot]; }
+        else if (op == OP_BIND_SAMP) { if (slot >= 0 && slot < 128) d = &S.samp[st][slot]; }
         else if (op == OP_BIND_IMG) { if (slot >= 0 && slot < 32) d = &S.img[st][slot]; }
-        if (d && (*d != b->h[i] || (q && *q != b->sseq))) { *d = b->h[i]; if (q) *q = b->sseq; g_bind_gen[st]++; }   // only a change counts: games bind the same handles again before many draws (stage_set's memo)
+        if (d && *d != b->h[i]) { *d = b->h[i]; g_bind_gen[st]++; }   // only a change counts: games bind the same handles again before many draws (stage_set's memo)
     }
 }
 uint32_t g_sub_ops[64];   // record ops replayed in the open submission, by op (logged when the driver refuses it)
@@ -2428,7 +2431,6 @@ static void exec_ops(const uint8_t *p) {
         case OP_COPY_T2T: copy_t2t((const p_copy_t2t *)a); break;
         case OP_CLEAR_TEX: clear_tex((const p_clear_tex *)a); break;
         case OP_RENDER_COND: render_cond((const p_render_cond *)a); break;   // recorded only with the profile key render_cond (hle_nvn.c)
-        case OP_DRAW_TF: if (!g_rc_skip) draw_tf((const p_draw_tf *)a); break;
         case OP_TF_BIND: { const p_tf_bind *b = (const p_tf_bind *)a; if (b->index >= 0 && b->index < 4) g_tf[b->index] = *b; break; }
         case OP_TF_STATE: if (!V.has_xfb) VKRED_ONCE(80, "transform feedback: the device has none, its draws write nothing"); tf_state((const p_tf_state *)a); break;
         case OP_VP_SWIZZLE: { const p_vp_swizzle *b = (const p_vp_swizzle *)a; memcpy(S.vp_sw[b->first], b->sw, 4 * (size_t)b->n); break; }

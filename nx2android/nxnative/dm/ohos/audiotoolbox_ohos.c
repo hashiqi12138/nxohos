@@ -109,6 +109,17 @@ OSStatus AudioOutputUnitStop(AudioUnit u) {
 }
 OSStatus AudioUnitUninitialize(AudioUnit u) { close_stream(u); return noErr; }
 OSStatus AudioComponentInstanceDispose(AudioComponentInstance u) { if (u) { close_stream(u); free(u); } return noErr; }
+// Mac DefaultOutput device tuning has no OHOS counterpart: no device object to query (GetProperty fails, so hle_audio.c's
+// au_buffer leaves the renderer's default buffer), and no property change notifications (the listeners are kept silent).
+OSStatus AudioUnitGetProperty(AudioUnit u, AudioUnitPropertyID id, AudioUnitScope scope, AudioUnitElement el, void *data, UInt32 *size) {
+    (void)u; (void)id; (void)scope; (void)el; (void)data; (void)size; return -1;
+}
+OSStatus AudioUnitAddPropertyListener(AudioUnit u, AudioUnitPropertyID id, AudioUnitPropertyListenerProc proc, void *ctx) {
+    (void)u; (void)id; (void)proc; (void)ctx; return noErr;
+}
+OSStatus AudioUnitRemovePropertyListenerWithUserData(AudioUnit u, AudioUnitPropertyID id, AudioUnitPropertyListenerProc proc, void *ctx) {
+    (void)u; (void)id; (void)proc; (void)ctx; return noErr;
+}
 
 // ---- AudioConverter: not yet (the AAC decoder is AudioConverter over MediaCodec on Android; HarmonyOS's AVCodec is M2/M3 work) ----
 // hle_movie.c and hle_audio.c's AAC path then get no PCM; a game whose soundtrack is AAC plays silently, everything else is unaffected.

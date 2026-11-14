@@ -1,0 +1,60 @@
+--- a/host/dm.h
++++ b/host/dm.h
+@@ -41,7 +41,29 @@
+ }
+ #endif
+ #define LOG(...) dm_log("[dm] " __VA_ARGS__)
++#if defined(DM_OHOS)   // OHOS apps have no readable stderr: route the host log to hilog (ohos/ohos_log.c), which the cloud console exports
++void dm_ohos_logv(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
++#undef LOG
++#define LOG(...) dm_ohos_logv("[dm] " __VA_ARGS__)
++#endif
+ #define die(...) do { LOG("FATAL " __VA_ARGS__); abort(); } while (0)
++
++// Object-format differences for inline assembly and registration tables (ELF instead of Mach-O on OHOS).
++// DM_ASM_SYM(name): a C symbol as assembly names it; DM_ASM_PAGE / DM_ASM_PAGEOFF: the adrp / add operands for its address; DM_ASM_PRIVATE: a global symbol
++// kept inside the image. DM_SECTION(name): a registration table section, found again by getsectiondata (on ELF the linker bounds it with __start_ / __stop_ symbols)
++#if defined(__APPLE__)
++#define DM_ASM_SYM(n) "_" n
++#define DM_ASM_PAGE(n) "_" n "@PAGE"
++#define DM_ASM_PAGEOFF(n) "_" n "@PAGEOFF"
++#define DM_ASM_PRIVATE ".private_extern"
++#define DM_SECTION(s) section("__DATA," s)
++#else
++#define DM_ASM_SYM(n) n
++#define DM_ASM_PAGE(n) n
++#define DM_ASM_PAGEOFF(n) ":lo12:" n
++#define DM_ASM_PRIVATE ".hidden"
++#define DM_SECTION(s) section(s), retain
++#endif
+ 
+ typedef struct { uint32_t st_name; uint8_t st_info, st_other; uint16_t st_shndx; uint64_t st_value, st_size; } Elf64_Sym;
+ typedef struct { int64_t d_tag; union { uint64_t d_val, d_ptr; } d_un; } Elf64_Dyn;
+@@ -80,7 +102,11 @@
+     uint64_t image_size, file_image_len, patch_len;   // only with the patch area before the base: whole image (with bss and key page), length of the image part of the file, patch area length
+     uint64_t back_off, back_len;   // a second patch area after the image (patch_nso.py TWO: a text longer than a B reaches), inside size; 0 = none
+     char build_id[33];         // First 16 bytes of the NSO build ID (hex); empty for older build outputs
++#if defined(DM_OHOS)
++    unsigned key_idx[5];       // key page index of each thread slot (K18, KTLS, KTLR, KGATE; OHOS adds TPOFF)
++#else
+     unsigned key_idx[4];       // key page index of each thread slot (K18, KTLS, KTLR, KGATE)
++#endif
+     const Elf64_Dyn *dyn;
+     const Elf64_Sym *symtab;
+     const char *strtab;
+@@ -104,6 +130,15 @@
+ static inline const char *dm_main_build(void) { for (int i = 0; i < g_nmod; i++) if (!strcmp(g_mod[i].name, "main")) return g_mod[i].build_id; return ""; }
+ // Four thread-local slots: K18 = the Switch's x18, KTLS = tpidr_el0, KTLR = tpidrro_el0 (ThreadLocalRegion), KGATE = host gate entry; the actual key numbers are written into the key page by the loader
+ extern pthread_key_t g_key18, g_keytls, g_keytlr, g_keygate;
++// The guest thread slots the rewritten code reads (patch_nso.py emit_tp): Darwin TSD keys on Apple; on OHOS the slots are a thread-local array of this
++// library, reached through the key page's TPOFF entry (musl owns tpidr_el0 and has no app slot), see loader.c
++#if defined(__APPLE__)
++#define dm_tsd_set(k, v) pthread_setspecific((k), (v))
++#define dm_tsd_get(k) pthread_getspecific(k)
++#else
++void dm_tsd_set(pthread_key_t k, const void *v);
++void *dm_tsd_get(pthread_key_t k);
++#endif
+ 
+ void load_modules(const char *dir, const char **names, int n);
+ const char *dm_module_dir(void);   // the folder load_modules read the modules and the rewriter's tables from (the cheat engine reads main.changed.tsv there)

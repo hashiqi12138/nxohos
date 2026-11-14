@@ -1,6 +1,6 @@
 // Probes DM_PROBE: when the debugger needs a system authorization prompt on the Mac, use this to print registers and a backtrace at a guest address.
 #include "dm.h"
-#include "dm_uc.h"
+#include "dm_uc.h"   // DM_UC_SS / DM_UC_V: the signal context's registers, the same on Apple and OHOS
 #include <TargetConditionals.h>
 #include <signal.h>
 #include <dlfcn.h>
@@ -23,7 +23,7 @@ void crash_set_trap_hook(int (*fn)(ucontext_t *uc));
 // The trampoline borrows x16: place probes only at function entries or at points where x16 is dead; the original instruction must not be PC-relative (adr/adrp/b/bl/ldr literal/cbz...).
 #define MAX_PROBE 16
 typedef void (*probe_fn)(ucontext_t *uc);
-static struct { uint64_t at; uint32_t *slot; unsigned hits; char name[40]; long dump, dpost; probe_fn fn; int freg; long foff; uint64_t fval; int hreg; } g_probe[MAX_PROBE];   // dpost: @*xN+off+dpost
+static struct { uint64_t at; uint32_t *slot; unsigned hits, seen; char name[40]; long dump, dpost; probe_fn fn; int freg; long foff; uint64_t fval; int hreg; } g_probe[MAX_PROBE];   // dpost: @*xN+off+dpost
 
 // !xN: treat xN as a sead::ExpHeap and print its free and used blocks (block size at block +0x18, alignment pad at +0x12). Settings (docs/agents/05-debugging.md):
 // DM_PROBE_HEAP=<name>,<start>,<size>,<free list>,<used list> layout by sead version (hex; node offset at list +0x14), default SMBW 0,28,30,b0,c8 (no name), BotW 28,38,40,e0,f8;
@@ -78,6 +78,9 @@ static void probe_heapwalk(uint64_t h) {
     }
 }   // dump: on hit print 16 bytes at [x0+dump] (-1 = do not print); fn: dedicated handler (replaces the default print)
 static int g_nprobe;
+static uint64_t g_probe_frame_first, g_probe_frame_last = UINT64_MAX;
+static unsigned g_probe_limit, g_probe_every;   // DM_PROBE_LIMIT printed hits per probe; DM_PROBE_EVERY=N every hit counts, every N-th prints (#N is then the true hit count: rates)
+uint64_t dm_guest_frame(void);
 static void probe_str(uint64_t p) {
     char buf[80]; vm_size_t got = 0;
     if (p < 0x1000 || vm_read_overwrite(mach_task_self(), p, sizeof buf - 1, (vm_address_t)buf, &got) || !got) return;
@@ -108,8 +111,12 @@ static void probe_dump_once(void) {
 static int probe_hit(ucontext_t *uc) {   // Registered by probe_install with the SIGTRAP branch of crash.c
     uint64_t pc = DM_UC_SS(uc)->__pc;
     for (int i = 0; i < g_nprobe; i++) if (g_probe[i].at == pc) {
-        probe_dump_once();
         if (g_probe[i].fn) { g_probe[i].hits++; g_probe[i].fn(uc); DM_UC_SS(uc)->__pc = (uint64_t)g_probe[i].slot; return 1; }
+        uint64_t frame = dm_guest_frame();
+        if (g_probe_every && frame >= g_probe_frame_first && frame <= g_probe_frame_last && ++g_probe[i].seen % g_probe_every) { DM_UC_SS(uc)->__pc = (uint64_t)g_probe[i].slot; return 1; }
+        if (frame < g_probe_frame_first || frame > g_probe_frame_last || (g_probe_limit && g_probe[i].hits >= g_probe_limit)) {
+            DM_UC_SS(uc)->__pc = (uint64_t)g_probe[i].slot; return 1;
+        }
         if (g_probe[i].freg >= 0) {   // ?xN=value / ?[xN+offset]=value: pass through silently when it does not match
             uint64_t v = DM_UC_SS(uc)->__x[g_probe[i].freg]; vm_size_t g = 0;
             if (g_probe[i].foff >= 0 && vm_read_overwrite(mach_task_self(), v + g_probe[i].foff, 8, (vm_address_t)&v, &g)) v = ~g_probe[i].fval;
@@ -119,11 +126,12 @@ static int probe_hit(ucontext_t *uc) {   // Registered by probe_install with the
             char nm[128]; probe_heapname(DM_UC_SS(uc)->__x[g_probe[i].hreg], nm, sizeof nm);
             if (!strstr(nm, g_hw.want)) { DM_UC_SS(uc)->__pc = (uint64_t)g_probe[i].slot; return 1; }
         }
+        probe_dump_once();
         flockfile(stderr);   // One block per hit when threads hit at once
-        { extern uint64_t g_t0_ns; uint64_t now_ns(void); uint32_t thr_cur_handle(void); fprintf(stderr, "[dm] PROBE %s #%u [%.4fs] T=%x", g_probe[i].name, ++g_probe[i].hits, (now_ns() - g_t0_ns) / 1e9, thr_cur_handle()); }
+        { extern uint64_t g_t0_ns; uint64_t now_ns(void); uint32_t thr_cur_handle(void); ++g_probe[i].hits; fprintf(stderr, "[dm] PROBE %s #%u [%.4fs] F=%llu T=%x", g_probe[i].name, g_probe_every ? g_probe[i].seen : g_probe[i].hits, (now_ns() - g_t0_ns) / 1e9, (unsigned long long)frame, thr_cur_handle()); }
         for (int r = 0; r < 8; r++) { uint64_t v = DM_UC_SS(uc)->__x[r]; fprintf(stderr, " x%d=%#llx", r, v); probe_str(v); }
         for (int r = 19; r < 24; r++) fprintf(stderr, " x%d=%#llx", r, DM_UC_SS(uc)->__x[r]);
-        if (getenv("DM_PROBE_ALL")) for (int r = 9; r < 19; r++) fprintf(stderr, " x%d=%#llx", r, DM_UC_SS(uc)->__x[r]);   // also print x9–x18
+        if (getenv("DM_PROBE_ALL")) for (int r = 8; r < 19; r++) fprintf(stderr, " x%d=%#llx", r, DM_UC_SS(uc)->__x[r]);   // also print x8–x18
         fprintf(stderr, " lr=%#llx", DM_UC_SS(uc)->__lr);
         { uint64_t x8 = DM_UC_SS(uc)->__x[8]; Dl_info di; fprintf(stderr, " x8=%#llx", x8);   // x8: indirect call targets are often here (probe placed before blr x8)
           if (dladdr((void *)x8, &di) && di.dli_sname) fprintf(stderr, " (%s+%#lx)", di.dli_sname, (unsigned long)(x8 - (uint64_t)di.dli_saddr)); }
@@ -186,7 +194,7 @@ static void watch_where(const char *tag, uint64_t a) {
 static uint64_t watch_val(void) { uint64_t v = 0; memcpy(&v, (void *)g_wat, g_wlen < 8 ? g_wlen : 8); return v; }
 // Decode the store at pc: its address, size and data (up to 64 bytes); the base register write-back (wb: register number, value) for pre- and post-index forms. 0 when not a decodable store
 static int watch_decode(ucontext_t *uc, uint32_t in, uint64_t *ea, unsigned *len, uint8_t *data, int *wb, uint64_t *wbv) {
-    _STRUCT_ARM_THREAD_STATE64 *ss = DM_UC_SS(uc); __uint128_t *nsv = (__uint128_t *)DM_UC_V(uc);
+    _STRUCT_ARM_THREAD_STATE64 *ss = DM_UC_SS(uc);
 #define XN(r) ((r) == 31 ? ss->__sp : (r) == 29 ? ss->__fp : (r) == 30 ? ss->__lr : ss->__x[r])        // base register: 31 = sp
 #define XT(r) ((r) == 31 ? 0 : (r) == 29 ? ss->__fp : (r) == 30 ? ss->__lr : ss->__x[r])                // data register: 31 = zero
     unsigned rt = in & 31, rn = (in >> 5) & 31, v = (in >> 26) & 1; *wb = -1;
@@ -199,7 +207,7 @@ static int watch_decode(ucontext_t *uc, uint32_t in, uint64_t *ea, unsigned *len
         int64_t imm = ((int64_t)(int32_t)(in << 10) >> 25) * (int64_t)sz; uint64_t base = XN(rn);
         *ea = type == 1 ? base : base + imm; *len = 2 * sz;
         unsigned r2 = (in >> 10) & 31;
-        if (v) { memcpy(data, &nsv[rt], sz); memcpy(data + sz, &nsv[r2], sz); }
+        if (v) { memcpy(data, &DM_UC_V(uc)[rt], sz); memcpy(data + sz, &DM_UC_V(uc)[r2], sz); }
         else { uint64_t a = XT(rt), b = XT(r2); memcpy(data, &a, sz); memcpy(data + sz, &b, sz); }
         if (type == 1 || type == 3) { *wb = (int)rn; *wbv = base + imm; }
         return 1;
@@ -221,7 +229,7 @@ static int watch_decode(ucontext_t *uc, uint32_t in, uint64_t *ea, unsigned *len
             addr = base + (s ? x << __builtin_ctz(sz) : x);
         }
         *ea = addr; *len = sz;
-        if (v) memcpy(data, &nsv[rt], sz); else { uint64_t a = XT(rt); memcpy(data, &a, sz); }
+        if (v) memcpy(data, &DM_UC_V(uc)[rt], sz); else { uint64_t a = XT(rt); memcpy(data, &a, sz); }
         return 1;
     }
     return 0;
@@ -230,7 +238,7 @@ static int watch_decode(ucontext_t *uc, uint32_t in, uint64_t *ea, unsigned *len
 }
 static int watch_fault(void *addr, int is_write, void *ucv) {
     uint64_t a = (uint64_t)addr;
-    if (!is_write || a < g_wpg || a >= g_wpg + g_wpsz) return 0;
+    if (!is_write || !g_wat || a < g_wpg || a >= g_wpg + g_wpsz) return 0;
     ucontext_t *uc = ucv; uint64_t pc = DM_UC_SS(uc)->__pc, ea = 0, wbv = 0; unsigned len = 0; int wb = -1; uint8_t data[64];
     if (g_walias && watch_decode(uc, *(uint32_t *)pc, &ea, &len, data, &wb, &wbv)) {
         int hit = ea < g_wat + g_wlen && ea + len > g_wat; uint64_t old = hit ? watch_val() : 0;
@@ -273,10 +281,16 @@ static int watch_fault(void *addr, int is_write, void *ucv) {
     mprotect((void *)g_wpg, g_wpsz, PROT_READ | PROT_WRITE); atomic_store(&g_warmed, 0);
     return 1;
 }
+static uint64_t g_wrel; static int g_wheap;   // heap+<offset>: the address is that far past the guest heap's base, resolved once the game opens its heap
 static void *watch_arm(void *p) {
     (void)p;
     for (;;) {
-        if (!atomic_load(&g_warmed)) {
+        if (g_wheap && !g_wat) {
+            uint64_t hb = 0; dm_guest_heap_range(&hb, NULL); if (!hb) { usleep(1000); continue; }
+            g_wpg = (hb + g_wrel) & ~(g_wpsz - 1); g_wat = hb + g_wrel;
+            LOG("write watch on heap %#llx + %#llx = %#llx", (unsigned long long)hb, (unsigned long long)g_wrel, (unsigned long long)g_wat);
+        }
+        if (g_wat && !atomic_load(&g_warmed)) {
             mach_vm_address_t ra = g_wpg; mach_vm_size_t rs = 0; vm_region_basic_info_data_64_t bi; mach_msg_type_number_t cnt = VM_REGION_BASIC_INFO_COUNT_64; mach_port_t obj;
             if (!mach_vm_region(mach_task_self(), &ra, &rs, VM_REGION_BASIC_INFO_64, (vm_region_info_t)&bi, &cnt, &obj) && ra <= g_wpg && (bi.protection & VM_PROT_WRITE)) {
                 if (!g_walias) {   // a second, writable mapping of the same page, for the handler's stores
@@ -292,8 +306,9 @@ static void *watch_arm(void *p) {
 }
 // DM_PROBE_POLL=<address>[+<length>] (hex guest address, up to 8 bytes, 4 by default): when even the watch above misses a write (a page that atomics keep unprotected), a host thread spins on
 // the bytes and, on each change, prints old → new and dumps every guest thread with its backtrace (svc_thread_dump, the first 8 changes): the writer is still inside the code that wrote.
-// Tears of the Kingdom's memory-shortage flag (a word its frame check compares with 1 and clears) lies on such a page
-static uint64_t g_poll, g_plen;
+// Tears of the Kingdom's memory-shortage flag (a word its frame check compares with 1 and clears) lies on such a page. A suffix =<value> (hex) snapshots and dumps only the changes to that value,
+// for a word that changes thousands of times before the bad store (Mario vs. Donkey Kong: a heap block's list link, rewritten by every allocation beside it, until 0x3f landed in it)
+static uint64_t g_poll, g_plen, g_pval; static int g_pwant, g_pheap, g_palias;
 // All threads but this one stopped at once, then their pc, lr and 8 frame-pointer frames read and printed after they run again: the writer is caught a few microseconds after its store
 static void poll_snap(void) {
     enum { MT = 256, NF = 8 }; static uint64_t fr[MT][NF + 2]; static thread_act_t keep[MT];
@@ -323,38 +338,78 @@ static void poll_snap(void) {
 static void *poll_run(void *p) {
     (void)p; void svc_thread_dump(void); extern uint64_t g_t0_ns; uint64_t now_ns(void); vm_size_t got;
     uint64_t old = 0;   // read through the kernel: the address is not readable until the game maps it (the heap before SetHeapSize)
+    if (g_pheap) { uint64_t hb = 0; while (dm_guest_heap_range(&hb, NULL), !hb) usleep(1000); g_poll += hb; }   // heap+<offset>
+    if (g_palias) { void svc_alias_range(uint8_t **base, size_t *size); uint8_t *ab = NULL; size_t as = 0; while (svc_alias_range(&ab, &as), !ab) usleep(1000); g_poll += (uint64_t)(uintptr_t)ab; }   // alias+<offset>: memory the game maps in its alias region (PRAGMATA's physical pools)
     while (vm_read_overwrite(mach_task_self(), g_poll, g_plen, (vm_address_t)&old, &got) || got != g_plen) usleep(1000);
     LOG("POLL %#llx + %llu armed, value %#llx", (unsigned long long)g_poll, (unsigned long long)g_plen, (unsigned long long)old);
     for (int n = 0;;) {
         uint64_t v = 0;
         if (vm_read_overwrite(mach_task_self(), g_poll, g_plen, (vm_address_t)&v, &got) || v == old) continue;
-        if (n < 8) poll_snap();
+        int hit = !g_pwant || v == g_pval;
+        if (hit && n < 8) poll_snap();
         fprintf(stderr, "[dm] POLL %#llx [%.4fs] %#llx → %#llx\n", (unsigned long long)g_poll, (now_ns() - g_t0_ns) / 1e9, (unsigned long long)old, (unsigned long long)v);
         old = v;
-        if (n++ < 2) svc_thread_dump();
+        if (hit && n++ < 2) svc_thread_dump();
     }
     return NULL;
 }
 static void watch_install(void) {
     { const char *e = getenv("DM_PROBE_POLL");
-      if (e) { char *end; g_poll = strtoull(e, &end, 16); g_plen = *end == '+' ? strtoull(end + 1, 0, 16) : 4;
-               if (!g_poll || !g_plen || g_plen > 8) die("DM_PROBE_POLL format: <address>[+<length up to 8>] (hex)");
+      if (e) { char *end; g_pheap = !strncmp(e, "heap+", 5); if (g_pheap) e += 5; g_palias = !strncmp(e, "alias+", 6); if (g_palias) e += 6; g_poll = strtoull(e, &end, 16); g_plen = *end == '+' ? strtoull(end + 1, &end, 16) : 4;
+               if (*end == '=') { g_pwant = 1; g_pval = strtoull(end + 1, 0, 16); }
+               if ((!g_poll && !g_pheap && !g_palias) || !g_plen || g_plen > 8) die("DM_PROBE_POLL format: [heap+|alias+]<address>[+<length up to 8>][=<value>] (hex)");
                pthread_t t; pthread_create(&t, NULL, poll_run, NULL); pthread_detach(t); } }
     const char *e = getenv("DM_PROBE_WATCH"); if (!e) return;
-    char *end; g_wat = strtoull(e, &end, 16); g_wlen = *end == '+' ? strtoull(end + 1, 0, 16) : 8;
-    if (!g_wat || !g_wlen) die("DM_PROBE_WATCH format: <address>[+<length>] (hex)");
-    g_wpsz = (uint64_t)getpagesize(); g_wpg = g_wat & ~(g_wpsz - 1);
-    if (g_wat + g_wlen > g_wpg + g_wpsz) die("DM_PROBE_WATCH: the watched bytes must lie in one host page");
+    char *end; g_wheap = !strncmp(e, "heap+", 5);
+    uint64_t at = strtoull(e + (g_wheap ? 5 : 0), &end, 16); g_wlen = *end == '+' ? strtoull(end + 1, 0, 16) : 8;
+    if ((!at && !g_wheap) || !g_wlen) die("DM_PROBE_WATCH format: [heap+]<address>[+<length>] (hex)");
+    g_wpsz = (uint64_t)getpagesize();
+    if ((at & (g_wpsz - 1)) + g_wlen > g_wpsz) die("DM_PROBE_WATCH: the watched bytes must lie in one host page");
+    if (g_wheap) { g_wrel = at; g_wpg = 0; } else { g_wat = at; g_wpg = g_wat & ~(g_wpsz - 1); }
     dm_fault_hook_register(watch_fault);
     pthread_t t; pthread_create(&t, NULL, watch_arm, NULL); pthread_detach(t);
-    LOG("write watch on %#llx + %#llx (host page %#llx)", (unsigned long long)g_wat, (unsigned long long)g_wlen, (unsigned long long)g_wpg);
+    if (g_wheap) LOG("write watch on heap + %#llx + %#llx (resolved once the game opens its heap)", (unsigned long long)g_wrel, (unsigned long long)g_wlen);
+    else LOG("write watch on %#llx + %#llx (host page %#llx)", (unsigned long long)g_wat, (unsigned long long)g_wlen, (unsigned long long)g_wpg);
 }
 
 #endif
 
+// DM_CTL atrace <hex address> <bytes> (hle_hid.c): the range made inaccessible; the first access to each page after that logs who made it (pc / lr as module offsets, read or write)
+// and opens the page again. Tells which code reads memory the GPU writes (PRAGMATA: the culling chain's results, read back by the game). Up to 64 ranges, 64 lines in all.
+// Mac and iOS: only mprotect and the page fault hooks (crash.c), as nvn_dirty.c's write tracking; hle_hid.c's DM_CTL reader calls it on both
+static struct { uint64_t lo, hi; } g_at[64]; static _Atomic int g_atn, g_atlog;
+static int atrace_fault(void *addr, int is_write, void *uc_) {
+    uint64_t a = (uint64_t)(uintptr_t)addr; int n = atomic_load(&g_atn);
+    for (int i = 0; i < n; i++) if (a >= g_at[i].lo && a < g_at[i].hi) {
+        uint64_t pg = (uint64_t)getpagesize(), p = a & ~(pg - 1);
+        mprotect((void *)(uintptr_t)p, pg, PROT_READ | PROT_WRITE);
+        if (atomic_fetch_add(&g_atlog, 1) < 64) { ucontext_t *uc = uc_; char b[256]; int k = snprintf(b, sizeof b, "[dm] atrace %s %#llx (range %d +%#llx):", is_write ? "write" : "read", (unsigned long long)a, i, (unsigned long long)(a - g_at[i].lo));
+            uint64_t at[2] = {DM_UC_SS(uc)->__pc, DM_UC_SS(uc)->__lr};
+            for (int j = 0; j < 2; j++) { module_t *m = module_of((void *)(uintptr_t)at[j]); k += m ? snprintf(b + k, sizeof b - k, " %s=%s+%#llx", j ? "lr" : "pc", m->name, (unsigned long long)(at[j] - (uint64_t)(uintptr_t)m->base)) : snprintf(b + k, sizeof b - k, " %s=%#llx", j ? "lr" : "pc", (unsigned long long)at[j]); }
+            b[k++] = '\n'; if (write(2, b, (size_t)k) < 0) {} }
+        return 1;
+    }
+    return 0;
+}
+void probe_atrace(uint64_t lo, uint64_t n) {
+    static int hooked; if (!hooked) { hooked = 1; dm_fault_hook_register(atrace_fault); }
+    int i = atomic_load(&g_atn); if (i >= 64 || !n) { LOG("atrace: 64 ranges at most"); return; }
+    uint64_t pg = (uint64_t)getpagesize(); lo &= ~(pg - 1); n = (n + pg - 1) & ~(pg - 1);
+    g_at[i].lo = lo; g_at[i].hi = lo + n; atomic_store(&g_atn, i + 1);
+    int r = mprotect((void *)(uintptr_t)lo, n, PROT_NONE);
+    LOG("DM_CTL: atrace range %d %#llx + %#llx armed%s", i, (unsigned long long)lo, (unsigned long long)n, r ? " (mprotect failed)" : "");
+}
 void probe_install(void) {
 #if !TARGET_OS_IPHONE
     crash_set_trap_hook(probe_hit);
+    const char *frames = getenv("DM_PROBE_FRAMES");
+    if (frames) {
+        char *end; g_probe_frame_first = strtoull(frames, &end, 10);
+        g_probe_frame_last = *end == '-' ? strtoull(end + 1, NULL, 10) : g_probe_frame_first;
+    }
+    const char *limit = getenv("DM_PROBE_LIMIT");
+    if (limit) g_probe_limit = (unsigned)strtoul(limit, NULL, 10);
+    if ((limit = getenv("DM_PROBE_EVERY"))) g_probe_every = (unsigned)strtoul(limit, NULL, 10);
     const char *e = getenv("DM_PROBE");
     if (e) {
         char spec[512]; strlcpy(spec, e, sizeof spec);

@@ -43,11 +43,6 @@ sys_resource	0x1000000
 # The map cursor moves with the D-pad (the tutorial battle was played with it on the Mac); the 3D layout has one
 pad_layout	full
 
-# ---- Frame rate ----
-# 60 fps in battle too (30 there on the Switch): Unity's render frame interval, which the game sets to 2 in battle, is written as 1 (hle_fpslock.c). The game asks for present interval 1,
-# and Unity's update loop runs every frame either way, so the game's speed stays (Legion Y700, 2026-10-28: the first training battle at 60 fps, 0 frames dropped)
-fps_target	60
-
 # ---- Shader split ----
 shader_groups	/Data/=data
 shader_note	Advance Wars 1+2: Re-Boot Camp shaders

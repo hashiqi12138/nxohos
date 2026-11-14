@@ -19,7 +19,11 @@ ap.add_argument('--keep-going', action='store_true')
 ap.add_argument('-O', default='2')
 ap.add_argument('--gfx', default='vk', choices=('vk', 'null'))
 ap.add_argument('--release', action='store_true')
+ap.add_argument('--sync', action='store_true', help='reset shared files to upstream main and re-apply ohos/patches before building (build-time patch apply)')
+ap.add_argument('--upstream-dir', help='an extracted upstream dm/ for --sync (skips the fetch)')
 a = ap.parse_args()
+if a.sync:
+    subprocess.run([sys.executable, str(DM / 'tools/sync_upstream.py'), '--apply'] + (['--upstream-dir', a.upstream_dir] if a.upstream_dir else []), check=True)
 if not (a.exe or a.lib): a.exe = a.lib = True
 
 # ---- toolchain -----------------------------------------------------------------------------------------------------------------------------
@@ -70,7 +74,7 @@ for sh in sorted((DM / 'gfx/vk/shaders').glob('*.*')):
     hdr.write_text(f'// generated from dm/gfx/vk/shaders/{sh.name} by build_ohos.py (glslc)\nstatic const uint32_t {sh.stem}_{sh.suffix[1:]}_spv[] = {{{words}}};\n')
 
 def srcs(*globs): return [p for g in globs for p in sorted(DM.glob(g))]
-HOST = [p for p in srcs('host/*.c') if p.name not in ('hle_movie_avc.c',)]   # dm/ohos/movie_avc_ohos.c instead
+HOST = [p for p in srcs('host/*.c') if p.name not in ('hle_movie_avc.c', 'hle_cheats.c', 'hle_movie_av1.c')]   # OHOS stubs in dm/ohos: movie_avc_ohos.c, cheats_stub_ohos.c, movie_av1_stub_ohos.c
 GFX = srcs('gfx/*.c', 'gfx/nvn/*.c', 'gfx/tex/*.c')
 # the platform-neutral Vulkan replay backend (dm/gfx/vk); only its present/window file is OHOS-specific (dm/ohos/gfx_vk_present_ohos.c)
 VKB = srcs('gfx/vk/gfx_common.c', 'gfx/vk/gfx_vk_core.c', 'gfx/vk/gfx_vk_exec.c', 'gfx/vk/gfx_vk_shader.c', 'gfx/vk/gfx_vk_tex.c')

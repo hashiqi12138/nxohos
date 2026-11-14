@@ -298,7 +298,8 @@ void vk_window_lost(void) { pthread_mutex_lock(&g_present_mu); swap_destroy(); a
 // the XComponent's surface changed size (or was recreated): rebuild the swapchain on the next present
 void dm_ohos_window_resized(void) { atomic_store(&g_lost, 1); pthread_mutex_lock(&g_present_mu); swap_destroy(); pthread_mutex_unlock(&g_present_mu); }
 
-uint64_t mtl_present(const tex_t *t, double period, const int crop[4]) {
+uint64_t mtl_present(const tex_t *t, double period, const int crop[4], uint64_t *copy) {
+    if (copy) *copy = 0;   // no present snapshot on this port: mtl_present_wait_texture falls back to mtl_present_wait
     vk_init();
     { uint64_t vk_replay_ns(void); double vk_gpu_ms_recent(void);
       static uint64_t last_exec; uint64_t ex = vk_replay_ns(), rp = ex - last_exec; last_exec = ex;

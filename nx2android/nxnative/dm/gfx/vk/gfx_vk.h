@@ -19,6 +19,11 @@
 #include "nvn_obj.h"
 #include "nvn_mtl.h"
 
+// render-condition counter notes: a per-game profile key the OHOS porter does not emit; off (the counter field keeps its timestamp)
+#ifndef DM_GAME_RENDER_COND
+#define DM_GAME_RENDER_COND 0
+#endif
+
 #define VKLOG(...) LOG("[vk] " __VA_ARGS__)
 #define VKRED_ONCE(id, ...) do { static int once_##id; if (!once_##id++) LOG("[RED] [vk] " __VA_ARGS__); } while (0)
 #define VKCHK(x) do { VkResult r_ = (x); if (r_ < 0) die("[vk] %s failed: %d", #x, r_); } while (0)

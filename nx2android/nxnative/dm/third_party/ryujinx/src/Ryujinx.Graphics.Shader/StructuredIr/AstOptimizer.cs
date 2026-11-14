@@ -1,5 +1,4 @@
 using Ryujinx.Graphics.Shader.IntermediateRepresentation;
-using Ryujinx.Graphics.Shader.Translation;
 using System.Collections.Generic;
 using System.Linq;
 
@@ -9,7 +8,7 @@ namespace Ryujinx.Graphics.Shader.StructuredIr
 {
     static class AstOptimizer
     {
-        public static void Optimize(StructuredProgramContext context, TargetLanguage targetLanguage)
+        public static void Optimize(StructuredProgramContext context)
         {
             AstBlock mainBlock = context.CurrentFunction.MainBlock;
 
@@ -25,9 +24,7 @@ namespace Ryujinx.Graphics.Shader.StructuredIr
                     {
                         bool isWorthPropagating = propVar.Uses.Count == 1 || IsWorthPropagating(assignment.Source);
 
-                        // nxnative: a call's arguments stay the locals StructuredProgram copied them to (SPIR-V passes them by pointer). Propagated, the call
-                        // kept a local whose declaration was removed (KeyNotFoundException in CodeGen/Spirv GetLocalPointer: 1,894 shaders of Viractal)
-                        if (propVar.Defs.Count == 1 && isWorthPropagating && !UsedByCall(propVar))
+                        if (propVar.Defs.Count == 1 && isWorthPropagating)
                         {
                             PropagateExpression(propVar, assignment.Source);
                         }
@@ -42,20 +39,7 @@ namespace Ryujinx.Graphics.Shader.StructuredIr
                 }
             }
 
-            RemoveEmptyBlocks(mainBlock, targetLanguage);
-        }
-
-        private static bool UsedByCall(AstOperand propVar)
-        {
-            foreach (IAstNode use in propVar.Uses)
-            {
-                if (use is AstOperation operation && operation.Inst == Instruction.Call)
-                {
-                    return true;
-                }
-            }
-
-            return false;
+            RemoveEmptyBlocks(mainBlock);
         }
 
         private static bool IsWorthPropagating(IAstNode source)
@@ -100,7 +84,7 @@ namespace Ryujinx.Graphics.Shader.StructuredIr
             }
         }
 
-        private static void RemoveEmptyBlocks(AstBlock mainBlock, TargetLanguage targetLanguage)
+        private static void RemoveEmptyBlocks(AstBlock mainBlock)
         {
             Queue<AstBlock> pending = new();
 
@@ -145,10 +129,7 @@ namespace Ryujinx.Graphics.Shader.StructuredIr
                         parent.Remove(block);
                     }
                 }
-                // nxnative: not for SPIR-V. Its generator branches from an If only into an Else that follows it, never into an ElseIf, so the else-if's whole branch
-                // became unreachable code. Xenoblade Chronicles 3's volumetric cloud shaders (6a3bebeab80d95cb, fabb0ef84521a927) lost a loop's exit that way and
-                // spun until the GPU was reset (device lost on Adreno, a few seconds into the title)
-                else if (targetLanguage != TargetLanguage.Spirv && isIf && parent.Type == AstBlockType.Else && parent.Count == (hasElse ? 2 : 1))
+                else if (isIf && parent.Type == AstBlockType.Else && parent.Count == (hasElse ? 2 : 1))
                 {
                     AstBlock parentOfParent = parent.Parent;
 

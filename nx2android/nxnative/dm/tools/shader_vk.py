@@ -12,7 +12,7 @@ import argparse, collections, concurrent.futures as cf, hashlib, json, os, re, s
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-TOOLS = HERE.parent.parent / 'gfx/tools'
+TOOLS = HERE.parent / 'gfx/tools'
 sys.path.insert(0, str(TOOLS))
 import dmsh_facts, dmsh_chain   # noqa: E402  (DM_GAME picks the profile)
 

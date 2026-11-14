@@ -45,6 +45,13 @@ typedef struct { UInt32 componentType, componentSubType, componentManufacturer, 
 #define kAudioDevicePropertyBufferFrameSize 0x6673697A   /* 'fsiz': a requested buffer size in frames, a hint to AAudio */
 #define kAudioOutputUnitProperty_EnableIO 2003
 #define kAudioConverterDecompressionMagicCookie 0x646D6763   /* 'dmgc' */
+// Mac DefaultOutput device-buffer tuning (hle_audio.c au_buffer, !TARGET_OS_IPHONE). OHOS has no device object: GetProperty
+// reports failure so au_buffer leaves the buffer at the renderer's own default; the property listeners are no-ops.
+typedef UInt32 AudioDeviceID;
+#define kAudioObjectUnknown 0
+#define kAudioOutputUnitProperty_CurrentDevice 2004
+#define kAudioDevicePropertyBufferFrameSizeRange 0x6673726E   /* 'fsrn' */
+typedef struct { Float64 mMinimum, mMaximum; } AudioValueRange;
 
 typedef struct dm_audio_unit *AudioUnit, *AudioComponentInstance;
 typedef struct dm_audio_component *AudioComponent;
@@ -59,6 +66,10 @@ OSStatus AudioUnitInitialize(AudioUnit u);
 OSStatus AudioUnitUninitialize(AudioUnit u);
 OSStatus AudioOutputUnitStart(AudioUnit u);
 OSStatus AudioOutputUnitStop(AudioUnit u);
+typedef void (*AudioUnitPropertyListenerProc)(void *ctx, AudioUnit u, AudioUnitPropertyID id, AudioUnitScope scope, AudioUnitElement el);
+OSStatus AudioUnitGetProperty(AudioUnit u, AudioUnitPropertyID id, AudioUnitScope scope, AudioUnitElement el, void *data, UInt32 *size);
+OSStatus AudioUnitAddPropertyListener(AudioUnit u, AudioUnitPropertyID id, AudioUnitPropertyListenerProc proc, void *ctx);
+OSStatus AudioUnitRemovePropertyListenerWithUserData(AudioUnit u, AudioUnitPropertyID id, AudioUnitPropertyListenerProc proc, void *ctx);
 
 typedef struct dm_audio_converter *AudioConverterRef;
 typedef OSStatus (*AudioConverterComplexInputDataProc)(AudioConverterRef c, UInt32 *packets, AudioBufferList *data, AudioStreamPacketDescription **desc, void *ref);

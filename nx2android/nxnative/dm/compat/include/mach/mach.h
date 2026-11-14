@@ -4,6 +4,7 @@
 #pragma once
 #include <stdint.h>
 #include <stddef.h>
+#include <unistd.h>
 #include <sys/types.h>
 #include <mach/mach_time.h>
 #include <mach/thread_policy.h>
@@ -36,6 +37,8 @@ typedef uint32_t natural_t; typedef int32_t integer_t;
 #define VM_FLAGS_ANYWHERE 0x1
 #define VM_FLAGS_OVERWRITE 0x4000
 #define VM_INHERIT_NONE 2
+#define VM_INHERIT_SHARE 1
+#define vm_page_size ((vm_size_t)sysconf(_SC_PAGESIZE))
 #define VM_PROT_NONE 0
 #define VM_PROT_READ 1
 #define VM_PROT_WRITE 2
@@ -54,6 +57,7 @@ kern_return_t vm_remap(task_t target, vm_address_t *addr, vm_size_t size, vm_add
                        vm_prot_t *cur, vm_prot_t *max, vm_inherit_t inherit);
 kern_return_t mach_vm_remap(task_t target, mach_vm_address_t *addr, mach_vm_size_t size, mach_vm_address_t mask, int flags, task_t src_task, mach_vm_address_t src,
                             boolean_t copy, vm_prot_t *cur, vm_prot_t *max, vm_inherit_t inherit);
+kern_return_t mach_vm_protect(task_t task, mach_vm_address_t addr, mach_vm_size_t size, boolean_t set_max, vm_prot_t prot);
 
 // ---- vm_region: from /proc/self/maps ----
 #define VM_REGION_BASIC_INFO_64 9
@@ -72,6 +76,9 @@ typedef struct { time_value_t user_time, system_time; integer_t cpu_usage, polic
 #define THREAD_EXTENDED_INFO 5
 typedef struct { uint64_t pth_user_time, pth_system_time; int32_t pth_cpu_usage, pth_policy, pth_run_state, pth_flags, pth_sleep_time, pth_curpri, pth_priority, pth_maxpriority; char pth_name[64]; } thread_extended_info_data_t;
 #define THREAD_EXTENDED_INFO_COUNT ((mach_msg_type_number_t)(sizeof(thread_extended_info_data_t) / sizeof(int)))
+#define THREAD_IDENTIFIER_INFO 4
+typedef struct { uint64_t thread_id, thread_handle, dispatch_qaddr; } thread_identifier_info_data_t;
+#define THREAD_IDENTIFIER_INFO_COUNT ((mach_msg_type_number_t)(sizeof(thread_identifier_info_data_t) / sizeof(int)))
 kern_return_t thread_info(thread_act_t t, thread_flavor_t flavor, thread_info_t out, mach_msg_type_number_t *count);
 
 // ---- task_info: resident size from /proc/self/statm; no power accounting (KERN_FAILURE) ----

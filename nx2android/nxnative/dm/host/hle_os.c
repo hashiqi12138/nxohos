@@ -54,6 +54,17 @@ static int detclock_cfg(void) {
 }
 static uint64_t wall_guest_ns(void) { return atomic_load(&g_gfz) ? atomic_load(&g_gfrozen) : now_ns() - atomic_load(&g_glag); }
 uint64_t guest_ns(void) { return atomic_load(&g_gdet_on) ? atomic_load(&g_gdet) : wall_guest_ns(); }
+int guest_clock_pinned(void) { return atomic_load(&g_gdet_on) || atomic_load(&g_gfz); }
+uint64_t guest_ns_at_host_time(uint64_t host_ns) {
+    if (atomic_load(&g_gdet_on)) return atomic_load(&g_gdet);
+    if (atomic_load(&g_gfz)) return atomic_load(&g_gfrozen);
+    uint64_t lag = atomic_load(&g_glag);
+    return host_ns >= lag ? host_ns - lag : 0;
+}
+// The system counter on that clock: 19.2 MHz on the Switch, 31.25 MHz (32 ns a tick) on the Switch 2, whose SDK reads cntpct_el0 and converts with that rate
+// (nn::os::GetSystemTickFrequency answers 0x1dcd650, sdk 20.5.19 Ounce). Read at 19.2 MHz, every tick span a Switch 2 game measured came out 1.63 times too short, and the
+// same clock's GPU timestamps 1.63 times too late: Donkey Kong Bananza's frame-rate controller took its frame for seconds long and held it at 20 fps (present interval 3)
+uint64_t guest_ticks(void) { return dm_sdk_ounce() ? guest_ns() / 32 : guest_ns() * 12 / 625; }
 int dm_detclock_enabled(void) { return detclock_cfg() && atomic_load(&g_gdet_on); }
 void dm_guest_frame_tick(void) {
     crash_watch_frame();
@@ -77,7 +88,10 @@ static pthread_mutex_t g_gfz_mu = PTHREAD_MUTEX_INITIALIZER; static unsigned g_g
 // frames as its period, got 0, and the next frame's loop that steps by it (main+0x9abd0) never ended. Guest reads of the system counter (the cntpct gate, svc GetSystemTick) wait while
 // the app is in the background (reason 1); host work (dm_host_work: inside a submit or present, which the graphics suspend waits for) reads the frozen clock, as do the other reasons
 static pthread_cond_t g_gfz_cv = PTHREAD_COND_INITIALIZER; static _Atomic int g_gfz_bg;
+// Each read also counts on the reading thread: a run of yields whose passes read the clock is a wait for a time, which the yield back-off sleeps from its start (hle_thread.c thr_yield)
+__thread uint64_t dm_clock_reads;
 void guest_clock_read_wait(void) {
+    dm_clock_reads++;
     if (!atomic_load(&g_gfz_bg) || atomic_load(&dm_host_work)) return;
     pthread_mutex_lock(&g_gfz_mu);
     while (g_gfz_reasons & 2u) pthread_cond_wait(&g_gfz_cv, &g_gfz_mu);
@@ -126,6 +140,7 @@ static void game_env_init(void) {
     char *s = strdup(e); int k = 0;
     for (char *t = strtok(s, " "); t && k < n; t = strtok(NULL, " ")) if (strchr(t, '=')) g_env_kv[k++] = t;
     if (k) LOG("game environment (%s): %s", getenv("DM_GAME_ENV") ? "DM_GAME_ENV" : "game profile game_env", e);
+    else free(s);   // no accepted entry points into the copy
 }
 static const char *const *game_env(void) { static pthread_once_t once = PTHREAD_ONCE_INIT; pthread_once(&once, game_env_init); return g_env_kv; }
 HLE_FORCE("getenv", "the game profile's game_env answers its names; the SDK's own getenv (an empty environ on Horizon) the rest", char *, g_getenv, const char *name) {
@@ -158,85 +173,4 @@ static void sa_init(void) {
 HLE_FORCE("_ZN2nn3mem17StandardAllocator8AllocateEm", "passed straight to the SDK; with the profile's alloc_big_align (13 Sentinels, Unicorn Overlord) allocations ≥ 64 KB are 64 KB aligned (memory pool start)", void *, h_mem_SAAllocate, void *self, size_t size) {
     pthread_once(&g_sa_once, sa_init);
     return g_sa_big_align && size >= 0x10000 ? g_sa_alloc_al(self, size, 0x10000) : g_sa_alloc(self, size);
-}
-
-// Address regions the game's modules take (nn::os::AllocateAddressRegion / FreeAddressRegion, Unity 6's own memory): passed straight to the SDK and counted. A refused region is
-// invisible to the host otherwise (the SDK's VammManager places regions in the alias region itself, and only the pages mapped into them reach MapPhysicalMemory): Graveyard Keeper 2's
-// Unity allocator got no region about 24 minutes into play, returned null to the Boehm GC's memalign, and the GC aborted (main+0x6cd910) with nothing in the log naming the cause.
-// One line per 256 MB crossed by the bytes reserved or by the highest region end, one red line per refusal (the first 8)
-static Result (*g_ar_alloc)(uint64_t *, size_t), (*g_ar_free)(uint64_t);
-static pthread_once_t g_ar_once = PTHREAD_ONCE_INIT;
-static pthread_mutex_t g_ar_mu = PTHREAD_MUTEX_INITIALIZER;
-static struct { uint64_t a, n; } *g_ar; static int g_nar, g_car; static uint64_t g_ar_bytes, g_ar_top;
-static void ar_init(void) {
-    module_t *ms = NULL; for (int i = 0; i < g_nmod; i++) if (!strcmp(g_mod[i].name, "sdk")) ms = &g_mod[i];
-    g_ar_alloc = ms ? module_sym(ms, "_ZN2nn2os21AllocateAddressRegionEPmm") : NULL;
-    g_ar_free = ms ? module_sym(ms, "_ZN2nn2os17FreeAddressRegionEm") : NULL;
-    if (!g_ar_alloc || !g_ar_free) die("nn::os::AllocateAddressRegion / FreeAddressRegion not found in the SDK");
-}
-void svc_alias_range(uint8_t **base, size_t *size, uint64_t *mapped);   // hle_svc.c
-static void ar_log(const char *what, size_t size, Result r) {   // caller holds g_ar_mu
-    uint8_t *al; size_t ac; uint64_t mapped; svc_alias_range(&al, &ac, &mapped);
-    LOG("%s[mem] %s +%#zx%s: %d address regions live, %.2f GB reserved, region ends up to +%.2f GB of the alias region (%.2f GB), %.2f GB mapped", r ? "[RED] " : "", what, size,
-        r ? " refused" : "", g_nar, g_ar_bytes / 1073741824.0, g_ar_top / 1073741824.0, ac / 1073741824.0, mapped / 1073741824.0);
-    if (r) LOG("[RED] [mem] AllocateAddressRegion result %#x (0x1803: no free range that large left in the alias region)", r);
-}
-HLE_FORCE("_ZN2nn2os21AllocateAddressRegionEPmm", "passed straight to the SDK; the regions are counted, and a refusal is logged", Result, h_os_AllocAR, uint64_t *out, size_t size) {
-    pthread_once(&g_ar_once, ar_init);
-    Result r = g_ar_alloc(out, size);
-    pthread_mutex_lock(&g_ar_mu);
-    if (r) { static int nred; if (nred++ < 8) ar_log("AllocateAddressRegion", size, r); }
-    else {
-        if (g_nar == g_car) { int c = g_car ? g_car * 2 : 256; void *nw = realloc(g_ar, (size_t)c * sizeof *g_ar); if (nw) { g_ar = nw; g_car = c; } }
-        if (g_nar < g_car) { g_ar[g_nar].a = *out; g_ar[g_nar].n = size; g_nar++; g_ar_bytes += size; }
-        uint8_t *al; size_t ac; uint64_t mapped; svc_alias_range(&al, &ac, &mapped);
-        uint64_t t0 = g_ar_top, end = *out + size - (uint64_t)(uintptr_t)al;
-        if (end > g_ar_top && end <= ac) g_ar_top = end;
-        if ((g_ar_bytes - size) >> 28 != g_ar_bytes >> 28 || t0 >> 28 != g_ar_top >> 28) ar_log("AllocateAddressRegion", size, 0);
-    }
-    pthread_mutex_unlock(&g_ar_mu);
-    return r;
-}
-// StandardAllocator over more address space than the alias region holds: with virtual address memory a game may initialize its allocator over what the Switch's 64 GB alias region
-// allows (Pokémon Legends: Arceus 1.1.1: Initialize(nullptr, 32 GB) from nninitStartup, main+0x2779d8c; the SDK's AllocateAddressRegion refused it and nninitStartup reached Break at
-// sdk+0x39fb54). With a null address and a size that does not fit, the size becomes what the alias region has room for: less the regions made so far, the SDK's 62 MB node area (the
-// node-area cut, sdk_patches.py) and 256 MB for the regions made after it, in 32 MB steps (upstream's host rule, "StandardAllocators over 12 to 62 GB of address space"). The SDK lays out
-// the region and its CentralHeap from that size, and the pool, not the region, bounds what the heap maps. A request that fits is passed as it is
-static void (*g_sa_init)(void *, void *, size_t), (*g_sa_init_b)(void *, void *, size_t, bool);
-static pthread_once_t g_sa_init_once = PTHREAD_ONCE_INIT;
-static void sa_init_find(void) {
-    module_t *ms = NULL; for (int i = 0; i < g_nmod; i++) if (!strcmp(g_mod[i].name, "sdk")) ms = &g_mod[i];
-    g_sa_init = ms ? module_sym(ms, "_ZN2nn3mem17StandardAllocator10InitializeEPvm") : NULL;
-    g_sa_init_b = ms ? module_sym(ms, "_ZN2nn3mem17StandardAllocator10InitializeEPvmb") : NULL;
-}
-static size_t sa_cap(void *addr, size_t size) {
-    if (addr) return size;
-    uint8_t *al; size_t ac; uint64_t mapped; svc_alias_range(&al, &ac, &mapped);
-    pthread_mutex_lock(&g_ar_mu); uint64_t used = g_ar_bytes; pthread_mutex_unlock(&g_ar_mu);
-    uint64_t keep = used + 0x3e00000 + 0x10000000, room = ac > keep ? (ac - keep) & ~(uint64_t)0x1ffffff : 0;
-    if (size <= room || !room) return size;
-    LOG("[mem] StandardAllocator::Initialize(nullptr, %.2f GB): %.2f GB of address space, what the alias region (%.2f GB) has room for", size / 1073741824.0, room / 1073741824.0, ac / 1073741824.0);
-    return (size_t)room;
-}
-HLE_FORCE("_ZN2nn3mem17StandardAllocator10InitializeEPvm", "passed to the SDK; with virtual address memory, a size the alias region has no room for is lowered to the room there is", void, h_mem_SAInit, void *self, void *addr, size_t size) {
-    pthread_once(&g_sa_init_once, sa_init_find);
-    if (!g_sa_init) die("StandardAllocator::Initialize(void *, size_t) not found in the SDK");
-    g_sa_init(self, addr, sa_cap(addr, size));
-}
-HLE_FORCE("_ZN2nn3mem17StandardAllocator10InitializeEPvmb", "passed to the SDK; with virtual address memory, a size the alias region has no room for is lowered to the room there is", void, h_mem_SAInitB, void *self, void *addr, size_t size, bool cache) {
-    pthread_once(&g_sa_init_once, sa_init_find);
-    if (!g_sa_init_b) die("StandardAllocator::Initialize(void *, size_t, bool) not found in the SDK");
-    g_sa_init_b(self, addr, sa_cap(addr, size), cache);
-}
-HLE_FORCE("_ZN2nn2os17FreeAddressRegionEm", "passed straight to the SDK; the regions are counted", Result, h_os_FreeAR, uint64_t addr) {
-    pthread_once(&g_ar_once, ar_init);
-    Result r = g_ar_free(addr);
-    pthread_mutex_lock(&g_ar_mu);
-    for (int i = 0; i < g_nar; i++) if (g_ar[i].a == addr) {
-        uint64_t b0 = g_ar_bytes, n = g_ar[i].n; g_ar_bytes -= n; g_ar[i] = g_ar[--g_nar];
-        if (b0 >> 28 != g_ar_bytes >> 28) ar_log("FreeAddressRegion", (size_t)n, 0);
-        break;
-    }
-    pthread_mutex_unlock(&g_ar_mu);
-    return r;
 }

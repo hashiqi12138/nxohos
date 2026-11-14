@@ -11,14 +11,6 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
-// The path a descriptor refers to: fcntl(F_GETPATH) on Darwin, the /proc/self/fd link on Linux (Android port)
-static int dm_fd_path(int fd, char *p, size_t n) {
-#if defined(__APPLE__)
-    (void)n; return fcntl(fd, F_GETPATH, p);
-#else
-    char l[32]; snprintf(l, sizeof l, "/proc/self/fd/%d", fd); ssize_t k = readlink(l, p, n - 1); if (k < 0) return -1; p[k] = 0; return 0;
-#endif
-}
 static void *fdstat_main(void *arg) {
     int every = (int)(intptr_t)arg; char prev[1024] = "";
     for (unsigned round = 1;; round++) {

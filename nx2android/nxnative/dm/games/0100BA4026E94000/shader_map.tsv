@@ -1,5 +1,5 @@
-# kind: evidence  Castlevania: Belmont's Curse shaders (provisional profile) (Unity Shader / GLSLC in RomFS + main) → control section + code area keys (dm/gfx/tools/shader_split.py)
-# column 5 records where each key first appears; this game has no PC version to pair with
+# kind: evidence  Castlevania: Belmont's Curse shaders (Unity Shader / GLSLC in RomFS + main) → control section + code area keys (dm/gfx/tools/shader_split.py)
+# column 5 records where each key first appears; no PC shader pairing supplied
 package	index	stage	dm_ctl_sha16	source
 ps_data.bin	0	pixel	2c4f225a95f2be39	/Data/Resources/unity default resources#GUI/Text Shader#var19.3
 vs_data.bin	0	vertex	d600647a2330fbdc	/Data/Resources/unity default resources#GUI/Text Shader#var19.3

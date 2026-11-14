@@ -123,7 +123,17 @@ kern_return_t thread_info(thread_act_t t, thread_flavor_t flavor, thread_info_t 
         xi->pth_curpri = xi->pth_priority = -getpriority(PRIO_PROCESS, (id_t)t);
         return KERN_SUCCESS;
     }
+    if (flavor == THREAD_IDENTIFIER_INFO) {
+        thread_identifier_info_data_t *ii = (thread_identifier_info_data_t *)out; memset(ii, 0, sizeof *ii);
+        ii->thread_id = (uint64_t)t;   // the port is the Linux tid (hle_nvn.c rt_retire compares it against the recorded tid)
+        return KERN_SUCCESS;
+    }
     return KERN_INVALID_ARGUMENT;
+}
+kern_return_t mach_vm_protect(task_t task, mach_vm_address_t addr, mach_vm_size_t size, boolean_t set_max, vm_prot_t prot) {
+    (void)task; (void)set_max;   // no max-protection concept on Linux: mprotect the current protection
+    if (mprotect((void *)(uintptr_t)addr, (size_t)size, prot) != 0) return KERN_PROTECTION_FAILURE;
+    return KERN_SUCCESS;
 }
 kern_return_t task_info(task_t task, task_flavor_t flavor, task_info_t out, mach_msg_type_number_t *count) {
     (void)task; (void)count;
@@ -307,3 +317,23 @@ int sysctl(int *name, unsigned namelen, void *old, size_t *oldlen, void *newp, s
     *oldlen = sizeof *kp; return 0;
 }
 int sysctlbyname(const char *name, void *old, size_t *oldlen, void *newp, size_t newlen) { (void)name; (void)old; (void)oldlen; (void)newp; (void)newlen; errno = ENOENT; return -1; }
+
+// libproc rusage: unavailable on OHOS; the guest-file layer falls back to anonymous memory on failure (hle_svc.c)
+int proc_pid_rusage(int pid, int flavor, rusage_info_t *buffer) { (void)pid; (void)flavor; (void)buffer; errno = ENOTSUP; return -1; }
+
+// ---------------- crt_externs: the executable path and argument vector from /proc/self ----------------
+int _NSGetExecutablePath(char *buf, uint32_t *size) {
+    char tmp[4096]; ssize_t n = readlink("/proc/self/exe", tmp, sizeof tmp - 1);
+    if (n < 0) return -1; tmp[n] = 0;
+    if ((uint32_t)n + 1 > *size) { *size = (uint32_t)n + 1; return -1; }
+    memcpy(buf, tmp, (size_t)n + 1); return 0;
+}
+static char *g_compat_argv[256]; static int g_compat_argc; static int g_compat_argv_done;
+static void compat_argv_init(void) {
+    if (g_compat_argv_done) return; g_compat_argv_done = 1;
+    int fd = open("/proc/self/cmdline", O_RDONLY | O_CLOEXEC); if (fd < 0) return;
+    char b[8192]; ssize_t n = read(fd, b, sizeof b - 1); close(fd); if (n <= 0) return; b[n] = 0;
+    for (char *p = b; p < b + n && g_compat_argc < 255; ) { g_compat_argv[g_compat_argc++] = strdup(p); p += strlen(p) + 1; }
+}
+char ***_NSGetArgv(void) { compat_argv_init(); static char **argvp = g_compat_argv; return &argvp; }
+int *_NSGetArgc(void) { compat_argv_init(); return &g_compat_argc; }

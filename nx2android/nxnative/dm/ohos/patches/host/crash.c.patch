@@ -1,0 +1,84 @@
+--- a/host/crash.c
++++ b/host/crash.c
+@@ -2,6 +2,7 @@
+ // Crash state: prints the faulting address, pc, lr (converted to module-relative offsets) and the registers; dispatches page fault hooks.
+ // Only signal handling itself lives here: diagnostic features (probes / UI messages / sampling) are in diag.c, and this file does not depend on them (the graphics unit tests link only this file).
+ #include "dm.h"
++#include "dm_uc.h"   // DM_UC_SS / DM_UC_ESR: the signal context's registers, the same on Apple and OHOS
+ #include <signal.h>
+ #include <dlfcn.h>
+ #include <sys/ucontext.h>
+@@ -163,7 +164,7 @@
+     ucontext_t *uc = uc_;
+     if (sig == SIGTRAP && g_trap_hook && g_trap_hook(uc)) return;
+     if (sig == SIGSEGV || sig == SIGBUS) {
+-        int is_write = (int)((uc->uc_mcontext->__es.__esr >> 6) & 1);   // The WnR bit of ESR
++        int is_write = (int)((DM_UC_ESR(uc) >> 6) & 1);   // The WnR bit of ESR
+         for (int i = 0; i < g_nfault_hook; i++) if (g_fault_hook[i](si->si_addr, is_write, uc)) return;
+     }
+     crash_gate(sig);
+@@ -172,7 +173,7 @@
+     for (int i = 0; ftrylockfile(stderr); i++) {
+         if (i < 100) { usleep(10000); continue; }
+         char b[256]; int n = snprintf(b, sizeof b, "[dm] CRASH sig=%d (stderr held for 1 s, no dump)", sig);
+-        uint64_t at[2] = {uc->uc_mcontext->__ss.__pc, uc->uc_mcontext->__ss.__lr};
++        uint64_t at[2] = {DM_UC_SS(uc)->__pc, DM_UC_SS(uc)->__lr};
+         for (int k = 0; k < 2; k++) { module_t *m = module_of((void *)at[k]);
+             n += m ? snprintf(b + n, sizeof b - n, " %s=%s+%#llx", k ? "lr" : "pc", m->name, at[k] - (uint64_t)m->base) : snprintf(b + n, sizeof b - n, " %s=%#llx", k ? "lr" : "pc", at[k]); }
+         n += snprintf(b + n, sizeof b - n, "\n");
+@@ -181,13 +182,13 @@
+     }
+     funlockfile(stderr);
+     fprintf(stderr, "[dm] CRASH sig=%d", sig);
+-    off("addr", (uint64_t)si->si_addr); off("pc", uc->uc_mcontext->__ss.__pc); off("lr", uc->uc_mcontext->__ss.__lr);
+-    fprintf(stderr, " sp=%#llx\n", uc->uc_mcontext->__ss.__sp);
+-    for (int i = 0; i < 29; i++) fprintf(stderr, "x%d=%#llx%s", i, uc->uc_mcontext->__ss.__x[i], i % 6 == 5 ? "\n" : " ");
++    off("addr", (uint64_t)si->si_addr); off("pc", DM_UC_SS(uc)->__pc); off("lr", DM_UC_SS(uc)->__lr);
++    fprintf(stderr, " sp=%#llx\n", DM_UC_SS(uc)->__sp);
++    for (int i = 0; i < 29; i++) fprintf(stderr, "x%d=%#llx%s", i, DM_UC_SS(uc)->__x[i], i % 6 == 5 ? "\n" : " ");
+     fprintf(stderr, "\n");
+     // What the registers point at: the first six words of each readable target (read with vm_read_overwrite, which fails instead of faulting); a word inside a module prints as a module offset, so an object's vtable names its class
+     for (int i = 0; i < 29; i++) {
+-        uint64_t a = uc->uc_mcontext->__ss.__x[i], w[6]; vm_size_t got = 0;
++        uint64_t a = DM_UC_SS(uc)->__x[i], w[6]; vm_size_t got = 0;
+         if (a < 0x100000000ull || (a & 7) || vm_read_overwrite(mach_task_self(), (vm_address_t)a, sizeof w, (vm_address_t)w, &got) != KERN_SUCCESS || got != sizeof w) continue;
+         fprintf(stderr, "[dm] *x%d:", i);
+         for (int k = 0; k < 6; k++) off("", w[k]);
+@@ -196,7 +197,7 @@
+     // What the graphics layer knows of the addresses in the registers (dm_gfx_addr_note: the memory pool, a texture's storage, a GPU write the host recorded on the page). A game's own
+     // data overwritten with float words (PRAGMATA's render command lists) asks whether the GPU or a host copy wrote there
+     for (int i = 0; i < 29; i++) {
+-        uint64_t a = uc->uc_mcontext->__ss.__x[i]; char note[512]; note[0] = 0;
++        uint64_t a = DM_UC_SS(uc)->__x[i]; char note[512]; note[0] = 0;
+         if (a < 0x100000000ull) continue;
+         dm_gfx_addr_note(a, note, sizeof note);
+         if (note[0]) fprintf(stderr, "[dm] x%d %#llx:%s\n", i, (unsigned long long)a, note);
+@@ -207,8 +208,8 @@
+         char spec[512]; snprintf(spec, sizeof spec, "%s", getenv("DM_CRASH_PEEK"));
+         for (char *tok = strtok(spec, ","); tok; tok = strtok(NULL, ",")) {
+             uint64_t a = 0; char *p = tok;
+-            if (!strncmp(p, "sp", 2)) { a = uc->uc_mcontext->__ss.__sp; p += 2; }
+-            else if (*p == 'x') { long r = strtol(p + 1, &p, 10); if (r < 0 || r > 28) continue; a = uc->uc_mcontext->__ss.__x[r]; }
++            if (!strncmp(p, "sp", 2)) { a = DM_UC_SS(uc)->__sp; p += 2; }
++            else if (*p == 'x') { long r = strtol(p + 1, &p, 10); if (r < 0 || r > 28) continue; a = DM_UC_SS(uc)->__x[r]; }
+             else continue;
+             if (*p == '+' || *p == '-') { long long d = strtoll(p, &p, 0); a += (uint64_t)d; }
+             if (*p == '*') { uint64_t v = 0; vm_size_t got = 0; if (vm_read_overwrite(mach_task_self(), (vm_address_t)a, 8, (vm_address_t)&v, &got) != KERN_SUCCESS || got != 8) { fprintf(stderr, "[dm] peek %s: %#llx unreadable\n", tok, (unsigned long long)a); continue; } a = v; }
+@@ -220,13 +221,13 @@
+             fputc('\n', stderr);
+         }
+     }
+-    dm_backtrace(uc->uc_mcontext->__ss.__fp);
++    dm_backtrace(DM_UC_SS(uc)->__fp);
+     // Stack scan: when the frame chain is broken (a return address was overwritten, pc = lr lands on garbage) the backtrace prints nothing; scan 512 words up from sp and list everything that resolves to a module / host symbol (nearest callers first)
+-    {   uint64_t sp = uc->uc_mcontext->__ss.__sp;   // The frame just popped (when a return address was overwritten, the bad value and the leftovers of whatever overwrote it sit below sp)
+-        fprintf(stderr, "[dm] fp=%#llx  0x100 bytes below sp:", (unsigned long long)uc->uc_mcontext->__ss.__fp);
++    {   uint64_t sp = DM_UC_SS(uc)->__sp;   // The frame just popped (when a return address was overwritten, the bad value and the leftovers of whatever overwrote it sit below sp)
++        fprintf(stderr, "[dm] fp=%#llx  0x100 bytes below sp:", (unsigned long long)DM_UC_SS(uc)->__fp);
+         for (int i = -32; i < 0 && sp && !(sp & 7); i++) fprintf(stderr, "%s%llx", (i + 32) % 4 ? " " : "\n[dm]   ", (unsigned long long)((uint64_t *)sp)[i]);
+         fputc('\n', stderr); }
+-    {   uint64_t sp = uc->uc_mcontext->__ss.__sp; int n = 0;
++    {   uint64_t sp = DM_UC_SS(uc)->__sp; int n = 0;
+         fprintf(stderr, "[dm] stack scan sp=%#llx:", (unsigned long long)sp);
+         for (int i = -32; i < 512 && n < 24 && sp && !(sp & 7); i++) {
+             uint64_t v = ((uint64_t *)sp)[i]; Dl_info di;

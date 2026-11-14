@@ -1,23 +1,54 @@
 // Common header of the native Switch host (multi-module).
 #pragma once
 #include <pthread.h>
+#include <errno.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include "game_profile.h"   // constants of the current game profile (generated from dm/games/<id>/game.tsv, chosen by the Makefile's GAME)
 
-#define MAX_MOD 128   // the profile's modules (up to 8) and the NROs a game loads at run time (Super Smash Bros. Ultimate: 98)
-// OHOS apps have no stderr to read: the host's log goes to hilog instead (ohos/ohos_log.c), which the cloud console exports.
-#if defined(DM_OHOS)
+// Explicit host work does not occupy a guest core (Metal submission, or a blocked native codec lock). A contended host mutex must count as blocked: a signal's same-core handoff
+// can otherwise wait forever for a peer that needs the signaller's native lock. Uncontended locks retain guest ordering; the counter nests inside existing host work.
+extern __thread _Atomic int dm_host_work;
+static inline int dm_host_mutex_lock(pthread_mutex_t *mutex) {
+    int r = pthread_mutex_trylock(mutex);
+    if (r != EBUSY) return r;
+    dm_host_work++;
+    r = pthread_mutex_lock(mutex);
+    dm_host_work--;
+    return r;
+}
+// Joining a native helper releases the guest core while that helper finishes; preserve any enclosing host-work scope.
+static inline int dm_host_thread_join(pthread_t thread, void **result) {
+    dm_host_work++;
+    int r = pthread_join(thread, result);
+    dm_host_work--;
+    return r;
+}
+
+// One log line: the message and its newline under one stream lock (written apart, another thread's line could land between them and two messages share a log line).
+// The host's dm_log (hle_bigstack.c) writes it on the thread's big host stack when the caller is on a guest stack: formatting one line takes about 2.7 KB of stack, and a take-over
+// runs on the stack of the game thread that calls it, which can have less left (memory.md, Log lines on small guest stacks). The definition here is a weak one that writes on the
+// caller's stack, for the programs that do not link hle_bigstack.c (unit tests, whose stacks are host stacks); the host's replaces it at link time
+__attribute__((format(printf, 1, 2))) void dm_log(const char *fmt, ...);
+#ifndef DM_LOG_IMPL
+#include <stdarg.h>
+__attribute__((weak)) void dm_log(const char *fmt, ...) {
+    va_list ap; va_start(ap, fmt);
+    flockfile(stderr); vfprintf(stderr, fmt, ap); fputc('\n', stderr); funlockfile(stderr);
+    va_end(ap);
+}
+#endif
+#define LOG(...) dm_log("[dm] " __VA_ARGS__)
+#if defined(DM_OHOS)   // OHOS apps have no readable stderr: route the host log to hilog (ohos/ohos_log.c), which the cloud console exports
 void dm_ohos_logv(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
-#define LOG(...) dm_ohos_logv(__VA_ARGS__)
-#else
-#define LOG(...) do { fprintf(stderr, "[dm] " __VA_ARGS__); fputc('\n', stderr); } while (0)
+#undef LOG
+#define LOG(...) dm_ohos_logv("[dm] " __VA_ARGS__)
 #endif
 #define die(...) do { LOG("FATAL " __VA_ARGS__); abort(); } while (0)
 
-// Object-format differences for inline assembly and registration tables (Android port: ELF instead of Mach-O).
+// Object-format differences for inline assembly and registration tables (ELF instead of Mach-O on OHOS).
 // DM_ASM_SYM(name): a C symbol as assembly names it; DM_ASM_PAGE / DM_ASM_PAGEOFF: the adrp / add operands for its address; DM_ASM_PRIVATE: a global symbol
 // kept inside the image. DM_SECTION(name): a registration table section, found again by getsectiondata (on ELF the linker bounds it with __start_ / __stop_ symbols)
 #if defined(__APPLE__)
@@ -52,11 +83,30 @@ typedef struct {
     uint8_t *base;             // Start address of the image (including the patch area) in the host address space
     size_t size;
     uint64_t text_end, ro_off, data_off, key_page_off, key_page_size;   // From the rewriter fixups header
+    uint64_t ue_malloc_vt;     // Unreal's FMallocBinned3 vtable, found by the rewriter (patch_nso.py, ue_malloc.py; hle_uemalloc.c); 0 = none
+    unsigned ue_malloc_slot;   // the slot of its name getter, which names the slot layout
+    struct { char name[32]; uint64_t off; } ue_cvar[8];   // Unreal console variables found by their registered names (patch_nso.py, ue_cvar.py; UE_CVAR:<name>): each one's TAutoConsoleVariable
+    int n_ue_cvar;
+    uint64_t fps_target_ptr;   // a target frame rate the game steps by, an int32 at [main + fps_target_ptr] + fps_target_field (patch_nso.py, fps_target.py; hle_fpslock.c); 0 = none
+    uint32_t fps_target_field;
+    uint64_t ue_fixed_ptr;     // Unreal's GEngine (main's offset of the global) and UEngine::FixedFrameRate in it, a float (patch_nso.py, ue_fixed_rate.py; hle_fpslock.c); 0 = none
+    uint32_t ue_fixed_field;
+    uint32_t ue_fixed_flag;    // bUseFixedFrameRate in UEngine: byte offset << 8 | bit mask; the rate is written only while it is set
+    uint64_t unity_target_fps; // Unity's Application.targetFrameRate, an int32 at main + this (patch_nso.py, unity_fps.py; hle_fpslock.c); 0 = none
+    uint64_t unity_qs_ptr;     // Unity's QualitySettings (main's offset of the global pointer); the current level's vSyncCount, an int32, is at
+    uint32_t unity_qs_idx, unity_qs_arr, unity_qs_size, unity_qs_vsync;   // [obj + arr] + (int32)[obj + idx] * size + vsync; 0 = none
     uint64_t fps_state_off;    // frame step state page (patch_nso.py FRAME_STEP: Tears of the Kingdom 1.4.3 and Breath of the Wild 1.9.0 main); 0 = none
+    uint32_t step_max;         // the largest step the frame step stubs give the game (the fixups table's STEP_MAX, patch_nso.py ctx.step_max); 0 = FSTEP_MAX
+    uint32_t render_scale_max; // a render-scale stub's largest scale (the fixups table's RENDER_SCALE, patch_nso.py): DM_RENDER_SCALE is held to it; 0 = no such stub
     int64_t patch_off;         // patch area relative to the base; negative = before the base (image too large, see patch_nso.py FAR), and size does not include it
     uint64_t image_size, file_image_len, patch_len;   // only with the patch area before the base: whole image (with bss and key page), length of the image part of the file, patch area length
+    uint64_t back_off, back_len;   // a second patch area after the image (patch_nso.py TWO: a text longer than a B reaches), inside size; 0 = none
     char build_id[33];         // First 16 bytes of the NSO build ID (hex); empty for older build outputs
+#if defined(DM_OHOS)
     unsigned key_idx[5];       // key page index of each thread slot (K18, KTLS, KTLR, KGATE; OHOS adds TPOFF)
+#else
+    unsigned key_idx[4];       // key page index of each thread slot (K18, KTLS, KTLR, KGATE)
+#endif
     const Elf64_Dyn *dyn;
     const Elf64_Sym *symtab;
     const char *strtab;
@@ -65,22 +115,23 @@ typedef struct {
     uint64_t init, init_array, init_arraysz;   // init = DT_INIT (the module's _init: registers the DSO and runs this module's init_array)
     uint64_t fini;             // DT_FINI (nn::ro::UnloadModule calls it)
     // NRO modules (nn::ro, loader.c "NRO modules"): mapped at start like the others, but they take part in symbol lookups only between LoadModule and UnloadModule
-    int nro, loaded;           // loaded: the profile's modules always; an NRO while the game has it loaded
+    int nro;
+    _Atomic int loaded;        // the profile's modules always; NRO activation also synchronizes with borrowed stack backing
+    int alone;                 // loaded alone (a JIT plugin, nro_load_alone): not linked with the game, so no other module's load or unload rebinds its imports
     uint8_t sha256[32];        // an NRO's SHA-256 (what the game's NRR registers; LoadModule finds the module by the image it passes)
     uint32_t nro_size;         // an NRO's file size (header +0x18), the bytes the hash covers
-    uint8_t *pristine; size_t pristine_len;   // an NRO's data and bss as rewritten, restored before each load after the first
+    uint8_t *pristine; size_t pristine_len;   // an NRO's initialized data as rewritten; reload restores this and zeroes its bss
     unsigned loads;            // how many times the game loaded it
 } module_t;
 
-extern module_t g_mod[MAX_MOD];
+extern module_t *g_mod;         // allocated once from the NSO list and NRO manifest; module addresses stay stable
 extern int g_nmod;
 // main's build ID (empty if none): code with fixed addresses in a game's module runs only on the build they were found in
 static inline const char *dm_main_build(void) { for (int i = 0; i < g_nmod; i++) if (!strcmp(g_mod[i].name, "main")) return g_mod[i].build_id; return ""; }
 // Four thread-local slots: K18 = the Switch's x18, KTLS = tpidr_el0, KTLR = tpidrro_el0 (ThreadLocalRegion), KGATE = host gate entry; the actual key numbers are written into the key page by the loader
 extern pthread_key_t g_key18, g_keytls, g_keytlr, g_keygate;
-// The guest thread slots the rewritten code reads (patch_nso.py emit_tp): Darwin TSD keys on Apple; on Android the keys are indices into a per-thread
-// block whose address bionic's TLS_SLOT_APP holds (tpidr_el0[2]); on OHOS the slots are a thread-local array of this library, reached through the key
-// page's TPOFF entry (musl owns tpidr_el0 and has no app slot), see loader.c
+// The guest thread slots the rewritten code reads (patch_nso.py emit_tp): Darwin TSD keys on Apple; on OHOS the slots are a thread-local array of this
+// library, reached through the key page's TPOFF entry (musl owns tpidr_el0 and has no app slot), see loader.c
 #if defined(__APPLE__)
 #define dm_tsd_set(k, v) pthread_setspecific((k), (v))
 #define dm_tsd_get(k) pthread_getspecific(k)
@@ -90,40 +141,53 @@ void *dm_tsd_get(pthread_key_t k);
 #endif
 
 void load_modules(const char *dir, const char **names, int n);
+const char *dm_module_dir(void);   // the folder load_modules read the modules and the rewriter's tables from (the cheat engine reads main.changed.tsv there)
 void run_module_inits(void);
 module_t *nro_find(const uint8_t sha256[32]);   // the mapped NRO with this hash (loader.c)
 int nro_refused(const uint8_t sha256[32]);      // an NRO the pack refused (an online SDK, nro.tsv "refused")
 void nro_load(module_t *m);     // relocate an NRO against the loaded modules and bind the earlier modules' imports it defines (the caller runs its init)
+void nro_load_alone(module_t *m);   // relocate an NRO against itself only: a JIT plugin, which on Horizon is not linked with the game (hle_jit.c)
+void nro_unload_alone(module_t *m); // the end of a load alone (DestroyJitEnvironment): inactive again, after its fini; its memory stays mapped in the layout
+const char *dm_jit_serve_dir(void); uint8_t *dm_jit_layout_base(void);   // a served nn::jit image and the layout the modules are mapped in for it (loader.c, hle_jit.c)
 void nro_unload(module_t *m);   // take an NRO out of the lookups and bind the imports that pointed into it again
+int svc_nro_deactivate(module_t *m);   // mark inactive under the memory map lock, refusing while a stack borrows its data
+void dm_device_share(const void *p, uint64_t size, int share);   // guest memory a device maps (share 1) or no longer maps (0): Horizon's DeviceShared attribute, which refuses unmapping it (hle_svc.c)
 void *module_sym(module_t *m, const char *name);
 int dm_sdk_major(void);   // SDK major version from the sdk module's version string (loader.c); 0 = unknown
+int dm_sdk_ounce(void);   // 1 when the sdk module was built for the Switch 2 (its spec string "spec: Ounce", loader.c)
+int dm_sdk_nvn2_item(unsigned item, int *out);   // a constant NVN2's own nvnDeviceGetInteger answers for item, read from the sdk module (loader.c); 0 when it has none
 #define DM_SDK_OLD(major) ((major) > 0 && (major) <= 10)   // SDK 10 and older: NVN API 53, the shared-font address points at the TTF itself
-int dm_main_imports(const char *prefix);   // main imports a symbol whose name starts with prefix (loader.c)
+int dm_game_imports(const char *prefix);   // main or an NRO imports a symbol whose name starts with prefix (loader.c)
 void *guest_sym(const char *name);
 module_t *module_of(const void *p);
 // Gate dispatch: rewritten svc / timer reads come in through the common entry, ret_addr = the return point of that gate block, regs points to the saved x0..x30
 uint64_t gate_dispatch(uint64_t ret_addr, uint64_t *regs);
 // Observation gates (rewriter OBS tables in the profiles' patches.py, applied by patch_nso.py; numbering matches): read-only callbacks, called on a gate hit once attached
-enum { OBS_MOVIE_RING_LINK = 19, OBS_MOVIE_RING_UNLINK = 20,   // Metroid Dread 2.1.0's movie request ring (hle_movie.c)
-       OBS_UE_MALLOC = 21,                                       // DRAGON QUEST VII Reimagined 1.2.0: Unreal's allocator object just made (hle_uemalloc.c)
-       OBS_MAX = 22 };
-void gate_obs_set(int id, void (*fn)(const uint64_t *regs));
+// IDs 19 / 20 belonged to the removed movie request-ring workaround. Old rewritten modules may still contain them; without callbacks those gates are harmless passes through.
+enum { OBS_UE_MALLOC = 21,                                       // Unreal's FMallocBinned3 constructor call, cut: the object in the register its upper bits name (patch_nso.py, hle_uemalloc.c)
+       OBS_REGION_ASK = 22, OBS_REGION_GOT = 23, OBS_REGION_FREE = 24,   // the SDK's address regions, gates the rewriter places by symbol in every sdk (patch_nso.py "Address regions", hle_svc.c)
+       OBS_STDALLOC_INIT = 25,                                         // StandardAllocator::Initialize's entry, the same way: its callback writes the size (hle_svc.c)
+       OBS_UE_REGION = 26,                                             // the store of Unreal's engine region size before nninitStartup reserves it: the register its upper bits name (dm/tools/ue_region.py, hle_svc.c)
+       OBS_MAX = 27 };
+// A gate number's bits from 8 up are a parameter for its callback (OBS_REGION_GOT: the register that holds the address). Callbacks read the registers; a write to x0–x29 takes
+// effect when the gate returns (entry.S restores them from the frame), which OBS_STDALLOC_INIT and OBS_UE_REGION do
+void gate_obs_set(int id, void (*fn)(uint64_t *regs, int param));
 int gate_obs_present(int id);
 uint64_t now_ns(void);
 uint64_t guest_ns(void);              // Guest clock (hle_os.c; does not advance while frozen, guest_clock_freeze)
+uint64_t guest_ns_at_host_time(uint64_t host_ns);  // Host Mach-absolute ns projected into the current guest clock
+int guest_clock_pinned(void);  // the guest clock is frozen or DM_DETCLOCK's: guest_ns_at_host_time maps every host time to one
+uint64_t guest_ticks(void);           // The guest's system counter on that clock: 19.2 MHz, or 31.25 MHz for the Switch 2 (hle_os.c)
 int dm_detclock_enabled(void);
 void dm_guest_clock_advanced(void);
 void guest_clock_freeze(int on);
 void guest_clock_freeze_for(int reason, int on);   // Freeze by reason (1 background, 2 system keyboard); see hle_os.c
-void guest_clock_read_wait(void);     // A guest read of the system counter: waits while the app is in the background (hle_os.c)
+void guest_clock_read_wait(void);     // A guest read of the system counter: counts it in dm_clock_reads and waits while the app is in the background (hle_os.c)
+extern __thread uint64_t dm_clock_reads;   // the calling thread's guest reads of the system counter (hle_os.c; thr_yield tells clock waits by them)
 void dm_guest_frame_tick(void);        // Called on every present (hle_nvn.c): when DM_DETCLOCK is on, advances the guest clock by one fixed step
 uint64_t dm_nvn_frame_count(void);
 uint64_t dm_nvn_sub_cpu_ns(void);     // Cumulative CPU nanoseconds of submit (excluding present)
 void dm_backtrace(uint64_t fp);
-int crash_addr_str(char *b, size_t n, uint64_t a);   // "module+off", "symbol+off" or "library+off"
-uint64_t crash_code_addr(uint64_t a);   // a return address without its pointer authentication code
-void crash_thread_name(unsigned t, char *b, size_t n);   // by thread port (the tid on Android)
-void crash_add_note_hook(void (*fn)(void));   // printed after the crashing thread's registers
 void crash_watch_progress(uint32_t tick, const char *stage);
 void crash_watch_frame(void);
 void crash_watch_pregame_done(void);
@@ -131,22 +195,71 @@ uint64_t crash_watch_progress_count(void);
 void crash_dump_now(const char *why);   // Dump state on demand (threads + graphics wait points), without exiting
 // Diagnostic switches: read once from environment variables when main starts (getenv takes the libc global environment lock, and on a hot path it would make all guest threads queue up)
 extern uint64_t g_t0_ns;   // Host start time (now_ns), used for relative times in the log
-extern struct dm_flags { int thr, svc, fs, movie, dbg, imports, bootprof; } g_flag;
+extern struct dm_flags { int thr, svc, fs, dbg, imports, bootprof; } g_flag;
 void *objmap_get(const void *guest); void objmap_put(const void *guest, void *host); void *objmap_del(const void *guest);
 void hle_signal_system_event(void *g);   // hle_thread.c: signal a service-layer SystemEvent (any thread)
 void hle_bind_system_event(void *g, int autoclear);   // On a guest thread, bind a guest SystemEvent to a kernel event
 void hle_clear_system_event(void *g);    // hle_thread.c: clear a bound service-layer SystemEvent (any thread)
 int hle_signal_bound_system_event(void *g);   // hle_thread.c: signal a service-layer SystemEvent only if it is bound (any thread); 0 when it is not
+uint64_t hle_system_event_binding(void *g);   // Opaque lifetime ID of a binding, 0 if unbound; a rebind gets a new ID even if its address and handle are reused
+int hle_signal_system_event_binding(uint64_t binding);   // Signal only this binding lifetime (any thread); 0 after its write handle closes
+uint32_t hle_new_event(uint32_t *write_end);   // hle_thread.c: a new kernel event's read end (a service's handle copied to its client); its write end in *write_end, none when NULL (never signaled)
+uint32_t hle_dup_readable_handle(uint32_t h);   // hle_thread.c: a second read end of a kernel event (the copy a service hands its client), 0 if h is no read end
 // Page fault hook / hook before the host writes guest memory (crash.c; used for write-protect dirty page tracking)
 void dm_fault_hook_register(int (*fn)(void *addr, int is_write, void *uc));
 void dm_guest_write_prep_register(void (*fn)(void *addr, size_t len));
 void dm_res_report_register(void (*fn)(uint32_t tick, const char *why));   // Resource count callback (registered by the graphics layer): called every 250 ticks, when the loading screen has been dismissed, and on exit when the record is full
 void (*dm_res_report_cb(void))(uint32_t tick, const char *why);   // Get the registered resource count callback (null if not registered)
 void dm_guest_write_prepare(void *addr, size_t len);
+void dm_guest_heap_range(uint64_t *base, size_t *open_len);   // hle_svc.c: the guest heap's base and opened length (guest addresses), 0 / 0 when none
+int dm_guest_heap_read(uint64_t addr, void *out, size_t len);    // hle_svc.c: hole-free guest heap read for the cheat VM (under the memory lock); 0 = ok, 1 = a byte outside the opened span
+int dm_guest_heap_write(uint64_t addr, const void *src, size_t len);   // hle_svc.c: hole-free guest heap write (the dirty tracking sees it first)
+// Cheats (hle_cheats.c): Atmosphère-format cheat code files applied to the running game (docs/development.md "Cheats")
+void dm_cheats_init(void);            // Called once in host_preload after loading the modules (main.c): reads DM_CHEATS and friends, loads the build's file
+void dm_cheats_present(void);         // Per presented frame (hle_nvn.c presents): applies the enabled cheats once
+// The Cheats submenu's rows (front_mac.m, Mac window only). Readers of the list of cheats; the front end copies the strings out immediately
+int dm_cheats_found(void);            // A cheat file is loaded (this build's, or another build's on DM_CHEATS_ANY_BUILD)
+int dm_cheats_ncheats(void);          // The loaded file's cheats, in file order
+const char *dm_cheats_build(void);    // This game's build ID, first 16 hex digits ("" when the main NSO has none)
+const char *dm_cheats_dir_path(void); // The cheats folder ("", when neither DM_CHEATS nor DM_ROOT is set: the menu's folder action is off)
+int dm_cheats_nothers(void);          // The .txt files of other builds in the folder (the menu's disabled "another version" rows)
+const char *dm_cheats_other(int i);
+const char *dm_cheat_name_at(int i);
+const char *dm_cheat_why_at(int i);   // The disabled state's reason (" (unsupported opcode N)", " (off: ...)"); "" when plain
+int dm_cheat_kind_at(int i);          // 0 a plain row (click toggles), 1 master (always on, no toggle), 2 disabled (broken or killed at run time), 3 a label (credits, a section marker)
+int dm_cheat_on_at(int i);
+void dm_cheat_toggle(int i);          // The click on a plain row: flips the cheat (an on / off pair as one switch) and rewrites <build ID>.enabled
+void dm_cheats_reload(void);          // "Reload cheats": re-reads the file (the same path), so edits during play need no re-launch
+// What the panel shows beyond the menu (hle_cheats.c header: labels and sections, the meta file of scripts/cheat_anchor.py)
+enum { DM_CHEAT_LABEL = 1, DM_CHEAT_SECTION_START = 2, DM_CHEAT_SECTION_END = 4, DM_CHEAT_PAIR_ON = 8, DM_CHEAT_PAIR_OFF = 16,
+       DM_CHEAT_ONCE = 32, DM_CHEAT_ASK = 64, DM_CHEAT_HOST = 128, DM_CHEAT_WEAK = 256 };   // ONCE: a "set" cheat; HOST: a never-decrease run by this host only
+int dm_cheat_flags_at(int i);         // DM_CHEAT_* of entry i
+const char *dm_cheat_section_at(int i);   // the section entry i lies in ("" none)
+const char *dm_cheat_note_at(int i);  // the meta file's note: how the cheat was compiled, and its own note
+const char *dm_cheat_type_at(int i);  // the meta type (u16, s32, f32, …), "" unknown
+int dm_cheat_pair_at(int i);          // the other half of an on / off pair, -1 none
+int dm_cheat_preview(int i, char *out, size_t cap);   // a dry run: one line per write it would make now ("main+0x… (2 bytes): 37 -> 999"), nothing written; returns the writes
+int dm_cheat_value_get(int i, char *out, size_t cap); // an "ask" cheat's value as text: 1, or 0 when it takes none
+int dm_cheat_value_set(int i, const char *text);      // set it (its type, its bounds) and keep it in <build ID>.values: 0 done, -1 refused
+const char *dm_cheat_value_bounds(int i);             // "min..max" (a side empty when open), "" when it takes none
+int dm_cheats_master(void);           // the master switch (off: no cheat runs; kept in the folder's .cheats-off)
+void dm_cheats_master_set(int on);
+int dm_cheats_safe(void);             // safe mode: the last run ended without a clean exit while cheats were on, so all start off
+void dm_cheats_safe_restore(void);    // leave safe mode: the masters and the saved toggles come back
+const char *dm_cheats_report(void);   // the load report: counts, duplicate names, ignored lines, carried-over toggles, Atmosphère's limits
+const char *dm_cheats_version(void);  // this build's display version ("" unknown)
+const char *dm_cheats_other_version(int i);   // the display version of another build's file (its meta file), "" unknown
+int dm_cheats_nskipped(void);         // cheats the compiler left out of this build's file (its meta file), with their reasons
+const char *dm_cheats_skipped_name(int i);
+const char *dm_cheats_skipped_why(int i);
+int dm_cheats_nsources(void);         // anchored sources (*.cheats.toml) in the cheats folder
+const char *dm_cheats_source(int i);
+void dm_cheats_exit(void);            // a clean exit (hle_lifecycle.c, atexit): removes the safe-mode flag
 // Graphics lifecycle (hle_nvn.c): on=1 suspends (afterwards submit / present block, and in-flight GPU work is drained before returning), on=0 resumes; called by the iOS front end when entering and leaving the background
 void dm_gfx_suspend(int on);
-void dm_movie_hold(int on);   // hle_movie.c: the game is held (background, pause menu); the time held is no movie decoder's idle time (md_tail)
+void dm_gfx_quit(int wait_ms);   // hle_nvn.c: the process is ending (the graceful exit): what the pipeline archive has not written yet, written, waiting up to wait_ms
 void dm_gfx_enter(void); void dm_gfx_leave(void);   // hle_nvn.c: the gate dm_gfx_suspend closes, for graphics layers other than NVN (dm/gfx/vk)
 void dm_gfx_shot_at(long k, const char *path);
 void dm_shot_written(const char *path, int ok);   // The graphics side finished writing a screenshot to disk (diag.c: DM_TICK_HOLD=E:SHOT unfreezes on this)
+void dm_host_shutdown_then(const char *why, void (*then)(void *), void *arg);   // The same, then(arg) in place of the last _exit(0) (oe::ExecuteProgram: execve of the next program)
 void dm_host_shutdown(const char *why);   // Graceful exit (crash.c): stop background threads and audio, drain graphics, then _exit(0); used by SIGTERM and the iOS App termination callback   // graphics side: screenshot of the k-th frame after the current presented frame (nvn_mtl.m)

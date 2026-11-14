@@ -11,7 +11,7 @@ Plays on the Mac at 60 fps: the title, a new save, the opening movie, the island
 | `sys_resource 0x1000000` | [`game.tsv`](game.tsv) | the NPDM declares 16 MB of system resource: virtual address memory |
 | 5 GB guest block: `mem_reserve 0x140000000`, `mem_alias 0x118000000`, `mem_stack 0x10000000`, `app_pool 0xCD500000` | `game.tsv` | Unity 6 reserves and commits its regions itself, without setting a heap, as [BALL x PIT](../010086A022444000/README.md) |
 | `depth_mode zero` | `game.tsv` | the offline pipeline prebuild uses the near=0 convention the game sets at boot |
-| SDK node area 1 GB → 62 MB | `dm/tools/sdk_patches.py`, SDK build `60751516…` | the existing shared SDK patch leaves room for the game's address regions |
+| SDK node area 1 GB → 62 MB, and regions of 4 MB and more aligned to 2 MB as SDK 20 | `dm/tools/sdk_patches.py`, the SDK-wide rules (`MATCH_CUTS`) on SDK build `60751516…` | leaves room for the game's address regions; the build's row (the node area cut alone) was removed on 2026-10-30 after a run on Monster Train 2, the same build |
 | Unity 6 Shader layout | `dm/gfx/tools/unityfs.py` | no bundle supplies the stripped files' type tree; see [Shaders](#shaders) |
 
 No game-code patch.
@@ -43,13 +43,6 @@ The work folder is `<NSP folder>/01009D901BC56000-work`. `run/boot.py <log name>
 - iOS has not been tested on a device.
 - Only the opening portion of the first level was played; finishing it, later levels, bosses and multiplayer remain untested.
 - The other thirteen MP4 movies and non-English languages are untested.
-
-## Base game v0
-
-- Not registered (`main` `8ac516e8…`, `subsdk0` `ca1378cd…`, `sdk` `f118ae1c…`, the Absolum build with the node-area and alignment cuts). GitHub issue #26 (an Honor MagicPad 3 Pro); measured on the Y700 on 2026-10-31.
-- Its `nninitStartup` hands pool − used to a StandardAllocator as one 3.14 GB address region before Unity reserves its own regions above it. Update 1.1.0 makes no such region: on the Y700 it reserves about 1.8 GB, up to +2.75 GB of the alias region.
-- With this profile's layout (4.375 GB alias region) v0 was refused (`0x1803`) a few seconds in and crashed at `main+0x829630`. With 1 GB more (the issue's `mem_alias 0x158000000`) it crashed in the opening movie at +5.37 GB, after 32 refusals.
-- Unity frees regions and makes new ones higher up, so the highest address rises above the 4.8 GB reserved: +6.26 GB after the movie, +7.01 GB in 1-1, and below +7.25 GB to the end of 22 minutes (the movie, the treehouse, 1-1 and the world map) with 8 GB more, at 60 fps with no red line. Porter gives every derived profile of a game with virtual address memory these 8 GB (`porter/pipeline.py` `alias_headroom`).
 
 ## Found on this game
 

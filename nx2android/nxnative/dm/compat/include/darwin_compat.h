@@ -38,3 +38,67 @@ static inline int pthread_cond_timedwait_relative_np(pthread_cond_t *c, pthread_
     return pthread_cond_timedwait(c, m, &t);
 }
 #define MACH_PORT_NULL 0
+
+#if !defined(__APPLE__)
+#include <stdlib.h>
+#include <fcntl.h>
+// Darwin's stat names the timespec fields st_*timespec; musl names them st_*tim
+#define st_mtimespec st_mtim
+#define st_atimespec st_atim
+#define st_ctimespec st_ctim
+// BSD mergesort: qsort orders by the same comparator (not stable, which the host's step sort tolerates)
+#define mergesort(base, nel, width, compar) qsort((base), (nel), (width), (compar))
+// Apple's JIT mapping flag and write-protect toggle: OHOS maps the pages directly and has no toggle
+#ifndef MAP_JIT
+#define MAP_JIT 0
+#endif
+static inline void pthread_jit_write_protect_np(int enabled) { (void)enabled; }
+// libproc's rusage: not available on OHOS; the guest-file layer treats a failure as "stay anonymous" (hle_svc.c)
+typedef void *rusage_info_t;
+#ifndef RUSAGE_INFO_V4
+#define RUSAGE_INFO_V4 4
+#endif
+int proc_pid_rusage(int pid, int flavor, rusage_info_t *buffer);
+// F_PUNCHHOLE has no fcntl counterpart on Linux: a command the kernel rejects, so guest_file_punch keeps the blocks (it handles the failure)
+typedef struct { off_t fp_offset; off_t fp_length; } fpunchhole_t;
+#ifndef F_PUNCHHOLE
+#define F_PUNCHHOLE 0x10001
+#endif
+// mincore's dirty bit: Linux mincore only reports residency (bit 0), so treat a resident page as modified (a conservative overcount for the guest-file diagnostics, hle_svc.c)
+#ifndef MINCORE_MODIFIED
+#define MINCORE_MODIFIED 1
+#endif
+// The path a descriptor points at (hle_fdstat.c): Darwin's fcntl(F_GETPATH), Linux's /proc/self/fd readlink
+#include <stdio.h>
+static inline int dm_fd_path(int fd, char *buf, size_t n) {
+#if defined(__APPLE__)
+    return fcntl(fd, F_GETPATH, buf);
+#else
+    char ln[64]; snprintf(ln, sizeof ln, "/proc/self/fd/%d", fd); ssize_t r = readlink(ln, buf, n - 1); if (r < 0) return -1; buf[r] = 0; return 0;
+#endif
+}
+// MacTypes' UInt8 (hle_svc.c casts a path to it for CFURLCreateFromFileSystemRepresentation)
+typedef uint8_t UInt8;
+// Darwin's statfs / fstatfs (hle_svc.c guest-file disk room): OHOS has statvfs instead. f_fstypename / MNT_LOCAL are
+// filled so the "local APFS" diagnostic stays quiet; the guest-file layer is optional (DM_GUEST_FILE) and OHOS runs anonymous by default
+#include <sys/statvfs.h>
+#include <string.h>
+#ifndef MNT_LOCAL
+#define MNT_LOCAL 0x1000
+#endif
+#ifndef DM_COMPAT_STATFS
+#define DM_COMPAT_STATFS
+struct statfs { long f_bsize, f_bavail, f_blocks; unsigned long f_flags; char f_fstypename[16]; };
+static inline int fstatfs(int fd, struct statfs *s) {
+    struct statvfs v; if (fstatvfs(fd, &v)) return -1;
+    s->f_bsize = (long)v.f_frsize; s->f_bavail = (long)v.f_bavail; s->f_blocks = (long)v.f_blocks;
+    s->f_flags = MNT_LOCAL; memcpy(s->f_fstypename, "apfs", 5); return 0;
+}
+#endif
+// libproc's rusage_info_v4 fields the guest-file diagnostics read; proc_pid_rusage fails (ENOTSUP) so they stay zero
+struct rusage_info_v4 { uint64_t ri_diskio_bytesread, ri_pageins, ri_logical_writes, ri_lifetime_max_phys_footprint; };
+// confstr name for the per-user temp dir: unknown here, so confstr returns 0 and guest_file_init stays anonymous
+#ifndef _CS_DARWIN_USER_TEMP_DIR
+#define _CS_DARWIN_USER_TEMP_DIR 0xFFFF
+#endif
+#endif
