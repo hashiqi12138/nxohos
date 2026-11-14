@@ -12,3 +12,11 @@ dm/ohos/hap/.hvigor/
 dm/ohos/hap/.cxx/
 dm/ohos/hap/**/build/
 dm/ohos/hap/oh_modules/
+
+# --- OHOS port build outputs (mirror the outer monorepo's ignores) ---
+dm/ohos/out/
+dm/ohos/.hvigor/
+dm/ohos/hap/.preview/
+**/obj/
+**/bin/dm/nca_hdr.bin
+

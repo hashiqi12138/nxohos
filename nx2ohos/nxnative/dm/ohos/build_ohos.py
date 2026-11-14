@@ -19,11 +19,11 @@ ap.add_argument('--keep-going', action='store_true')
 ap.add_argument('-O', default='2')
 ap.add_argument('--gfx', default='vk', choices=('vk', 'null'))
 ap.add_argument('--release', action='store_true')
-ap.add_argument('--sync', action='store_true', help='reset shared files to upstream main and re-apply ohos/patches before building (build-time patch apply)')
-ap.add_argument('--upstream-dir', help='an extracted upstream dm/ for --sync (skips the fetch)')
+ap.add_argument('--check-patches', action='store_true', help='run test_ohos_patches.py first: fail the build if a shared file no longer reproduces from upstream main + dm/ohos/patches (stale queue or accidental edit)')
+ap.add_argument('--upstream-dir', help="an extracted upstream dm/ for --check-patches (default: the nested repo's upstream/main ref)")
 a = ap.parse_args()
-if a.sync:
-    subprocess.run([sys.executable, str(DM / 'tools/sync_upstream.py'), '--apply'] + (['--upstream-dir', a.upstream_dir] if a.upstream_dir else []), check=True)
+if a.check_patches:
+    subprocess.run([sys.executable, str(DM / 'tools/test_ohos_patches.py')] + (['--upstream-dir', a.upstream_dir] if a.upstream_dir else []), check=True)
 if not (a.exe or a.lib): a.exe = a.lib = True
 
 # ---- toolchain -----------------------------------------------------------------------------------------------------------------------------

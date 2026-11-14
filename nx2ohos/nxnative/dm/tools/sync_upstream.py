@@ -1,58 +1,52 @@
 #!/usr/bin/env python3
-# Sync the OHOS port's shared files with upstream main, keeping the port syncable.
-#   python tools/sync_upstream.py [--url URL] [--upstream-dir DIR] [--apply]
-# Shared files (those upstream also has) are brought to upstream main; the OHOS port edits in dm/ohos/patches are re-applied on top.
-# Additive OHOS files (only in our tree: dm/ohos, dm/compat, dm/gfx/vk, ...) are never touched. Upstream drift (main evolved a shared
-# file we did not port-edit) is adopted as-is. Without --apply this is a dry run that only reports. Run export_ohos_patches.py first
-# if you changed a port edit, and commit before syncing so the reset is recoverable.
-import argparse, os, shutil, subprocess, sys, tempfile
-OURS = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))          # dm/
-PATCHES = os.path.join(OURS, "ohos", "patches")
+# Sync the nested nxnative fork with upstream main the git way: fetch, then merge.
+#   python tools/sync_upstream.py [--remote upstream] [--ref main] [--repo DIR] [--dry-run]
+# The nested repo (nx2ohos/nxnative) holds upstream's full history plus the OHOS port on top, so a sync
+# is an ordinary fork sync: `git fetch upstream` + `git merge upstream/main`, one merge commit that keeps
+# upstream's new commits in our history. Additive OHOS files (dm/ohos, dm/compat, dm/gfx/vk) cannot
+# conflict. Port edits (the files of dm/ohos/patches) conflict only where upstream moved the same lines:
+# the merge then stops with the files listed; resolve them by hand, git add + commit, then re-run
+# export_ohos_patches.py and test_ohos_patches.py so the patch queue and the guard match the merged tree.
+# --dry-run fetches and reports what upstream holds beyond our main, without merging.
+import argparse, os, subprocess, sys
 ap = argparse.ArgumentParser()
-ap.add_argument("--url", default="https://github.com/seedds/nxnative.git")
-ap.add_argument("--upstream-dir", help="an already-extracted upstream dm/ (skips the fetch)")
-ap.add_argument("--apply", action="store_true", help="actually write changes (default: dry run)")
+ap.add_argument("--repo", default=os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))   # nxnative/
+ap.add_argument("--remote", default="upstream")
+ap.add_argument("--ref", default="main")
+ap.add_argument("--dry-run", action="store_true")
 a = ap.parse_args()
+IDENT = ["-c", "user.name=seedds", "-c", "user.email=seedds@gmail.com"]
 
-def norm(p):
-    with open(p, "rb") as fh: return fh.read().replace(b"\r\n", b"\n")
-def walk(root):
-    out = {}
-    for dp, dn, fn in os.walk(root):
-        for f in fn:
-            p = os.path.join(dp, f); out[os.path.relpath(p, root).replace(os.sep, "/")] = p
-    return out
+def git(args, check=True, ident=False):
+    r = subprocess.run(["git"] + (IDENT if ident else []) + ["-C", a.repo] + args,
+                       capture_output=True, text=True, encoding="utf-8", errors="replace")
+    if check and r.returncode: sys.exit(f"sync_upstream.py: git {' '.join(args)} failed:\n{r.stderr.strip()}")
+    return r
 
-if a.upstream_dir:
-    up = os.path.abspath(a.upstream_dir)
-else:
-    repo = subprocess.run(["git", "-C", OURS, "rev-parse", "--show-toplevel"], capture_output=True, text=True, encoding="utf-8", errors="replace").stdout.strip()
-    print(f"fetching {a.url} main ...")
-    subprocess.run(["git", "-C", repo, "fetch", "--depth=1", a.url, "main"], check=True)
-    up = tempfile.mkdtemp(prefix="ohos_up_")
-    with tempfile.TemporaryFile() as tar:
-        subprocess.run(["git", "-C", repo, "archive", "FETCH_HEAD", "dm/"], stdout=tar, check=True); tar.seek(0)
-        subprocess.run(["tar", "-x", "-C", up], stdin=tar, check=True)
-    up = os.path.join(up, "dm")
-
-u, o = walk(up), walk(OURS)
-ported, adopted, conflicts, skipped = [], [], [], 0
-for rel in sorted(u):
-    if rel not in o: continue                      # upstream-only: leave as our tree has it (excluded files stay excluded)
-    if norm(u[rel]) == norm(o[rel]): skipped += 1; continue
-    patch = os.path.join(PATCHES, rel + ".patch")
-    if os.path.exists(patch):
-        if a.apply:
-            shutil.copyfile(u[rel], o[rel])        # pristine upstream, then re-apply the port edit
-            r = subprocess.run(["patch", "-p1", "-f", "-s"], stdin=open(patch, "rb"), cwd=OURS, capture_output=True)
-            if r.returncode: conflicts.append(rel); print(f"  CONFLICT {rel}: {r.stderr.decode(errors='replace').strip()[:120]}")
-            else: ported.append(rel)
-        else: ported.append(rel)
-    else:
-        if a.apply: shutil.copyfile(u[rel], o[rel])
-        adopted.append(rel)
-print(f"\n{'APPLIED' if a.apply else 'DRY RUN'}: {len(ported)} port edits re-applied, {len(adopted)} upstream drift adopted, {len(conflicts)} conflicts, {skipped} already in sync")
-for r in ported: print("  P", r)
-for r in adopted: print("  D", r)
-if conflicts: sys.exit(1)
-if not a.apply: print("\n(re-run with --apply to write; commit first so the reset is recoverable)")
+upref = f"{a.remote}/{a.ref}"
+print(f"fetching {a.remote} ({a.ref}) ...")
+git(["fetch", a.remote])
+if git(["rev-parse", "--verify", "--quiet", upref], check=False).returncode:
+    sys.exit(f"sync_upstream.py: no {upref} after fetch; check the remote and branch names")
+new = git(["rev-list", "--count", f"HEAD..{upref}"]).stdout.strip()
+print(f"{new} new upstream commit(s) on {upref} ({git(['rev-parse', '--short', upref]).stdout.strip()})")
+if new == "0":
+    print("already in sync")
+    sys.exit(0)
+if a.dry_run:
+    print(git(["log", "--oneline", f"HEAD..{upref}"]).stdout, end="")
+    print(git(["diff", "--stat", f"HEAD...{upref}"]).stdout, end="")
+    print("(dry run: re-run without --dry-run to merge)")
+    sys.exit(0)
+dirty = git(["status", "--porcelain"]).stdout.strip()
+if dirty:
+    print(dirty)
+    sys.exit("sync_upstream.py: working tree not clean; commit or stash first, then sync")
+r = git(["merge", "--no-edit", upref], check=False, ident=True)
+print((r.stdout or "") + (r.stderr or ""), end="")
+if r.returncode:
+    print(git(["diff", "--name-only", "--diff-filter=U"]).stdout, end="")
+    sys.exit("sync_upstream.py: merge stopped on conflicts; resolve the files above, git add them, commit,"
+             "\nthen re-run export_ohos_patches.py + test_ohos_patches.py (or git merge --abort to give up)")
+print("merged; if any patch target moved, re-run export_ohos_patches.py (default upstream = upstream/main)"
+      "\nand test_ohos_patches.py to refresh and verify the patch queue")
