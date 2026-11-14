@@ -21,7 +21,7 @@ def walk(root):
 if a.upstream_dir:
     up = os.path.abspath(a.upstream_dir)
 else:
-    repo = subprocess.run(["git", "-C", OURS, "rev-parse", "--show-toplevel"], capture_output=True, text=True).stdout.strip()
+    repo = subprocess.run(["git", "-C", OURS, "rev-parse", "--show-toplevel"], capture_output=True, text=True, encoding="utf-8", errors="replace").stdout.strip()
     subprocess.run(["git", "-C", repo, "fetch", "--depth=1", "https://github.com/seedds/nxnative.git", "main"], check=True)
     up = tempfile.mkdtemp(prefix="ohos_guard_")
     with tempfile.TemporaryFile() as tar:
