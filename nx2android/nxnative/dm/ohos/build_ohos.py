@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-# HarmonyOS build of the host (the counterpart of dm/android/build.py): the same host and graphics sources, the Darwin compatibility layer
-# (dm/android/compat, which is plain POSIX and is shared by both ports) and the OHOS front end / graphics backend (dm/ohos/*.c), built with the
-# OHOS SDK's clang for aarch64-linux-ohos.
+# HarmonyOS build of the host: the host and graphics sources, the Darwin compatibility layer
+# (dm/compat, plain POSIX) and the OHOS front end / graphics backend (dm/ohos/*.c), built with the
+# OHOS SDK's clang for aarch64-linux-ohos. The platform-neutral Vulkan replay lives in dm/gfx/vk.
 #   build_ohos.py --game <title ID> [--sdk <OHOS SDK dir>] [--out <dir>] [--jobs N] [--exe] [--lib] [--only-compile] [--release]
 # Outputs in <out> (default dm/ohos/out/<title ID>): dmhost (an executable for the shell: headless, no window) and libdmhost.so (the HAP's native module).
 import argparse, concurrent.futures as cf, hashlib, os, re, shutil, subprocess, sys
@@ -50,7 +50,7 @@ obj = out / 'obj'; gen = out / 'gen'; obj.mkdir(parents=True, exist_ok=True); (g
 # ---- generated headers ---------------------------------------------------------------------------------------------------------------------
 subprocess.run([sys.executable, str(DM / 'games/game.py'), 'header', a.game, str(gen / a.game / 'game_profile.h')], check=True)
 
-# the backend's own small shaders (dm/android/shaders): glslc (the NDK's, a Vulkan SDK's, or $GLSLC) → gen/<game>/<name>_<stage>.spv.h
+# the backend's own small shaders (dm/gfx/vk/shaders): glslc (a Vulkan SDK's, or $GLSLC) → gen/<game>/<name>_<stage>.spv.h
 def find_glslc():
     cands = [os.environ.get('GLSLC')]
     for base in (Path('E:/build-tool/VulkanSDK'), Path('C:/VulkanSDK'), Path(os.environ.get('ANDROID_NDK_HOME') or '/nonexistent')):
@@ -59,7 +59,7 @@ def find_glslc():
                 cands += [str(p / 'Bin/glslc.exe'), str(p / 'shader-tools/windows-x86_64/glslc.exe'), str(p / 'shader-tools/linux-x86_64/glslc')]
     return next((Path(c) for c in cands if c and Path(c).exists()), None)
 GLSLC = find_glslc()
-for sh in sorted((DM / 'android/shaders').glob('*.*')):
+for sh in sorted((DM / 'gfx/vk/shaders').glob('*.*')):
     hdr = gen / a.game / f'{sh.stem}_{sh.suffix[1:]}.spv.h'
     if hdr.exists() and hdr.stat().st_mtime > sh.stat().st_mtime: continue
     if not GLSLC: sys.exit(f'build_ohos.py: {sh.name} needs glslc (set GLSLC to a glslc binary)')
@@ -67,22 +67,22 @@ for sh in sorted((DM / 'android/shaders').glob('*.*')):
     subprocess.run([str(GLSLC), '--target-env=vulkan1.1', '-O', str(sh), '-o', str(spv)], check=True)
     data = spv.read_bytes(); n = len(data) // 4
     words = ', '.join(str(int.from_bytes(data[i * 4:i * 4 + 4], 'little')) for i in range(n))
-    hdr.write_text(f'// generated from dm/android/shaders/{sh.name} by build_ohos.py (glslc)\nstatic const uint32_t {sh.stem}_{sh.suffix[1:]}_spv[] = {{{words}}};\n')
+    hdr.write_text(f'// generated from dm/gfx/vk/shaders/{sh.name} by build_ohos.py (glslc)\nstatic const uint32_t {sh.stem}_{sh.suffix[1:]}_spv[] = {{{words}}};\n')
 
 def srcs(*globs): return [p for g in globs for p in sorted(DM.glob(g))]
 HOST = [p for p in srcs('host/*.c') if p.name not in ('hle_movie_avc.c',)]   # dm/ohos/movie_avc_ohos.c instead
 GFX = srcs('gfx/*.c', 'gfx/nvn/*.c', 'gfx/tex/*.c')
-# the Vulkan replay backend is shared with the Android port too; only its present/window file is replaced (dm/ohos/gfx_vk_present_ohos.c)
-VKB = srcs('android/gfx_common.c', 'android/gfx_vk_core.c', 'android/gfx_vk_exec.c', 'android/gfx_vk_shader.c', 'android/gfx_vk_tex.c')
-if a.gfx == 'null': VKB = srcs('android/gfx_common.c', 'android/gfx_null.c')
-COMPAT = [p for p in srcs('android/compat/*.c') if p.name not in ('audioconverter_mediacodec.c', 'audiotoolbox_aaudio.c')]   # Android's media and audio
+# the platform-neutral Vulkan replay backend (dm/gfx/vk); only its present/window file is OHOS-specific (dm/ohos/gfx_vk_present_ohos.c)
+VKB = srcs('gfx/vk/gfx_common.c', 'gfx/vk/gfx_vk_core.c', 'gfx/vk/gfx_vk_exec.c', 'gfx/vk/gfx_vk_shader.c', 'gfx/vk/gfx_vk_tex.c')
+if a.gfx == 'null': VKB = srcs('gfx/vk/gfx_common.c', 'gfx/vk/gfx_null.c')
+COMPAT = srcs('compat/*.c')
 PORT = srcs('ohos/*.c')
 if a.gfx != 'vk': PORT = [p for p in PORT if p.name != 'gfx_vk_present_ohos.c']
 ASM = srcs('host/entry.S', 'gfx/nvn/nvn_entry.S', 'gfx/nvn/nvn_thunks.S')
 VPX = srcs('third_party/libvpx/**/*.c')   # VP9, for the movie decoder (hle_movie.c); its own config headers, warnings off
 PORT_SKIP = {'build_ohos.py'}
 
-INC = ['-include', str(DM / 'android/compat/include/darwin_compat.h'), f'-I{DM / "android/compat/include"}', f'-I{DM / "ohos/include"}', f'-I{DM / "ohos"}', f'-I{DM / "android"}', f'-I{DM / "host"}',
+INC = ['-include', str(DM / 'compat/include/darwin_compat.h'), f'-I{DM / "compat/include"}', f'-I{DM / "ohos/include"}', f'-I{DM / "ohos"}', f'-I{DM / "gfx/vk"}', f'-I{DM / "host"}',
        f'-I{DM / "gfx/nvn"}', f'-I{DM / "gfx/tex"}', f'-I{DM / "gfx/nvn/include"}', f'-I{gen / a.game}', f'-I{DM / "third_party/libvpx"}',
        f'-I{DM / "third_party/stb_vorbis"}']
 CFLAGS = [TARGET, f'--sysroot={SYSROOT}', f'-O{a.O}'] + DBG + ['-fPIC', '-fno-omit-frame-pointer', '-ffixed-x18', '-Wall', '-Wno-unused-function', '-Wno-unused-variable',
@@ -111,7 +111,7 @@ def compile_one(s):
     if s.suffix == '.S':   # Mach-O assembly → ELF
         src = gen / (s.stem + '.elf.S')
         if not src.exists() or src.stat().st_mtime < s.stat().st_mtime:
-            subprocess.run([sys.executable, str(DM / 'android/tools/darwin2elf.py'), str(s), str(src)], check=True)
+            subprocess.run([sys.executable, str(DM / 'tools/darwin2elf.py'), str(s), str(src)], check=True)
     if not dep_stale(o, d, src): return s, o, 0, ''
     if s.suffix == '.S': fl = [TARGET, f'--sysroot={SYSROOT}'] + DBG
     elif 'third_party/libvpx' in str(s).replace(os.sep, '/'): fl = VPX_FLAGS
