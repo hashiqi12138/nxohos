@@ -2,10 +2,10 @@
 
 > 调研对象：
 > - **nxnative** — <https://github.com/seedds/nxnative>（把 Switch 游戏转成 iPhone/iPad/Mac 原生应用）
-> - **nx2android** — <https://github.com/shirai91/nx2android>（同一套技术的 Android 版，产出原生 APK）
+> - **nx2ohos** — <https://github.com/shirai91/nx2ohos>（同一套技术的 Android 版，产出原生 APK）
 >
-> 结论先行：两个项目是**同一技术的两个平台后端**。nx2android 是 nxnative 的 fork + Android 运行时。
-> 鸿蒙移植应**基于 nx2android**（而非 nxnative），在 `dm/android` 之外新增 `dm/ohos` 平台层，
+> 结论先行：两个项目是**同一技术的两个平台后端**。nx2ohos 是 nxnative 的 fork + Android 运行时。
+> 鸿蒙移植应**基于 nx2ohos**（而非 nxnative），在 `dm/android` 之外新增 `dm/ohos` 平台层，
 > 打包产物从 APK 换成 HAP，`adb` 换成 `hdc`。核心（重写器 + Horizon 宿主 + NVN/Vulkan 层）几乎原样复用。
 > 分阶段实施与验收闸门（M0–M4 / Gxx / TC 用例）详见配套文档《鸿蒙移植_实现方案与验证策略》。
 
@@ -33,12 +33,12 @@ d2r-mobile（首创该技术，移植《暗黑破坏神2：狱火重生》手机
 nxnative (seedds)          iOS/Mac 后端：NSO重写器 + dmhost + NVN-on-Metal + IPA 打包
    │  fork
    ▼
-nx2android (shirai91)      复用上游全部核心，新增 dm/android 运行时（Vulkan 后端、
+nx2ohos (shirai91)      复用上游全部核心，新增 dm/android 运行时（Vulkan 后端、
                            NativeActivity 前端、NDK 构建、APK 打包、触屏手柄），
                            外面包了一层 PC 端 GUI/流水线（PySide6 + porter）
 ```
 
-| 维度 | nxnative | nx2android |
+| 维度 | nxnative | nx2ohos |
 |---|---|---|
 | 目标平台 | iPhone 15 Pro+/iPad M1+/Apple Silicon Mac | Android（骁龙 Adreno / 三星 Xclipse） |
 | CPU 执行 | 游戏 ARM64 码原生直跑 | 同左 |
@@ -52,7 +52,7 @@ nx2android (shirai91)      复用上游全部核心，新增 dm/android 运行�
 
 ### 1.3 与传统模拟器（yuzu/Skyline/Ryujinx）的本质区别
 
-| | 传统模拟器 | nxnative / nx2android |
+| | 传统模拟器 | nxnative / nx2ohos |
 |---|---|---|
 | CPU | 主流为 JIT 重编译/解译（Android 端部分也用 NCE 直跑），兼容层厚重 | **零 CPU 翻译** + 极薄兼容层，原速执行 |
 | GPU | 模拟 Maxwell GPU + 命令流解析，运行时翻译着色器 | **离线**（打包时）完成着色器翻译，运行时只重放 |
@@ -142,10 +142,10 @@ nxnative/
 └─ docs/                         # development.md、agents/（AI 移植工作流手册）
 ```
 
-### 3.2 nx2android（Android，鸿蒙移植的直接基座）
+### 3.2 nx2ohos（Android，鸿蒙移植的直接基座）
 
 ```
-nx2android/
+nx2ohos/
 ├─ gui/                          # PySide6 桌面 GUI（Setup/Port/Saves 三个标签页）
 │    └─ 调 `python -m porter port … --progress json`，画 JSON 事件
 ├─ porter/                       # 无头移植流水线（也可 CLI）
@@ -279,7 +279,7 @@ sequenceDiagram
 
 ## 6. 鸿蒙移植路径：为什么以及怎么走
 
-### 6.1 选型：基于 nx2android 移植（决定性理由）
+### 6.1 选型：基于 nx2ohos 移植（决定性理由）
 
 | 依据 | 说明 |
 |---|---|
@@ -291,7 +291,7 @@ sequenceDiagram
 
 ### 6.2 平台层映射总表（Android → HarmonyOS NEXT）
 
-| 能力 | nx2android（Android） | 鸿蒙方案（新增 `dm/ohos/`） | 工作量 |
+| 能力 | nx2ohos（Android） | 鸿蒙方案（新增 `dm/ohos/`） | 工作量 |
 |---|---|---|---|
 | 应用壳 | NativeActivity | UIAbility + ArkTS 页面 + **XComponent**（type: surface，拿到 OHNativeWindow*） | 新写 |
 | 原生入口 | `ANativeActivity_onCreate` | NAPI 模块 `napi_init`，XComponent 回调（OnSurfaceCreated/Changed/Destroyed、触摸）透传给宿主 | 新写 |
@@ -319,7 +319,7 @@ sequenceDiagram
 ### 6.3 新增模块设计（模仿 dm/android 的分层规则）
 
 ```
-nx2android/
+nx2ohos/
 ├─ nxnative/dm/ohos/                # ★新增：鸿蒙平台层（与 dm/android 平级）
 │  ├─ front_ohos.c                  # 宿主前端：事件循环、虚拟手柄、暂停菜单、设置
 │  ├─ napi_bridge.c / .h            # NAPI ↔ 宿主：触摸/键值/生命周期/振动/剪贴板
@@ -363,7 +363,7 @@ nx2android/
 - 验证：Vulkan 可用性与 `VK_OHOS_surface`、BCn 格式探测、mmap 5GB 预留、pthread/futex、EL0 寄存器语义、hdc 写沙盒 → 产出《设备能力报告》（即配套文档的 `probe_report.json`，M0.1–M0.5 探针工程）决定后续路线（原生 BCn vs ASTC 转码）
 
 **M1 核心跑通（最薄切片）**
-- clone nx2android；porter 加 `--platform hap`
+- clone nx2ohos；porter 加 `--platform hap`
 - 写 `dm/ohos`：NAPI 壳 + XComponent + wsi_ohos + build_ohos.py + mkhap.py
 - 选一款已支持轻量游戏（如 Celeste）：NSP → HAP，真机出画面
 
@@ -417,7 +417,7 @@ nx2android/
 ## 11. 参考资料
 
 - nxnative：https://github.com/seedds/nxnative （README / docs/development.md / docs/agents/）
-- nx2android：https://github.com/shirai91/nx2android （docs/ARCHITECTURE.md / DEVELOPMENT_GUIDE.md / PORT_CHECKLIST.md）
+- nx2ohos：https://github.com/shirai91/nx2ohos （docs/ARCHITECTURE.md / DEVELOPMENT_GUIDE.md / PORT_CHECKLIST.md）
 - 架构解析：https://deepwiki.com/seedds/nxnative
 - 技术源头：https://github.com/jhaizhou-ops/d2r-mobile
 - 依赖参考：Ryujinx（着色器翻译器）、Atmosphère mesosphère（内核语义）、LibHac（NSP 解析）、SPIRV-Cross / glslang、MacNativeGames

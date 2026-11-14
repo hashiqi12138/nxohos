@@ -1,7 +1,7 @@
 # Shader 排查方法论（本会话实战提炼）
 
 > **文档性质**：参考手册 / 操作规范，不是进度报告。
-> **适用范围**：`nx2android` 的 NVN → Vulkan replay 移植（HarmonyOS / Android），尤其是原始 `shaders.dmsv` 在 Maleoon 910 等设备上出现 pipeline 编译失败或画面异常时。
+> **适用范围**：`nx2ohos` 的 NVN → Vulkan replay 移植（HarmonyOS / Android），尤其是原始 `shaders.dmsv` 在 Maleoon 910 等设备上出现 pipeline 编译失败或画面异常时。
 > **使用约定**：后续 shader / 画面异常排查一律按本文的分层验证与单变量 A/B 执行；每次只改一个变量、保留 PID / 日志 / 帧证据，实际代码改动先经只读审核。
 > **当前分支**：`fix/ohos-scene-color-blocks`
 > **核心文件**：

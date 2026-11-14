@@ -9,12 +9,12 @@ LOCAL_TOOLS = REPO / 'tools'   # a developer's toolchains next to the repository
 
 
 def user_dir():
-    """The player's nx2android folder: %APPDATA%\\nx2android on Windows, ~/Library/Application Support/nx2android on a Mac, ~/.config/nx2android elsewhere.
+    """The player's nx2ohos folder: %APPDATA%\\nx2ohos on Windows, ~/Library/Application Support/nx2ohos on a Mac, ~/.config/nx2ohos elsewhere.
     NX2A_HOME overrides it (tests)"""
     if os.environ.get('NX2A_HOME'): d = Path(os.environ['NX2A_HOME'])
-    elif os.name == 'nt': d = Path(os.environ.get('APPDATA') or Path.home() / 'AppData/Roaming') / 'nx2android'
-    elif sys.platform == 'darwin': d = Path.home() / 'Library/Application Support/nx2android'
-    else: d = Path(os.environ.get('XDG_CONFIG_HOME') or Path.home() / '.config') / 'nx2android'
+    elif os.name == 'nt': d = Path(os.environ.get('APPDATA') or Path.home() / 'AppData/Roaming') / 'nx2ohos'
+    elif sys.platform == 'darwin': d = Path.home() / 'Library/Application Support/nx2ohos'
+    else: d = Path(os.environ.get('XDG_CONFIG_HOME') or Path.home() / '.config') / 'nx2ohos'
     d.mkdir(parents=True, exist_ok=True)
     return d
 

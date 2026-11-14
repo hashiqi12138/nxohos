@@ -1,6 +1,6 @@
 # nxohos HarmonyOS 构建流程指南
 
-> 适用于 nx2android/nxohos 游戏宿主的 HarmonyOS 真机构建、打包、签名、安装和验证。示例游戏为 BOTW 1.9.0，Title ID `01007EF00011E000`。
+> 适用于 nx2ohos/nxohos 游戏宿主的 HarmonyOS 真机构建、打包、签名、安装和验证。示例游戏为 BOTW 1.9.0，Title ID `01007EF00011E000`。
 >
 > 当前验证基线：`main@50463c7`。本文命令以 Windows PowerShell 为例；路径按实际环境替换，不要在命令或文档中写入密钥内容、证书密码。
 
@@ -71,7 +71,7 @@ $target = "192.168.2.158:42213"
 ### 2.3 路径要求
 
 - 工作区：`f:\新建文件夹`
-- 主源码：`f:\新建文件夹\nx2android`
+- 主源码：`f:\新建文件夹\nx2ohos`
 - HAP 构建目录必须是 **ASCII 路径**，例如 `F:\ohos_build_dmhost_01007EF00011E000` 或 `F:\ohos_build_dmhost_fix`。
 - 大数据构建盘需要约两份数据包及签名产物的空间。
 - `libdmhost.so` 必须在 hvigor 构建前复制到 `entry/libs/arm64-v8a/`。
@@ -106,7 +106,7 @@ dev.eden_emu.ohos
 ### 3.1 先查看阶段和输入
 
 ```powershell
-Set-Location "f:\新建文件夹\nx2android"
+Set-Location "f:\新建文件夹\nx2ohos"
 python -m porter port <游戏目录> -k <prod.keys路径> --platform hap -o <输出目录> --dry-run
 ```
 
@@ -138,7 +138,7 @@ python -m porter port <游戏目录> -k <prod.keys路径> --platform hap -o <输
 在源码目录执行：
 
 ```powershell
-Set-Location "f:\新建文件夹\nx2android"
+Set-Location "f:\新建文件夹\nx2ohos"
 python nxnative/dm/ohos/build_ohos.py --game 01007EF00011E000 --lib --jobs 8
 ```
 
@@ -203,7 +203,7 @@ settings.txt          # 按游戏需要
 复制新宿主：
 
 ```powershell
-Copy-Item -LiteralPath "f:\新建文件夹\nx2android\nxnative\dm\ohos\out\01007EF00011E000\libdmhost.so" -Destination "F:\ohos_build_dmhost_fix\entry\libs\arm64-v8a\libdmhost.so" -Force
+Copy-Item -LiteralPath "f:\新建文件夹\nx2ohos\nxnative\dm\ohos\out\01007EF00011E000\libdmhost.so" -Destination "F:\ohos_build_dmhost_fix\entry\libs\arm64-v8a\libdmhost.so" -Force
 ```
 
 检查 `F:\ohos_build_dmhost_fix\AppScope\app.json5` 的 `versionCode`，必须高于设备已安装版本。可获取当前 Unix 时间作为新版本号：

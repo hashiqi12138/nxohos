@@ -1,12 +1,12 @@
 ---
 name: nxohos-port
-description: Guides and validates nx2android game-host ports to HarmonyOS/OpenHarmony. Use when the user mentions nxohos、NSO/AOT、libdmhost、多 HAP、rawfile staging、Vulkan present、WiFi hdc 或真机黑屏. Do not use for ordinary ArkUI pages.
+description: Guides and validates nx2ohos game-host ports to HarmonyOS/OpenHarmony. Use when the user mentions nxohos、NSO/AOT、libdmhost、多 HAP、rawfile staging、Vulkan present、WiFi hdc 或真机黑屏. Do not use for ordinary ArkUI pages.
 license: MIT
 ---
 
 # nxohos HarmonyOS 移植
 
-先阅读 [移植适配参考](references/porting.md)，再按当前任务所处阶段执行。保留 nx2android 的 guest、HLE、NVN 和 Vulkan replay，只调整 HarmonyOS 平台边界。
+先阅读 [移植适配参考](references/porting.md)，再按当前任务所处阶段执行。保留 nx2ohos 的 guest、HLE、NVN 和 Vulkan replay，只调整 HarmonyOS 平台边界。
 
 ## 约束
 

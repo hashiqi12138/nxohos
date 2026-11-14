@@ -1,4 +1,4 @@
-# ohos-port — nx2android 鸿蒙移植 M0 阶段（探针工程）
+# ohos-port — nx2ohos 鸿蒙移植 M0 阶段（探针工程）
 
 配套文档（仓库外）：
 - 《Switch原生移植_鸿蒙技术方案报告》（技术方案 A）
@@ -6,7 +6,7 @@
 
 ## 目录布局与上游路径映射
 
-上游 nx2android 仓库布局（G0.x 闸门留档在 `<repo>/docs/verify/`）：
+上游 nx2ohos 仓库布局（G0.x 闸门留档在 `<repo>/docs/verify/`）：
 
 | 上游路径 | 本目录路径 | 说明 |
 |---|---|---|
@@ -18,7 +18,7 @@
 | `<repo>/nxnative/dm/ohos` | `dm/ohos/`（M1 阶段） | 鸿蒙后端（本阶段未开始） |
 
 > 归属说明：本目录当前按"独立 ohos-port"交付；上游仓库已克隆至
-> `../nx2android`（main@3d98ec0，镜像 gitclone.com）。M0 验收后按上表并入
+> `../nx2ohos`（main@3d98ec0，镜像 gitclone.com）。M0 验收后按上表并入
 > 仓库并建 `ohos` 分支（不覆盖上游既有文件）。
 
 ## 探针工程结构

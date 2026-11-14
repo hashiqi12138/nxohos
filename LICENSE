@@ -1,7 +1,7 @@
 MIT License
 
 Copyright (c) 2026 seedds (nxnative upstream)
-Copyright (c) 2026 shirai91 (nx2android upstream)
+Copyright (c) 2026 shirai91 (nx2ohos upstream)
 Copyright (c) 2026 nx2ohos contributors
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -28,7 +28,7 @@ This repository is a derived work. The core (NSO rewriter, dmhost runtime,
 NVN/Vulkan replay, porter pipeline) originates from:
 
 - nxnative   — https://github.com/seedds/nxnative      (MIT)
-- nx2android — https://github.com/shirai91/nx2android  (fork of the above, MIT)
+- nx2ohos — https://github.com/shirai91/nx2ohos  (fork of the above, MIT)
 
 The HarmonyOS (OpenHarmony) platform port — `nxnative/dm/ohos/`,
 `porter/platform_ohos.py` and the probe project under `ohos-port/` — is an

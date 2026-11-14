@@ -1,6 +1,6 @@
 ---
 name: switch-android-port
-description: Track down and fix problems in a Switch game running on an Android device under nx2android - crashes in the app, rendering bugs (flicker, vanishing blocks, upside-down pictures, refused Vulkan submissions, wrong colours), stutter and frame rate, soak tests and play-session checks - with the methods that found NEO - The World Ends with You's bugs (screen recordings, frame shots, pass dumps, live A/B switches, the validation layer). Use when chasing a symptom on the tablet or measuring speed or stability there. For where a change belongs (profile or core), adding a game profile, the port pipeline and the repository's rules, use nx2android-dev; the two are meant to be used together.
+description: Track down and fix problems in a Switch game running on an Android device under nx2ohos - crashes in the app, rendering bugs (flicker, vanishing blocks, upside-down pictures, refused Vulkan submissions, wrong colours), stutter and frame rate, soak tests and play-session checks - with the methods that found NEO - The World Ends with You's bugs (screen recordings, frame shots, pass dumps, live A/B switches, the validation layer). Use when chasing a symptom on the tablet or measuring speed or stability there. For where a change belongs (profile or core), adding a game profile, the port pipeline and the repository's rules, use nx2android-dev; the two are meant to be used together.
 ---
 
 # Bringing a port up on the device

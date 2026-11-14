@@ -1,6 +1,6 @@
 # nxohos HarmonyOS 真机移植与适配说明
 
-> 以《塞尔达传说：旷野之息》1.9.0（BOTW，Title ID `01007EF00011E000`）为例，总结 nx2android 宿主移植到 HarmonyOS 的架构、需要调整的位置、实际移植步骤和验收方法。
+> 以《塞尔达传说：旷野之息》1.9.0（BOTW，Title ID `01007EF00011E000`）为例，总结 nx2ohos 宿主移植到 HarmonyOS 的架构、需要调整的位置、实际移植步骤和验收方法。
 >
 > 更新日期：2026-11-14。本文区分“已正式验证”和“诊断路径已出图”，不把替代 shader 或 direct present 当作原始渲染修复。
 
@@ -60,7 +60,7 @@
        OHNativeWindow → VkSurfaceOHOS → swapchain → present
 ```
 
-核心原则是：**保留 nx2android 的 guest、HLE、NVN 和 Vulkan replay，只替换平台边界。** 不重写游戏业务，不把 BOTW 特殊分支散落到通用后端。
+核心原则是：**保留 nx2ohos 的 guest、HLE、NVN 和 Vulkan replay，只替换平台边界。** 不重写游戏业务，不把 BOTW 特殊分支散落到通用后端。
 
 ## 3. 平台边界调整（Android → HarmonyOS 移植记录）
 
@@ -145,7 +145,7 @@ shader 阶段把游戏 shader 转成 `shaders.dmsv`，包含 SPIR-V 和反射信
 
 ### 5.3 构建 `libdmhost.so`
 
-在 `nx2android` 仓库根目录执行：
+在 `nx2ohos` 仓库根目录执行：
 
 ```powershell
 python nxnative/dm/ohos/build_ohos.py --game 01007EF00011E000 --lib --jobs 8

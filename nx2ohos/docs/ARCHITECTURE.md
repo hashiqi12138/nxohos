@@ -56,7 +56,7 @@ The `tested` rows of the profiles brought up before the OHOS-only refactor recor
 | extract | `nx_extract` (built with the .NET SDK) | `extract/<version>/{ExeFS,RomFS}`, `aoc/` |
 | 60 fps | Only with `--fps60` (below): the profile's own cap, or the build's FPSLocker-Warehouse config converted for the host | `port/fpslock/{fpslock.tsv,patches.py,<build ID>.yaml}` |
 | rewrite | `patch_nso.py` with `DM_TARGET=ohos` (musl thread slots) | `port/patched_ohos_<version>/` |
-| shaders | `shader_split.py` (the DLC's own shaders too, `aoc/` given as `DM_SPLIT_AOC`), then `shader_vk.py` (SPIR-V) with the translator built from the repository's source (`dm/gfx/tools/dmsh_xlate` over `dm/third_party/ryujinx`, once per player in their nx2android folder), plus any shaders captured on the device (`port/captured_shaders/`) | `shader/pkg`, `port/shaders.dmsv` |
+| shaders | `shader_split.py` (the DLC's own shaders too, `aoc/` given as `DM_SPLIT_AOC`), then `shader_vk.py` (SPIR-V) with the translator built from the repository's source (`dm/gfx/tools/dmsh_xlate` over `dm/third_party/ryujinx`, once per player in their nx2ohos folder), plus any shaders captured on the device (`port/captured_shaders/`) | `shader/pkg`, `port/shaders.dmsv` |
 | host | `dm/ohos/build_ohos.py --lib --release` with the OHOS SDK's clang (`--debug`: a development build, debug information and `DM_CTL`) | `port/host-ohos/libdmhost.so` (`port/host-ohos-debug/`) |
 | data | The files the app reads from its sandbox folder, named relative to it (`front_ohos.c` prefixes the root) | `<out>/<App>-data-ohos/{mods,RomFS,aoc,shaders.dmsv,nintendo_ext.ttf,env.txt,settings.txt,nx2a-data.json}` (+ `fpslock.tsv` with `--fps60`); the button-icon font is made in `port/font/` |
 | hap | `dm/ohos/mkhap.py`: the host and the pack in a signed HAP (DevEco's automatic signature, bound to the template's bundle `dev.eden_emu.ohos`) | `<out>/<App>.hap`, or `<out>/<App>-haps/` for a split pack |
@@ -90,18 +90,18 @@ Events: with `--progress json`, every line on stdout is one JSON object, the pro
 
 ## What the player installs
 
-The tool runs from the repository: **Python 3.11+** with `requirements.txt` (`lz4`, `capstone`, `pillow`, `fonttools`, `pyyaml`, `pycryptodome`, and `backports.zstd` before Python 3.14). It does not ship toolchains; `python -m porter doctor` checks them and the free disk space, and `porter tools --download` (`porter/fetch.py`) fetches the missing .NET SDK from Microsoft's release list, checks the archive against the checksum its list gives, and unpacks it into the player's nx2android folder, which the finders search:
+The tool runs from the repository: **Python 3.11+** with `requirements.txt` (`lz4`, `capstone`, `pillow`, `fonttools`, `pyyaml`, `pycryptodome`, and `backports.zstd` before Python 3.14). It does not ship toolchains; `python -m porter doctor` checks them and the free disk space, and `porter tools --download` (`porter/fetch.py`) fetches the missing .NET SDK from Microsoft's release list, checks the archive against the checksum its list gives, and unpacks it into the player's nx2ohos folder, which the finders search:
 - **.NET SDK 10**: builds `nx_extract` and the shader translator, and runs them.
 - **The OHOS SDK / DevEco Studio**: its `native/llvm/bin/clang` builds the host (`build_ohos.py`), and its `hdc` installs on a device. Found via `OHOS_SDK` / `DEVECO_SDK_HOME` / `HOS_SDK_HOME`, the usual SDK folders, or DevEco's own (`sdk/default/openharmony`).
 - **hdc** (DevEco's toolchains), only to install from the tool; the HAP and the data pack are made without it.
 - Their own **prod.keys**. Keys and game files are never copied into the repository or the app.
 
-The player's settings and built translator live in their nx2android folder: `%APPDATA%\nx2android` on Windows, `~/Library/Application Support/nx2android` on a Mac, `~/.config/nx2android` elsewhere (`NX2A_HOME` overrides it).
+The player's settings and built translator live in their nx2ohos folder: `%APPDATA%\nx2ohos` on Windows, `~/Library/Application Support/nx2ohos` on a Mac, `~/.config/nx2ohos` elsewhere (`NX2A_HOME` overrides it).
 
 ## Repository layout
 
 ```
-nx2android/
+nx2ohos/
   docs/ARCHITECTURE.md   this file
   porter/                port pipeline (python -m porter)
   devtools/              device bring-up scripts

@@ -6,7 +6,7 @@
 
 - 已完成：M0 探针（真机 PASS）、M1 核心跑通（解包/重写/shader/打包/真机 Vulkan 上屏），
   BOTW `01007EF00011E000` 真机进标题画面。
-- 基线仓库已建立：`nx2android/`（上游快照+鸿蒙改动）、`ohos-port/`（探针工程）、
+- 基线仓库已建立：`nx2ohos/`（上游快照+鸿蒙改动）、`ohos-port/`（探针工程）、
   `docs/`（两份方案报告）、`.trae/skills/`（移植 skill）。
 - 目标：公开仓库 → CI 可构建 → 社区可复现 → 可持续演进（M2–M4）。
 
@@ -27,7 +27,7 @@ release/0.x    发布分支，打 v0.x.y tag
 本仓库 = 上游快照 + 鸿蒙层。为避免与上游脱节：
 
 ```sh
-git remote add upstream https://github.com/shirai91/nx2android.git
+git remote add upstream https://github.com/shirai91/nx2ohos.git
 git fetch upstream
 git checkout -b sync/upstream-<日期> upstream/main
 # 冲突点集中在：

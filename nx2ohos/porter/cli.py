@@ -33,7 +33,7 @@ def _parser():
     po.add_argument('--dry-run', action='store_true', help='print the stage graph and the inputs the folder gives, and build nothing: no toolchain is required, nothing is extracted')
     po.add_argument('--progress', default='auto', choices=('auto', 'bar', 'lines', 'json', 'off'), help='json: one JSON event per line')
     t = sub.add_parser('tools', help='list, or download, the missing .NET SDK from Microsoft')
-    t.add_argument('--download', action='store_true', help='download and unpack it into the nx2android folder (you accept its license)')
+    t.add_argument('--download', action='store_true', help='download and unpack it into the nx2ohos folder (you accept its license)')
     t.add_argument('--only', default='', help='these instead of the missing ones: dotnet'); t.add_argument('--json', action='store_true')
     t.add_argument('--progress', default='auto', choices=('auto', 'bar', 'lines', 'json', 'off'))
     c = sub.add_parser('config', help='show or change the saved settings'); c.add_argument('key', nargs='?'); c.add_argument('value', nargs='?')

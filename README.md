@@ -11,7 +11,7 @@ NVN 图形调用离线翻译成 SPIR-V 后经 Vulkan 重放上屏。
 ## 仓库布局
 
 ```
-nx2android/                上游 nx2android（main@3d98ec0）工作区快照 + 鸿蒙改动
+nx2ohos/                上游 nx2ohos（main@3d98ec0）工作区快照 + 鸿蒙改动
 ├── nxnative/dm/ohos/       鸿蒙平台层（构建、HAP 壳、NAPI、present、音频、movie）
 ├── porter/platform_ohos.py porter --platform hap 流水线
 └── nxnative/dm/            NSO 重写器 + dmhost 宿主运行时（复用上游，少量改动）
@@ -28,7 +28,7 @@ python ohos-port/tools/verify/run_unit_tests.py
 python ohos-port/probe/build_probe.py --host-check
 
 # 2. 构建鸿蒙 dmhost（需 OHOS_SDK 环境变量）
-cd nx2android/nxnative/dm/ohos
+cd nx2ohos/nxnative/dm/ohos
 python build_ohos.py --game <TITLE_ID> --lib
 python mkhap.py --game <TITLE_ID> --data <数据目录> --out <输出>
 
@@ -52,7 +52,7 @@ python -m porter port <游戏目录> -k prod.keys --platform hap [--install]
 
 - **本仓库不含任何游戏文件、密钥、固件**（.gamedump/、tools/、prod.keys 等均在忽略列表）。
 - 游戏数据与密钥需用户自备，放在 `.gamedump/<Game>/`（git 忽略）。
-- 上游：nxnative / nx2android，MIT。本仓库为衍生工作，见 [LICENSE](LICENSE)。
+- 上游：nxnative / nx2ohos，MIT。本仓库为衍生工作，见 [LICENSE](LICENSE)。
 
 ## 开发约定
 

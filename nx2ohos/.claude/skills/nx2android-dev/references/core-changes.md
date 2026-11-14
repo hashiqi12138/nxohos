@@ -8,7 +8,7 @@ The core is everything every game shares. Know which layer a change belongs to (
 | Android runtime | `nxnative/dm/android/` | Vulkan replay (`gfx_vk_core/exec/tex/shader/present.c`), front end (`front_android.c`: input, on-screen gamepad, pause menu, text entry), `overlay_layout.h` (shared geometry), `perf_android.c`, `haptics_android.c`, `compat/`, `build.py` (NDK build), `apk/mkapk.py`, `nxnative/dm/android/tools/shader_vk.py`, `nxnative/dm/android/tools/android_profile.py` |
 | Port pipeline | `porter/` | Stages in `pipeline.py`; reuses upstream's `nxnative/scripts/build_ipa_from_nsp.py` through `upstream.py` (imported, never copied). No UI. |
 | GUI | `gui/` | Only calls `python -m porter …` (`runner.py`); anything it does, the CLI must do too. |
-| Bundle | `packaging/` | `nx2android.py` is both the app and the Python the tools run under; a new tool started as `[sys.executable, script.py, …]` works frozen, other forms (`-c`, flags) do not. |
+| Bundle | `packaging/` | `nx2ohos.py` is both the app and the Python the tools run under; a new tool started as `[sys.executable, script.py, …]` works frozen, other forms (`-c`, flags) do not. |
 
 ## How to make a core change
 
