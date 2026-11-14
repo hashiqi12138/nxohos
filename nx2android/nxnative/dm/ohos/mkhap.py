@@ -4,7 +4,7 @@
 #   2. libdmhost.so must be in entry/libs/arm64-v8a before the build, or it is not packed into libs/arm64-v8a.
 # Signing is DevEco's automatic signature (the keystore password lives in the IDE's secure storage): the project is preconfigured, so the
 # build produces a signed HAP as long as DevEco's signing material is the one this repo was set up with.
-#   python ohos/mkhap.py [--game <title ID>] [--data <dir>] [--install]
+#   python ohos/mkhap.py --game <title ID> [--data <dir>] [--install]
 #   --data <dir>: packed into the modules' resources/rawfile/dm (the game's RomFS and NSOs for a build that carries its own data). A data set larger than
 #     --split-mb is split over feature modules (data1, data2, ...): the signing tool reads the HAP as a plain zip and refuses anything past 4 GB
 #     ("find zip central directory failed"), so one module per ~3.5 GB is the only way to carry a 15 GB pack. The app reads each part through
@@ -19,7 +19,7 @@ BUNDLE = 'dev.eden_emu.ohos'
 ABILITY = 'EntryAbility'
 
 ap = argparse.ArgumentParser()
-ap.add_argument('--game', default='01002B30028F6000')
+ap.add_argument('--game', required=True, help='the title ID (names the host build folder and the ASCII build copy)')
 ap.add_argument('--lib', help="the libdmhost.so to pack (default: ohos/out/<game>/libdmhost.so; porter passes its own build's)")
 ap.add_argument('--data')
 ap.add_argument('--split-mb', type=int, default=3500,

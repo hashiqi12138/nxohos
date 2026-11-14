@@ -7,7 +7,7 @@ sys.path.insert(0, str(REPO))
 os.environ['NX2A_HOME'] = tempfile.mkdtemp(prefix='nx2a_test_home_')
 
 from porter import config, datapack, pipeline, platform_ohos, profiles   # noqa: E402
-from porter.upstream import android_profile, game          # noqa: E402
+from porter.upstream import port_profile, game          # noqa: E402
 
 # The pipeline's messages hold "→" (mem_profile's alias region line): stdout as porter.cli.main sets it, or the Windows release runner's cp1252 pipe fails the test
 if hasattr(sys.stdout, 'reconfigure'): sys.stdout.reconfigure(encoding='utf-8', errors='replace')
@@ -16,15 +16,15 @@ NEO = '010043B013C5C000'
 
 
 def profile_dir(rows, gid='0100000000AAA000'):
-    """A throwaway game profile with an android.tsv of these rows, found through DM_GAMES_DIR"""
+    """A throwaway game profile with a port.tsv of these rows, found through DM_GAMES_DIR"""
     root = Path(tempfile.mkdtemp(prefix='nx2a_test_profiles_')); d = root / gid; d.mkdir()
     (d / 'game.tsv').write_text(f'title_id\t{gid}\nprogram_id\t{gid}\nname\tTest Game\nipa\tTestGame.ipa\nmodules\tmain sdk\n', encoding='utf-8')
-    (d / 'android.tsv').write_text(''.join(f'{k}\t{v}\n' for k, v in rows), encoding='utf-8')
+    (d / 'port.tsv').write_text(''.join(f'{k}\t{v}\n' for k, v in rows), encoding='utf-8')
     os.environ['DM_GAMES_DIR'] = str(root)
     return d
 
 
-class AndroidProfiles(unittest.TestCase):
+class PortProfiles(unittest.TestCase):
     def tearDown(self): os.environ.pop('DM_GAMES_DIR', None)
 
     def test_neo(self):
@@ -32,88 +32,30 @@ class AndroidProfiles(unittest.TestCase):
         self.assertEqual(p.status, 'playable'); self.assertEqual(p.package, 'org.nx2a.neo'); self.assertTrue(p.landscape)
         self.assertEqual(p.settings, {'docked': '0', 'overlay': '1', 'rumble': '1'}); self.assertEqual(p.requires, ['bcn'])
 
-    def test_only_android_profiles_listed(self):
+    def test_only_ported_profiles_listed(self):
         rows = profiles.all_entries()
-        self.assertIn(NEO, [r.id for r in rows]); self.assertTrue(all(r.android for r in rows))
-        self.assertGreater(len(profiles.all_entries(android_only=False)), len(rows))
+        self.assertIn(NEO, [r.id for r in rows]); self.assertTrue(all(r.ported for r in rows))
+        self.assertGreater(len(profiles.all_entries(ported_only=False)), len(rows))
 
-    def test_fps_setting(self):   # the pause menu's Show FPS (front_android.c settings_load fps=)
+    def test_fps_setting(self):   # the pause menu's Show FPS (front_ohos.c settings_load fps=)
         d = profile_dir([('status', 'boots'), ('setting', 'fps=1')])
-        self.assertEqual(android_profile.load(d.name).settings, {'fps': '1'})
-        with self.assertRaises(android_profile.ProfileError): android_profile.load(profile_dir([('status', 'boots'), ('setting', 'fps=2')]).name)
+        self.assertEqual(port_profile.load(d.name).settings, {'fps': '1'})
+        with self.assertRaises(port_profile.ProfileError): port_profile.load(profile_dir([('status', 'boots'), ('setting', 'fps=2')]).name)
 
-    def test_opacity_setting(self):   # the gamepad's opacity, 20..80 percent by 5 (the menu's slider, overlay_layout.h OV_OPACITY_MIN..MAX)
-        self.assertEqual(android_profile.load(profile_dir([('status', 'boots'), ('setting', 'opacity=45')]).name).settings, {'opacity': '45'})
+    def test_opacity_setting(self):   # the gamepad's opacity, 20..80 percent by 5 (the menu's slider)
+        self.assertEqual(port_profile.load(profile_dir([('status', 'boots'), ('setting', 'opacity=45')]).name).settings, {'opacity': '45'})
         for v in ('10', '85', '42'):
-            with self.assertRaises(android_profile.ProfileError, msg=v): android_profile.load(profile_dir([('status', 'boots'), ('setting', f'opacity={v}')]).name)
+            with self.assertRaises(port_profile.ProfileError, msg=v): port_profile.load(profile_dir([('status', 'boots'), ('setting', f'opacity={v}')]).name)
 
     def test_default_package(self):
         d = profile_dir([('status', 'boots')])
-        self.assertEqual(android_profile.load(d.name).package, 'org.nx2a.t0100000000aaa000')
+        self.assertEqual(port_profile.load(d.name).package, 'org.nx2a.t0100000000aaa000')
 
     def test_bad_keys_are_refused(self):
         for rows in ([('status', 'great')], [('colour', 'red')], [('setting', 'volume=3')], [('overlay', 'tablet q 0.1 0.2')], [('env', 'lower=1')], [('package', 'Not A Package')],
                      [('status', 'boots'), ('status', 'playable')]):
             d = profile_dir(rows)
-            with self.assertRaises(android_profile.ProfileError, msg=rows): android_profile.load(d.name)
-
-    def test_header_default_layout(self):   # the ergonomic layouts (the themes' design), the tablet's then the phone's, the same controls in each
-        h = android_profile.header(android_profile.load(NEO))
-        rx = r'\{(OV_\w+), (-?[\d.]+)f, (-?[\d.]+)f, ([\d.]+)f, ([\d.]+)f, ([\d.]+)f, (\w+), "([^"]*)", "(\w+)"\}'
-        tablet, phone = (re.findall(rx, h.split(f'#define DM_AOV_{n}')[1].split('#define')[0]) for n in ('TABLET', 'PHONE'))
-        self.assertEqual((len(tablet), len(phone)), (16, 16)); self.assertIn('#define DM_AOV_N 16', h)
-        self.assertEqual([r[0] for r in tablet], [r[0] for r in phone]); self.assertEqual([r[6] for r in tablet], [r[6] for r in phone])
-        self.assertEqual(tablet[0], ('OV_STICK_L', '0.0', '0.2105', '0.5789', '0.2421', '0.2421', '0', '', 'stick_l'))   # 184 px of the 1216x760 design, 160 px from the left edge
-        a = next(r for r in tablet if r[6] == 'DM_BTN_A'); self.assertEqual(a[1:3], ('1.0', '-0.1421'))   # from the right edge
-        self.assertEqual(next(r for r in tablet if r[6] == 'DM_BTN_MINUS')[-2], '-')   # the minus button's label, not "no label"
-
-    def test_header_overlay_move(self):   # a moved control: x and y fractions of the window, in the one layout named
-        d = profile_dir([('status', 'boots'), ('overlay', 'phone a 0.5 0.5')])
-        h = android_profile.header(android_profile.load(d.name))
-        self.assertIn('{OV_BUTTON, 0.5f, 0.0f, 0.5f, 0.1456f, 0.1456f, DM_BTN_A, "A", "a"}', h.split('#define DM_AOV_PHONE')[1])
-        self.assertNotIn('0.5f, 0.0f, 0.5f', h.split('#define DM_AOV_PHONE')[0])
-        with self.assertRaises(android_profile.ProfileError): android_profile.load(profile_dir([('status', 'boots'), ('overlay', 'a 0.5 0.5')]).name)
-
-    def test_theme_mapping(self):   # porter packs the game's own pack, the ergo pack for a game the table does not name
-        self.assertEqual(android_profile.theme(NEO).name, 'neotwewy'); self.assertEqual(android_profile.theme(NEO.lower()).name, 'neotwewy')
-        self.assertEqual(android_profile.theme('0100000000AAA000').name, 'ergo')
-        rows = [l.split('\t') for l in (android_profile.THEMES / 'themes.tsv').read_text(encoding='utf-8').splitlines() if l and not l.startswith('#')]
-        self.assertEqual(len({r[0] for r in rows}), len(rows))   # one pack per game
-        for r in rows: self.assertRegex(r[0], r'^0100[0-9A-F]{12}$'); self.assertTrue((android_profile.THEMES / r[1] / 'theme.tsv').is_file(), r)
-
-    def test_theme_packs(self):   # every pack: both layouts' atlases, and sprites only of the layout's controls, within the atlas, every control drawn idle (a button held too)
-        from PIL import Image
-        names = {r['name'] for r in android_profile.default_layout()}
-        for pack in sorted(p for p in android_profile.THEMES.iterdir() if p.is_dir()):
-            rows = [l.split('\t') for l in (pack / 'theme.tsv').read_text(encoding='utf-8').splitlines() if l and not l.startswith('#')]
-            lays = {r[1]: r for r in rows if r[0] == 'layout'}
-            self.assertEqual(set(lays), set(android_profile.LAYOUTS), pack.name)
-            for lay, row in lays.items():
-                im = Image.open(pack / row[4]); self.assertIn(im.mode, ('P', 'RGBA'), pack.name)   # what overlay_theme.c decodes
-                sp = [r for r in rows if r[0] == 'sprite' and r[1] == lay]
-                for r in sp:
-                    self.assertIn(r[2], names, r); self.assertIn(r[4], ('idle', 'held', 'knob', 'decor'), r)
-                    x, y, w, h = map(int, r[5:9]); self.assertTrue(x >= 0 and y >= 0 and x + w <= im.width and y + h <= im.height, (pack.name, r))
-                drawn = {(r[2], r[3], r[4]) for r in sp}
-                for n in names - {'dpad'}:
-                    self.assertIn((n, '-', 'idle'), drawn, (pack.name, lay, n))
-                    if n not in ('stick_l', 'stick_r'): self.assertIn((n, '-', 'held'), drawn, (pack.name, lay, n))
-                for d in ('up', 'down', 'left', 'right'): self.assertTrue({('dpad', d, 'idle'), ('dpad', d, 'held')} <= drawn, (pack.name, lay, d))
-                self.assertTrue({('stick_l', '-', 'knob'), ('stick_r', '-', 'knob')} <= drawn, (pack.name, lay))
-
-    def test_apk_assets(self):   # mkapk.py --asset: the theme's files as assets/overlay/<name>, nothing of the other packs
-        t = Path(tempfile.mkdtemp(prefix='nx2a_test_apk_'))
-        try:
-            so = t / 'libdmhost.so'; so.write_bytes(b'\x7fELF' + b'\0' * 60); pack = android_profile.theme(NEO)
-            args = [a for f in ('theme.tsv', 'tablet.png', 'phone.png') for a in ('--asset', f'overlay/{f}={pack / f}')]
-            import subprocess, zipfile
-            subprocess.run([sys.executable, str(REPO / 'nxnative/dm/android/apk/mkapk.py'), str(so), str(t / 'a.apk'), str(t / 'k.json'), '--lib', 'dmhost'] + args,
-                           check=True, capture_output=True)
-            with zipfile.ZipFile(t / 'a.apk') as z:
-                self.assertEqual(sorted(n for n in z.namelist() if n.startswith('assets/')), ['assets/overlay/phone.png', 'assets/overlay/tablet.png', 'assets/overlay/theme.tsv'])
-                self.assertEqual(z.read('assets/overlay/tablet.png'), (pack / 'tablet.png').read_bytes())
-        finally:
-            shutil.rmtree(t, ignore_errors=True)
+            with self.assertRaises(port_profile.ProfileError, msg=rows): port_profile.load(d.name)
 
 
 class DataPack(unittest.TestCase):
@@ -130,14 +72,14 @@ class DataPack(unittest.TestCase):
             o = t / 'out-data'
             self.assertTrue((o / 'mods/main.patched.bin').is_file()); self.assertTrue((o / 'RomFS/Data/a.bin').is_file()); self.assertTrue((o / 'aoc/1/d.bin').is_file())
             env = (o / 'env.txt').read_text()
-            self.assertIn('DM_LANG=ja', env); self.assertIn('DM_AOC_DIR=/sdcard/Android/data/org.nx2a.neo/files/aoc', env)
+            self.assertIn('DM_LANG=ja', env); self.assertIn('DM_AOC_DIR=aoc', env)   # the app prefixes its sandbox folder (front_ohos.c)
             self.assertEqual((o / 'settings.txt').read_text(), 'docked=0\noverlay=1\nrumble=1\n')
             self.assertEqual((man['files'], man['bytes'], man['dlc'], man['requires']), (4, 35, [1], ['bcn']))   # the installer checks requires
             self.assertEqual(datapack.read_manifest(o)['package'], 'org.nx2a.neo')
             datapack.build(t / 'touch-data', profile=p, version='v196608', display='1.03', patched=t / 'patched', romfs=t / 'romfs', shaders=t / 'shaders.dmsv',
                            settings=pipeline.TOUCH_SETTINGS)   # --touch: the gamepad starts hidden, the profile's other settings stay
             self.assertEqual((t / 'touch-data/settings.txt').read_text(), 'docked=0\noverlay=0\nrumble=1\n')
-            bare = android_profile.load(profile_dir([('status', 'experimental')]).name); os.environ.pop('DM_GAMES_DIR', None)   # no setting rows: --touch alone still writes the file
+            bare = port_profile.load(profile_dir([('status', 'experimental')]).name); os.environ.pop('DM_GAMES_DIR', None)   # no setting rows: --touch alone still writes the file
             datapack.build(t / 'bare-data', profile=bare, version='v196608', display='1.03', patched=t / 'patched', romfs=t / 'romfs', shaders=t / 'shaders.dmsv', settings=pipeline.TOUCH_SETTINGS)
             self.assertEqual((t / 'bare-data/settings.txt').read_text(), 'overlay=0\n')
         finally:
@@ -150,15 +92,13 @@ class DataPack(unittest.TestCase):
         t = Path(tempfile.mkdtemp(prefix='nx2a_test_font_'))
         try:
             port = pipeline.Port(pipeline.Options(folder=str(t)))
-            port.package = 'org.nx2a.test'; port.aw = t / 'android'; port.logs = t / 'logs'; port.env = dict(os.environ, PYTHONUTF8='1')
+            port.package = 'org.nx2a.test'; port.aw = t / 'port'; port.logs = t / 'logs'; port.env = dict(os.environ, PYTHONUTF8='1')
             env, files = pipeline.Port.button_font(port)
-            self.assertEqual(env, ['DM_SHARED_FONT_EXT=/sdcard/Android/data/org.nx2a.test/files/nintendo_ext.ttf']); self.assertEqual(list(files), ['nintendo_ext.ttf'])
+            self.assertEqual(env, ['DM_SHARED_FONT_EXT=nintendo_ext.ttf']); self.assertEqual(list(files), ['nintendo_ext.ttf'])   # bare: front_ohos.c prefixes the sandbox folder
             cmap = TTFont(files['nintendo_ext.ttf']).getBestCmap()
             self.assertTrue({0xE0E0, 0xE0E1, 0xE0E4, 0xE0E5, 0xE0EF, 0xE100} <= set(cmap))   # A, B, L, R, +, stick
             made = files['nintendo_ext.ttf'].stat().st_mtime_ns
             self.assertEqual(pipeline.Port.button_font(port)[1]['nintendo_ext.ttf'].stat().st_mtime_ns, made)   # reused while the tool and the letters are unchanged
-            port.o.platform = 'hap'   # a HarmonyOS pack: the sandbox folder is unknown here, front_ohos.c puts it in front of the bare name
-            self.assertEqual(pipeline.Port.button_font(port)[0], ['DM_SHARED_FONT_EXT=nintendo_ext.ttf'])
         finally:
             shutil.rmtree(t, ignore_errors=True)
 
@@ -184,7 +124,7 @@ class HarmonyOSPort(unittest.TestCase):   # porter/platform_ohos.py: the stage g
 
     def test_pack_paths_are_relative(self):   # a HarmonyOS pack names its own files bare: front_ohos.c puts the sandbox folder in front of them at startup
         self.assertEqual(datapack.pack_path('', 'aoc'), 'aoc')
-        self.assertEqual(datapack.pack_path('/sdcard/Android/data/org.nx2a.neo/files', 'aoc'), '/sdcard/Android/data/org.nx2a.neo/files/aoc')
+        self.assertEqual(datapack.pack_path('/data/app/files', 'aoc'), '/data/app/files/aoc')
         t = Path(tempfile.mkdtemp(prefix='nx2a_test_hap_pack_'))
         try:
             (t / 'patched').mkdir(); (t / 'patched/main.patched.bin').write_bytes(b'x' * 10)
@@ -200,15 +140,15 @@ class HarmonyOSPort(unittest.TestCase):   # porter/platform_ohos.py: the stage g
 
 
 class Experimental(unittest.TestCase):
-    def test_ios_profile_copied_with_experimental_android_tsv(self):   # an iOS-only profile is copied out of the repository, never edited in place
-        ios_only = '010028600EBDA000'   # Super Mario 3D World + Bowser's Fury: an iOS profile without android.tsv or patches.py
+    def test_profile_copied_with_experimental_port_tsv(self):   # a game profile without a port.tsv is copied out of the repository, never edited in place
+        unported = '010028600EBDA000'   # Super Mario 3D World + Bowser's Fury: a game profile without port.tsv or patches.py
         t = Path(tempfile.mkdtemp(prefix='nx2a_test_exp_')); environ = dict(os.environ)
         try:
-            port = pipeline.Port(pipeline.Options(folder=t, experimental=True)); port.env = {}; port.work = t / f'{ios_only}_build'; port.o.keys = None
-            g, ap = port.experimental_profile(game.load(ios_only), ios_only)
-            self.assertEqual(g.dir, (t / f'{ios_only}_build/profile/{ios_only}').resolve())
-            self.assertEqual((ap.status, ap.package), ('experimental', f'org.nx2a.t{ios_only.lower()}'))
-            self.assertFalse((REPO / f'nxnative/dm/games/{ios_only}/android.tsv').exists())
+            port = pipeline.Port(pipeline.Options(folder=t, experimental=True)); port.env = {}; port.work = t / f'{unported}_build'; port.o.keys = None
+            g, ap = port.experimental_profile(game.load(unported), unported)
+            self.assertEqual(g.dir, (t / f'{unported}_build/profile/{unported}').resolve())
+            self.assertEqual((ap.status, ap.package), ('experimental', f'org.nx2a.t{unported.lower()}'))
+            self.assertFalse((REPO / f'nxnative/dm/games/{unported}/port.tsv').exists())
             self.assertFalse((g.dir / 'patches.py').exists())   # patch_nso.py finds the per-build cuts in dm/games
             self.assertEqual(os.environ.get('DM_GAMES_FIRST'), '1')
         finally:
@@ -219,26 +159,6 @@ class Misc(unittest.TestCase):
     def test_config_roundtrip(self):
         config.set_value('device', 'abc:5555'); self.assertEqual(config.load()['device'], 'abc:5555')
         with self.assertRaises(KeyError): config.set_value('nope', 'x')
-
-    def test_version_code_grows_with_updates(self):
-        self.assertLess(pipeline.version_code('v0'), pipeline.version_code('v65536'))
-        self.assertEqual(pipeline.version_code('v196608'), 196609)
-
-    def test_version_code_offset(self):   # a rebuild lifted above an earlier one, still below the next game version's port
-        self.assertEqual(pipeline.version_code('v589824', 1), 589826)
-        self.assertLess(pipeline.version_code('v65536', pipeline.VERCODE_OFFSET_MAX), pipeline.version_code('v131072'))
-        for bad in (-1, pipeline.VERCODE_OFFSET_MAX + 1):
-            with self.assertRaises(pipeline.BuildError): pipeline.version_code('v65536', bad)
-
-    def test_install_downgrade_names_the_offset(self):   # a refused downgrade says what is installed and how to lift the rebuild above it
-        from porter.adb import Adb, AdbError
-        a = Adb('adb')
-        def run(*x, **_):
-            if x[0] == 'install': raise AdbError('adb install: Failure [INSTALL_FAILED_VERSION_DOWNGRADE: Downgrade detected: Update version code 589825 is older than current 589826]')
-            return '    versionCode=589826 minSdk=29 targetSdk=34\n'
-        a.run = run
-        with self.assertRaises(AdbError) as e: a.install('x.apk', 'org.nx2a.test')
-        self.assertIn('(589826)', str(e.exception)); self.assertIn('--vercode-offset', str(e.exception))
 
     def test_derived_alias_headroom(self):   # issue #26: a derived profile of a game with virtual address memory gets 8 GB more alias region, the heap unchanged
         d = profile_dir([('status', 'playable')])
@@ -463,48 +383,6 @@ class FpsLocker(unittest.TestCase):   # porter/fpslocker.py: FPSLocker-Warehouse
     def test_url(self):
         from porter import fpslocker
         self.assertTrue(fpslocker.url('0100fd501f95a000', self.BID).endswith('/patches/0100FD501F95A000/D49165C05EAD8AE1.yaml'))
-
-
-class Saves(unittest.TestCase):   # porter/saves.py: the save folders on the device, a .zip or folder to import (no device: the shell answers are made up)
-    class FakeAdb:
-        def __init__(self, sizes, times, packages=('org.nx2a.a',)): self.sizes, self.times, self.packages, self.cmds = sizes, times, packages, []
-        def remote_sizes(self, rdir): return dict(self.sizes)
-        def shell(self, script, **kw):
-            self.cmds.append(script)
-            if script.startswith('pm list packages'): return ''.join(f'package:{p}\n' for p in self.packages)
-            if 'stat -c "%Y %n"' in script: return ''.join(f'{t} {n}\n' for n, t in self.times.items())
-            return ''
-
-    def test_listing(self):   # newest first; a device save counts with its own; hidden folders (an export still copying) and the request files left out
-        from porter import saves
-        adb = self.FakeAdb({'20261030-100000/a.dat': 10, '20261030-100000.device/d.dat': 5, '20261029-090000/a.dat': 7, 'result.txt': 40, '.x.part/a.dat': 9, 'console/sub/b.bin': 3},
-                           {'20261030-100000': 200, '20261030-100000.device': 200, '20261029-090000': 100, 'console': 300})
-        rows = saves.listing(adb, 'org.nx2a.a')
-        self.assertEqual([r['name'] for r in rows], ['console', '20261030-100000', '20261029-090000'])
-        self.assertEqual((rows[1]['files'], rows[1]['bytes'], rows[1]['device']), (2, 15, True))
-        self.assertEqual((rows[0]['files'], rows[0]['bytes'], rows[0]['device']), (1, 3, False))
-
-    def test_pick_app(self):
-        from porter import saves
-        from porter.upstream import BuildError
-        self.assertEqual(saves.pick_app(self.FakeAdb({}, {}), ''), 'org.nx2a.a')
-        two = self.FakeAdb({}, {}, ('org.nx2a.a', 'org.nx2a.b'))
-        self.assertEqual(saves.pick_app(two, 'org.nx2a.b'), 'org.nx2a.b')
-        with self.assertRaises(BuildError): saves.pick_app(two, '')
-        with self.assertRaises(BuildError): saves.pick_app(two, 'org.nx2a.c')
-
-    def test_zip(self):   # a .zip of one folder imports that folder; one of loose files imports them; a path out of the archive is refused
-        import zipfile
-        from porter import saves
-        from porter.upstream import BuildError
-        t = Path(tempfile.mkdtemp(prefix='nx2a_test_saves_'))
-        with zipfile.ZipFile(t / 'one.zip', 'w') as z: z.writestr('MySave/main.dat', b'x'); z.writestr('MySave/sub/b.dat', b'y')
-        with zipfile.ZipFile(t / 'loose.zip', 'w') as z: z.writestr('main.dat', b'x'); z.writestr('other.dat', b'y')
-        with zipfile.ZipFile(t / 'bad.zip', 'w') as z: z.writestr('../evil.dat', b'x')
-        u = Path(tempfile.mkdtemp(dir=t)); self.assertEqual(saves._unpacked(t / 'one.zip', u), u / 'MySave')
-        u = Path(tempfile.mkdtemp(dir=t)); self.assertEqual(sorted(p.name for p in saves._unpacked(t / 'loose.zip', u).iterdir()), ['main.dat', 'other.dat'])
-        with self.assertRaises(BuildError): saves._unpacked(t / 'bad.zip', Path(tempfile.mkdtemp(dir=t)))
-        self.assertEqual(saves._unpacked(t, None), t)   # a folder: as it is
 
 
 if __name__ == '__main__':

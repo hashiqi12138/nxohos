@@ -62,7 +62,7 @@
 
 核心原则是：**保留 nx2android 的 guest、HLE、NVN 和 Vulkan replay，只替换平台边界。** 不重写游戏业务，不把 BOTW 特殊分支散落到通用后端。
 
-## 3. Android 与 HarmonyOS 需要调整的地方
+## 3. 平台边界调整（Android → HarmonyOS 移植记录）
 
 | 边界 | Android | HarmonyOS / nxohos 的调整 |
 |---|---|---|
@@ -114,7 +114,7 @@
 
 ### 5.1 解包并生成 OHOS NSO 模块
 
-porter 的前两段与 Android 共用，但重写阶段设置 `DM_TARGET=ohos`：
+porter 的解包与提取段共用上游 NSP 流水线（`nxnative/scripts/build_ipa_from_nsp.py`），重写阶段设置 `DM_TARGET=ohos`：
 
 ```text
 extract → rewrite（DM_TARGET=ohos）→ shaders
@@ -127,7 +127,7 @@ OHOS 重写产物放入数据包的 `mods/`，宿主启动时读取 `mods/main.p
 - `dm/tools/patch_nso.py` 及平台 thread-slot/TLS 约定；
 - `dm/ohos` 的加载和线程入口；
 - 每款游戏按 build ID 设置的 `patches.py`；
-- 生成目录与 Android 分开，避免错误复用另一平台的缓存。
+- 生成目录独立命名（`host-ohos`、`patched_ohos_<version>`），避免错误复用缓存。
 
 **不要在设备上依赖匿名 RW 页面重新改为 RX，也不要把运行时下载的 `.so` 再 `dlopen` 当通用方案。** 当前真机结论要求构建期完成重写。
 
@@ -161,15 +161,15 @@ python nxnative/dm/ohos/build_ohos.py --game 01007EF00011E000 --lib --out <构�
 
 - `host/*.c`：guest 与系统 HLE；
 - `gfx/*.c`、`gfx/nvn/*.c`、`gfx/tex/*.c`：图形公共部分；
-- `android/gfx_vk_*.c`：共享 Vulkan replay；
-- `android/compat`：可共用的 POSIX/Darwin 兼容层；
+- `gfx/vk/gfx_vk_*.c`：共享 Vulkan replay；
+- `compat`：可共用的 POSIX/Darwin 兼容层；
 - `ohos/*.c`：OHOS 前端、音频、媒体、窗口和 present。
 
 编译关键点包括 `-ffixed-x18`、`-DDM_OHOS=1`、AArch64 OHOS target、16 KB max-page-size，以及链接时 `--no-undefined`。
 
 ### 5.4 准备统一数据包
 
-设备沙盒内的数据布局保持与 Android 一致：
+设备沙盒内的数据布局（`front_ohos.c` 把沙盒根目录前缀到数据包的相对路径上）：
 
 ```text
 dm/
@@ -358,8 +358,8 @@ gl_Position.z = gl_Position.z * 0.5 + gl_Position.w * 0.5;
 
 正式修复位置（已在 `fix/ohos-shader-depth` 分支实现）：
 
-- `android/gfx_vk_shader.c`：增加通用 SPIR-V 深度映射 variant，在最终位置输出阶段的 entry point return 前执行 `z'=z/2+w/2`；
-- `android/gfx_vk_exec.c::build_pipeline()`：仅在设备无 depth clip control 且 NVN 当前为 near=-w 时请求该 variant；
+- `gfx/vk/gfx_vk_shader.c`：增加通用 SPIR-V 深度映射 variant，在最终位置输出阶段的 entry point return 前执行 `z'=z/2+w/2`；
+- `gfx/vk/gfx_vk_exec.c::build_pipeline()`：仅在设备无 depth clip control 且 NVN 当前为 near=-w 时请求该 variant；
 - vertex 后还有 geometry 时只改最后的位置输出阶段，避免重复映射；
 - variant 必须进入模块缓存键，因为游戏可在运行期切换 depth mode。
 
@@ -407,7 +407,7 @@ gl_Position.z = gl_Position.z * 0.5 + gl_Position.w * 0.5;
 
 **为什么层拷贝不能修（残影来源）**：mode6/7 丢槽后把 owner 层拷贝到被丢层，矩形消失但出现残影。这证明 fog shader 对 out2/out3 写的是**不同**数据（两个历史层语义不同），拷贝把错误历史喂给后续帧 ⇒ 鬼影。因此正确修复必须让被丢槽**真正重渲染**，而不是拷贝。
 
-**正式修复（mode8：pass 拆分 + draw 重放）**，位于 `nxnative/dm/android/gfx_vk_exec.c`：
+**正式修复（mode8：pass 拆分 + draw 重放）**，位于 `nxnative/dm/gfx/vk/gfx_vk_exec.c`：
 
 - pass1：丢掉重复的别名槽，只保留 5 个颜色附件（Maleoon tile store 可正确处理的配置）；
 - pass 结束后：用本 pass 捕获的 draw/draw_idx（`P_sp[]`）重放，在一个**单附件** pass 里只写被丢槽，使其真实 store 落地（`vk_end_pass` 末尾的重放块）；
@@ -494,10 +494,10 @@ glslangValidator -V --target-env vulkan1.2 -S vert -o <key>.spv <shader.vert>
 | `nxnative/dm/ohos/front_ohos.c` | surfaceId、OHNativeWindow、环境变量和 `dm_main` 启动 |
 | `nxnative/dm/ohos/gfx_vk_present_ohos.c` | VkSurfaceOHOS、swapchain、blit、present、帧抓取 |
 | `nxnative/dm/ohos/ohos_vk_platform.h` | OHOS Vulkan 平台声明及无 AHardwareBuffer 的回退 |
-| `nxnative/dm/android/gfx_vk_core.c` | device、memory pools、submission、copy-back |
-| `nxnative/dm/android/gfx_vk_exec.c` | NVN 状态到 Vulkan pipeline/descriptor/draw 的 replay |
-| `nxnative/dm/android/gfx_vk_shader.c` | DMSV、反射、SPIR-V module 与 variant |
-| `nxnative/dm/android/gfx_vk_tex.c` | NVN texture/image/view 映射 |
+| `nxnative/dm/gfx/vk/gfx_vk_core.c` | device、memory pools、submission、copy-back |
+| `nxnative/dm/gfx/vk/gfx_vk_exec.c` | NVN 状态到 Vulkan pipeline/descriptor/draw 的 replay |
+| `nxnative/dm/gfx/vk/gfx_vk_shader.c` | DMSV、反射、SPIR-V module 与 variant |
+| `nxnative/dm/gfx/vk/gfx_vk_tex.c` | NVN texture/image/view 映射 |
 | `ohos-port/docs/verify/20261107-数据包与present.md` | 早期数据包、present 和真机验证记录 |
 
 ## 10. 当前后续工作清单

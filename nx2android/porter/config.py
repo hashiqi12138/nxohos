@@ -6,11 +6,10 @@ from porter.paths import user_dir
 
 KEYS = {
     'keys': 'path of prod.keys',
-    'ndk': 'Android NDK folder (r27c)',
     'dotnet': 'dotnet executable (.NET SDK 10)',
-    'adb': 'adb executable (platform-tools)',
-    'out': 'folder for the APK and data pack (empty = the game folder)',
-    'device': 'adb serial of the device to install on (empty = the only one connected)',
+    'sdk': 'OHOS SDK folder (the one with native/llvm/bin/clang; empty = found automatically)',
+    'out': 'folder for the HAP and data pack (empty = the game folder)',
+    'device': 'hdc connect key of the device to install on (hdc list targets; empty = the only one connected)',
     'language': 'game language code (empty = English)',
 }
 

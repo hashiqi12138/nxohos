@@ -9,17 +9,17 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 DM = ROOT / 'nxnative/dm'
 sys.path.insert(0, str(ROOT))
-from porter.toolchain import find_ndk
+from porter.toolchain import find_ohos_sdk
 
 
 class LayoutCache(unittest.TestCase):
     @unittest.skipUnless(shutil.which('cc'), 'a host C compiler is required')
     def test_layout_identity(self):
-        ndk, _ = find_ndk()
-        headers = next(ndk.glob('toolchains/llvm/prebuilt/*/sysroot/usr/include'), None) if ndk else None
-        if not headers:
-            self.skipTest('NDK Vulkan headers are required')
-        src = (DM / 'android/gfx_vk_shader.c').read_text()
+        sdk = find_ohos_sdk()
+        headers = sdk / 'native/sysroot/usr/include' if sdk else None
+        if not headers or not (headers / 'vulkan/vulkan.h').is_file():
+            self.skipTest('OHOS SDK Vulkan headers are required')
+        src = (DM / 'gfx/vk/gfx_vk_shader.c').read_text()
         start = src.index('static VkDescriptorSetLayout shader_layout(')
         helper = src[start:src.index('\n}\n', start) + 3]
         code = r'''

@@ -1,10 +1,10 @@
-# The HarmonyOS port (porter port --platform hap). The steps up to the shaders are the Android port's, with the rewriter's target switched to
-# ohos (patch_nso.py's musl thread slots: there is no bionic TLS_SLOT_APP to read). What differs is the three stages after them:
-#   host     dm/ohos/build_ohos.py builds libdmhost.so with the OHOS SDK's clang instead of the NDK
+# The HarmonyOS port (porter port). The steps up to the shaders are the shared NSP pipeline's, with the rewriter's target set to
+# ohos (patch_nso.py's musl thread slots). What differs is the three stages after them:
+#   host     dm/ohos/build_ohos.py builds libdmhost.so with the OHOS SDK's clang
 #   hap      dm/ohos/mkhap.py puts the host and the data pack in a signed HAP (the app stages the pack into its sandbox on the first launch)
-#   install  hdc install -r and aa start instead of adb
-# The pack's layout is the Android one (mods/ RomFS/ aoc/ shaders.dmsv env.txt): front_ohos.c sets DM_ROOT / DM_ROMFS / DM_SAVE / DM_TEMP from the
-# sandbox folder instead of /sdcard, and resolves the pack's relative paths (DM_AOC_DIR, DM_SHARED_FONT_EXT, ...) against it.
+#   install  hdc install -r and aa start
+# The pack's layout is the shared one (mods/ RomFS/ aoc/ shaders.dmsv env.txt): front_ohos.c sets DM_ROOT / DM_ROMFS / DM_SAVE / DM_TEMP from the
+# sandbox folder, and resolves the pack's relative paths (DM_AOC_DIR, DM_SHARED_FONT_EXT, ...) against it.
 # The HAP's bundleName is the template's (dev.eden_emu.ohos): DevEco's automatic signing material is bound to it, and a HAP signed for another
 # bundle name does not install (dm/ohos/hap/AppScope/app.json5). The game's package is recorded in the pack's manifest instead.
 import os, shutil, subprocess, sys
@@ -49,7 +49,7 @@ def find_hdc():
 def host(port):
     """libdmhost.so for this profile, built by dm/ohos/build_ohos.py into the port's build folder"""
     PROG.stage('host', step='the OHOS SDK')
-    out = port.aw / ('host-ohos' if not port.o.debug else 'host-ohos-debug')   # beside the Android port's host/, which the NDK build owns
+    out = port.aw / ('host-ohos' if not port.o.debug else 'host-ohos-debug')   # the host stage's own folder
     if out.exists(): nsp.rmtree(out)
     cmd = [sys.executable, str(OHOS / 'build_ohos.py'), '--game', port.g.id, '--lib', '--out', str(out), '--jobs', str(port.o.jobs)]
     if not port.o.debug: cmd.append('--release')
@@ -63,8 +63,6 @@ def hap(port):
     """The signed HAP around the host and the pack, as <App>.hap in the output folder"""
     PROG.stage('HAP')
     if port.o.touch: say('[RED] --touch is not in the HarmonyOS host yet: the pack carries the button layout, but nothing draws the overlay there')
-    if port.o.replace_signer: say('[RED] --replace-signer is Android\'s (a differently signed APK in place); an hdc install of the HAP replaces it')
-    if port.o.vercode_offset: say('[RED] --vercode-offset is the APK\'s versionCode; mkhap.py sets the HAP\'s from the clock so the cloud debug page takes it')
     stem = port.hap_stem
     work = port.aw / 'hap'
     port.o.out.mkdir(parents=True, exist_ok=True)

@@ -1,115 +1,102 @@
 # Architecture
 
-nx2android turns a player's own Switch game files into an Android app. The player picks the game's folder, clicks **Port**, and gets an APK plus the game's data, which the tool can install on a connected device. Every game the tool supports is a **game profile**; everything all games share is the **core**.
+nx-for-ohos turns a player's own Switch game files into a HarmonyOS app. The player picks the game's folder and runs `python -m porter port …`; the tool produces a signed **HAP** plus the game's **data pack**, and can install them on a connected device over `hdc`. Every game the tool supports is a **game profile**; everything all games share is the **core**.
 
 ```
-gui/  (PySide6 desktop app)
-  │  runs `python -m porter port … --progress json`, draws the JSON events
+porter/  (headless port pipeline, a CLI: python -m porter)
+  │  inputs → extract → rewrite → shaders → host → data pack → hap → [install]
+  │  reuses nxnative/scripts/build_ipa_from_nsp.py's steps (imported as a library, not copied)
   ▼
-porter/  (headless port pipeline, also a CLI)
-  │  inputs → extract → rewrite → shaders → host → apk → data pack → [install]
-  │  reuses nxnative/scripts/build_ipa_from_nsp.py's steps (imported, not copied)
-  ▼
-nxnative/  (our fork of seedds/nxnative + the Android port)
-  ├─ dm/host, dm/gfx, dm/tools        core: Horizon host, NVN layer, rewriter, shader split   (shared with iOS)
-  ├─ dm/android                       core: Android runtime (Vulkan backend, front end, build.py, mkapk.py)
-  └─ dm/games/<title ID>/             profiles: game.tsv + shader tables (+ patches.py) + android.tsv
+nxnative/  (our fork of seedds/nxnative + the HarmonyOS port)
+  ├─ dm/host, dm/gfx, dm/compat, dm/tools   core: Horizon host, NVN→Vulkan replay, the rewriter, the shader split
+  ├─ dm/ohos                                the HarmonyOS front end: build_ohos.py, mkhap.py, front_ohos.c, the HAP template (hap/)
+  └─ dm/games/<title ID>/                   profiles: game.tsv + shader tables (+ patches.py) + port.tsv
 ```
+
+The shared engine is upstream's fork. The replay backend the HarmonyOS host builds is Vulkan (`dm/gfx/vk`); upstream's Metal and GL backends remain in the fork but are not built for OHOS. `nxnative/scripts/build_ipa_from_nsp.py` keeps its historical name: it is the shared NSP pipeline (scan, extraction, the shader split, stage reuse, progress) that `porter` imports as a library; its Mac/iOS helpers are dormant for an OHOS port.
 
 ## Layers and their rules
 
 | Layer | Where | Holds | Must not hold |
 |---|---|---|---|
-| **Core, shared** | `nxnative/dm/{host,gfx,tools,third_party}` | What every game and both platforms need. Android differences behind `DM_ANDROID` / `__APPLE__` / `DM_TARGET`. | Game-specific branches. |
-| **Core, Android runtime** | `nxnative/dm/android/` | Vulkan replay backend (`gfx_vk_*`), the NativeActivity front end (on-screen gamepad, pause menu, settings, the save manager's export and import, text entry with an on-screen keyboard, haptics, shaking the device as shaking the controller, audio, performance hints), the NDK build (`build.py`), the APK writer (`apk/mkapk.py`), the Vulkan shader bundle (`tools/shader_vk.py`), the profile's Android header (`tools/android_profile.py`), the gamepad's layouts (`overlay_default.tsv`: tablet and phone) and its themes (`themes/`: a sprite pack per design, and `themes.tsv`, the table of which game wears which; `themes/README.md`). | Code that depends on a game: no title IDs, game names or per-game branches in code (comments may name the game a rule was found with, as upstream's do). A game that needs something different gets a profile key. |
-| **Game profile** | `nxnative/dm/games/<title ID>/` | Data only: `game.tsv` (upstream keys), shader tables, `patches.py` (per-build rewriter cuts), and `android.tsv` (Android keys, below). | Code paths. |
-| **Port pipeline** | `porter/` | The stages that turn game files into the APK and data pack; the toolchain check; the profile registry; installing over adb. Runs headless. | UI. |
-| **GUI** | `gui/` | Screens over `porter`: setup check, game folder, profile status, options, progress, install. | Pipeline logic: everything it does, the CLI does too. |
-| **Distribution** | `packaging/` | The player's bundle (`build_bundle.py`, PyInstaller): one executable that is the GUI and the Python the pipeline runs the engine's tools with (`nx2android.py`), the committed `nxnative/` beside it, the install guide (`INSTALL.md`). | Pipeline logic or toolchains. |
-| **Dev tools** | `devtools/` | Scripts for bringing up a game on a connected device (pushing files, screen recording, soak tests, pass traces). The device comes from `devtools/device.json` or `NX2A_DEVICE`. | Anything the port needs. |
+| **Core, shared** | `nxnative/dm/{host,gfx,compat,tools,third_party}` | What every game needs: the Horizon host (`host`), the NVN layer and the Vulkan replay backend (`gfx/nvn`, `gfx/vk`, `gfx/tex`), the compatibility shims that let the upstream host build for OHOS (`compat`, `compat/include/darwin_compat.h` is force-included), the rewriter and the shader tools (`tools`). OHOS differences behind `DM_OHOS` / `__OHOS__` / `DM_TARGET`. | Game-specific branches: no title-ID branch in OHOS-guarded code. |
+| **OHOS front end** | `nxnative/dm/ohos/` | The HarmonyOS runtime: the OHOS SDK build (`build_ohos.py`), the HAP writer (`mkhap.py`), the front end (`front_ohos.c`: the sandbox paths, settings, text entry), the Vulkan present path (`gfx_vk_present_ohos.c`), audio (`audiotoolbox_ohos.c`), movie (`movie_avc_ohos.c`), the NAPI bridge (`napi_bridge.c`), performance hints (`perf_ohos.c`), and the preconfigured HAP template (`hap/`, bundle `dev.eden_emu.ohos`). | Code that depends on a game: no title IDs, game names or per-game branches in code (comments may name the game a rule was found with, as upstream's do). A game that needs something different gets a profile key. |
+| **Game profile** | `nxnative/dm/games/<title ID>/` | Data only: `game.tsv` (upstream keys), shader tables, `patches.py` (per-build rewriter cuts), and `port.tsv` (the port keys, below). | Code paths. |
+| **Port pipeline** | `porter/` | The stages that turn game files into the HAP and the data pack; the toolchain check; the profile registry; installing over `hdc`. Runs headless. | UI; anything from `devtools/`. |
+| **Dev tools** | `devtools/` | Scripts for bringing up a game on a connected device (shader probes, dump extraction, image conversion). | Anything the port needs; a hard-coded device or package. |
 
-The game profile is compiled into the host (`game_profile.h` and `android_profile.h`, generated by `build.py`), as upstream does: porting a game builds its host with the player's NDK, which takes seconds.
+The game profile is compiled into the host (`game_profile.h`, generated by `build_ohos.py`), as upstream does: porting a game builds its host with the OHOS SDK's clang, which takes seconds. `tests/arch_rules.py` checks these rules on the committed tree (`python tests/arch_rules.py`, also run by `tests/test_architecture.py`).
 
-## Game profiles on Android
+## Game profiles
 
-A profile is offered for Android when it has an `android.tsv`; the profiles without one (52 of the 54 today, upstream's iOS games) show as "ios only": an experimental port can still try them. `android.tsv` holds, one `key<TAB>value` row each:
+A profile is offered for HarmonyOS when it has a `port.tsv`; a profile without one shows as "not ported": an experimental port can still try it. `port.tsv` holds, one `key<TAB>value` row each (read by `dm/tools/port_profile.py`, `PortProfile`):
 
 | Key | Meaning |
 |---|---|
-| `status` | `playable` (tested end to end on a device), `wip` (plays on a device, but parts are missing: README.md's Games table says which), `boots` (starts, not playable yet) or `experimental` |
+| `status` | `playable` (tested end to end on a device), `wip` (plays on a device, but parts are missing), `boots` (starts, not playable yet) or `experimental` |
 | `tested` | `<version> <device>`: the version and device the status was checked on |
-| `package` | The app's package name (default `org.nx2a.t<title ID in lowercase>`) |
+| `package` | The app's package name (default `org.nx2a.t<title ID in lowercase>`), recorded in the pack's manifest; the HAP itself installs as `dev.eden_emu.ohos` |
 | `orientation` | `landscape` (default) or `any` |
-| `requires` | Device features the game needs, checked by the installer: `bcn` (BC texture compression) |
-| `setting` | `<name>=<value>`: the pause menu's defaults on first launch (`overlay`, `rumble`, `docked`, `fps`: the frame rate counter in the top left corner, off by default; `opacity`: the gamepad's, 20 to 80 percent by 5, 60 by default), written to the data pack's `settings.txt`, where the app also keeps the player's own gamepad layout from the pause menu's layout editor (`ui=` rows) and its Snap to grid (`grid`, off by default) |
-| `env` | `<KEY>=<VALUE>`: a host switch the game needs on Android, written to the data pack's `env.txt` |
-| `overlay` | `<tablet\|phone> <control> <x> <y>`: moves one on-screen control of that layout (`dm/android/overlay_default.tsv`) to x, y as fractions of the window, compiled into `android_profile.h` |
+| `requires` | Device features the game needs, checked by the installer: `bcn` (BC texture compression; the Maleoon GPUs report no `textureCompressionBC`) |
+| `setting` | `<name>=<value>`: the pause menu's defaults on first launch (`overlay`, `rumble`, `docked`, `fps`, `opacity`: the gamepad's, 20 to 80 percent by 5), written to the data pack's `settings.txt`, where the app keeps the player's own choices |
+| `env` | `<KEY>=<VALUE>`: a host switch the game needs, written to the data pack's `env.txt` |
 
 Per-build knowledge stays where upstream keeps it: the rewriter's cuts in `patches.py` / `dm/tools/sdk_patches.py`, keyed by build ID.
 
+The `tested` rows of the profiles brought up before the OHOS-only refactor record the device they were originally validated on; they are kept as the historical record, not rewritten.
+
 ## The port
 
-`python -m porter port <game folder> -k <prod.keys>` (the GUI's **Port** button) runs these stages. The slow ones (extraction, rewrite, shader split, the translator build, the Vulkan shaders) keep their output with a key of their inputs and are skipped on the next run when the key is unchanged; the host build is incremental (`build.py`), and the APK and the data pack are made again each time (seconds).
+`python -m porter port <game folder> -k <prod.keys>` runs these stages. The slow ones (extraction, rewrite, shader split, the translator build, the Vulkan shaders) keep their output with a key of their inputs and are skipped on the next run when the key is unchanged; the host build is incremental (`build_ohos.py`), and the HAP and the data pack are made again each time. `--dry-run` prints the stage graph and the inputs the folder gives, and builds nothing (no toolchain required).
 
 | Stage | What | Output (in `<game folder>/<title ID>_build/`) |
 |---|---|---|
 | inputs | Find the base game, updates and DLC (NSP / XCI / NSZ / XCZ), match the profile, pick the version; check the game folder's drive has room (about twice the game files, NSZ / XCZ counted decompressed and once more for their NSP, less an earlier port's build folder) | |
 | decompress | Only with NSZ / XCZ files that a stage below will read (a reused extraction reads none): each becomes an NSP (an XCZ: an NSP of its secure partition), its NCZs expanded and encrypted again with the keys their section tables carry, every NCA checked against its SHA-256 name (`porter/dumps.py`). Deleted once the DLC are extracted, or when the port fails | `tmp/dumps/` (temporary) |
 | extract | `nx_extract` (built with the .NET SDK) | `extract/<version>/{ExeFS,RomFS}`, `aoc/` |
-| 60 fps | Only with `--fps60` (below): the profile's own cap, or the build's FPSLocker-Warehouse config converted for the host | `android/fpslock/{fpslock.tsv,patches.py,<build ID>.yaml}` |
-| rewrite | `patch_nso.py` with `DM_TARGET=android` | `android/patched_<version>/` |
-| shaders | `shader_split.py` (the DLC's own shaders too, `aoc/` given as `DM_SPLIT_AOC`), then `shader_vk.py` (SPIR-V) with the translator built from the repository's source (`dm/gfx/tools/dmsh_xlate` over `dm/third_party/ryujinx`, once per player in their nx2android folder), plus the shaders captured on the device (below) | `shader/pkg`, `android/shaders.dmsv`, `android/captured_shaders/` |
-| host | `dm/android/build.py --release` with the player's NDK (`--debug`: a development build, debug information and `DM_CTL`) | `android/host/libdmhost.so` (`android/host-debug/`) |
-| apk | `dm/android/apk/mkapk.py`, signed with the player's own key, with the game's gamepad theme only (`dm/android/themes/themes.tsv`: its pack, else the ergo pack) as `assets/overlay/` | `<out>/<App>.apk` |
-| data | The files the app reads from `/sdcard/Android/data/<package>/files` | `<out>/<App>-data/{mods,RomFS,aoc,shaders.dmsv,nintendo_ext.ttf,env.txt,settings.txt,nx2a-data.json}` (+ `fpslock.tsv` with `--fps60`); the button-icon font is made in `android/font/` |
-| install | `adb install`, the profile's `requires` checked against the device, the data pack pushed (optional) | |
+| 60 fps | Only with `--fps60` (below): the profile's own cap, or the build's FPSLocker-Warehouse config converted for the host | `port/fpslock/{fpslock.tsv,patches.py,<build ID>.yaml}` |
+| rewrite | `patch_nso.py` with `DM_TARGET=ohos` (musl thread slots) | `port/patched_ohos_<version>/` |
+| shaders | `shader_split.py` (the DLC's own shaders too, `aoc/` given as `DM_SPLIT_AOC`), then `shader_vk.py` (SPIR-V) with the translator built from the repository's source (`dm/gfx/tools/dmsh_xlate` over `dm/third_party/ryujinx`, once per player in their nx2android folder), plus any shaders captured on the device (`port/captured_shaders/`) | `shader/pkg`, `port/shaders.dmsv` |
+| host | `dm/ohos/build_ohos.py --lib --release` with the OHOS SDK's clang (`--debug`: a development build, debug information and `DM_CTL`) | `port/host-ohos/libdmhost.so` (`port/host-ohos-debug/`) |
+| data | The files the app reads from its sandbox folder, named relative to it (`front_ohos.c` prefixes the root) | `<out>/<App>-data-ohos/{mods,RomFS,aoc,shaders.dmsv,nintendo_ext.ttf,env.txt,settings.txt,nx2a-data.json}` (+ `fpslock.tsv` with `--fps60`); the button-icon font is made in `port/font/` |
+| hap | `dm/ohos/mkhap.py`: the host and the pack in a signed HAP (DevEco's automatic signature, bound to the template's bundle `dev.eden_emu.ohos`) | `<out>/<App>.hap`, or `<out>/<App>-haps/` for a split pack |
+| install | `hdc install -r` (a single HAP) or `bm install -p` (a split pack), then `aa start` (optional, `--install`) | |
 
 RomFS in the data pack is hard-linked to the extraction when the volume allows it, so it takes no extra space.
 
-## Saves
+**The HAP and its size.** `mkhap.py` copies the preconfigured project (`dm/ohos/hap`) to an ASCII path (hvigor refuses a non-ASCII one), puts `libdmhost.so` in `entry/libs/arm64-v8a`, and builds with DevEco's hvigor. The signing tool reads a HAP as a plain zip and refuses anything past 4 GB, so a data pack larger than `--split-mb` (default 3500 MB) is split over feature modules (`data1`, `data2`, …) that carry nothing but `rawfile/dm`; the app reads each part through `createModuleContext(<module>).resourceManager`. A split pack comes back as a folder of signed HAPs that `bm install -p` installs as one bundle. The HAP's `versionCode` is set from the clock (`DM_VERSION_CODE` overrides it), so a rebuild installs over an earlier one and the cloud debug page takes it; it stays under AppGallery's 2,100,000,000 limit until 2036.
 
-The app keeps the game's save in its internal storage (`$DM_SAVE`, and `<DM_SAVE>_device` for a game that mounts a device save too: `hle_fs.c`), which a reinstall keeps, an uninstall deletes, and adb cannot read in a release build (it is not debuggable). The save manager (`dm/android/saves_android.c`) copies it in and out through the app's files folder, which adb, porter and the PC reach without a permission:
+**Saves.** The host keeps the game's save in the app's sandbox folder (`$DM_SAVE`, and `<DM_SAVE>_device` for a game that mounts a device save too: `hle_fs.c`), which a reinstall keeps and an uninstall deletes.
 
-- `saves/<YYYYMMDD-HHMMSS>/`: one export, the save's files byte for byte, as a console's save tools copy them (so a console's save folder imports as it is, and an export goes back to a console the same way); `saves/<name>.device/` beside it holds the device save.
-- **Export save** (the pause menu's Game tab) copies the committed save (never `.work`: a transaction in flight is not a save) on a thread of its own, through a hidden `.part` folder renamed when whole, and starts again if the game commits meanwhile.
-- **Import save** opens a picker of the folders in `saves/`, newest first. The import is applied at the next start, before the host mounts anything (`ANativeActivity_onCreate` → `dm_saves_start`), so it never meets a commit: the menu writes `saves/import.txt` and the app ends. At the start the save it replaces is exported first (`<stamp>-before-import`), the folder is copied to `<DM_SAVE>.import` and swapped in with one `renameat2(RENAME_EXCHANGE)`.
-- `porter saves` (the GUI's **Saves** tab) does the same from the PC: `apps`, `list`, `export [dest] [--name …]` (a fresh export: the app is stopped and started with `saves/export.txt`, exports and ends without starting the game, then the folder is pulled), `import <folder or .zip>` (pushed under a hidden name, renamed, named in `saves/import.txt`, and the app started to apply it). Each request carries a token the app writes back in `saves/result.txt` with its outcome.
-- The files are not changed. A save made on a console belongs to that console's user; a game that keeps its user's id inside its own files (Animal Crossing: New Horizons, issue #16) reads it as another user's, since the host's one user (`hle_account.c`) is not mapped into it.
+**Shaders captured on the device.** A game can set shaders whose code is in no game file (Xenoblade Chronicles 3, hundreds: effects and model materials), which the split cannot find. When a draw needs a shader the bundle lacks, the host saves it to `captured_shaders/<key>.bin` (`gfx_vk_shader.c` `vk_shader_missing`; the draw is skipped this time). `shader_vk.py --capture` translates that folder into the bundle. These shaders are not in the profile's tables: the tables stay what the game files give. So such a game draws everything only after it has been played that far once and ported again.
 
-Shaders captured on the device: a game can set shaders whose code is in no game file (Xenoblade Chronicles 3, hundreds: effects and model materials), which the split cannot find. When a draw needs a shader the bundle lacks, the app saves it to `captured_shaders/<key>.bin` in its files folder (`gfx_vk_shader.c` `vk_shader_missing`; the draw is skipped this time). A port with `--install` first pulls that folder into `<build folder>/android/captured_shaders/`, which is kept from port to port, and `shader_vk.py --capture` translates it into the bundle. These shaders are not in the profile's tables: the tables stay what the game files give. So such a game draws everything only after it has been played that far once and ported again.
-
-The install starts the app once before pushing anything: Android makes the app's files folder, owned by the app with the app's group, when the app first asks for it, and a folder the shell makes first lacks that group underneath FUSE, so the app cannot read what is pushed below it. Files whose path passes Windows' 260 characters are pushed through short hard links (adb.exe is not long-path aware). A file already on the device at its size is skipped; the port's own outputs (everything but `RomFS/` and `aoc/`, which change only with the game's version) are also compared by MD5, because a rewriter cut changes a module without changing its size.
-
-What the port refuses: a game whose `main` renders with Vulkan or OpenGL (the Android host replays NVN only so far), and one whose shaders need a step upstream runs by booting the game in the Mac host (GLSLC capture, Unreal / Oodle decoding).
+What the port refuses: a game whose `main` renders with Vulkan or OpenGL (the host replays NVN only so far), one whose shaders are in Oodle-compressed GFPAK archives (decoding them needs the host's tool mode on a device), and one whose shaders need a step upstream runs by booting the game in the Mac host (GLSLC capture, Unreal / Oodle decoding).
 
 **Versions.** The newest version in the folder is packed. A version the profile was not brought up on is packed from a derived profile (upstream's `derive_profile`, in `profile-derived/`), without that version's per-build fixes. When another build is packed (GitHub issue #26):
-- a profile that declares virtual address memory (a `sys_resource` row, not 0) gets 8 GB more `mem_alias` and `mem_reserve` in its derived copy (`pipeline.alias_headroom`): the address regions such a game reserves depend on its build (Donkey Kong Country Returns HD's base game reached +7.0 GB of alias region, where its tested update stays under +2.75 GB), the tested build's high-water mark does not bind another one, and the heap and the device's memory stay as they are;
+- a profile that declares virtual address memory (a `sys_resource` row, not 0) gets 8 GB more `mem_alias` and `mem_reserve` in its derived copy (`pipeline.alias_headroom`): the address regions such a game reserves depend on its build, the tested build's high-water mark does not bind another one, and the heap and the device's memory stay as they are;
 - a module whose build has no registered patch, where the tested build of it has some (`dm/tools/sdk_patches.py`, the profile's `patches.py`), gets a `[RED]` line that names the patches it goes without (`pipeline.lost_patches`).
 
-`--alias-headroom <GB>` (0 to 48; the GUI's **Extra address space**, Auto when not given) sets that headroom for any port of such a game: the derived copy, or for a version the profile was brought up on a copy in `profile-mem/` (without `patches.py`, which stays in `dm/games`), which every tool takes first. `0` keeps the profile's layout. It is for a game whose log shows `AllocateAddressRegion … refused (0x1803)` before it crashes; a game without virtual address memory keeps its layout whatever the value.
+`--alias-headroom <GB>` (0 to 48; Auto when not given) sets that headroom for any port of such a game: the derived copy, or for a version the profile was brought up on a copy in `profile-mem/` (without `patches.py`, which stays in `dm/games`), which every tool takes first. `0` keeps the profile's layout. It is for a game whose log shows `AllocateAddressRegion … refused (0x1803)` before it crashes; a game without virtual address memory keeps its layout whatever the value.
 
-**Experimental ports** (`--experimental`, the GUI's Experimental box): a game without an Android profile. With no profile at all, upstream's survey (`<game folder>/<title ID>_survey/survey.md`) guesses a provisional one; with only an iOS profile, that profile is copied. Either way it goes to `<title ID>_build/profile/<title ID>/` with an `android.tsv` of status `experimental`, and every tool finds it there (`DM_GAMES_DIR`). That folder is where a bring-up starts; a game that works gets its profile into `nxnative/dm/games/`.
+**Experimental ports** (`--experimental`): a game without a HarmonyOS profile. With no profile at all, upstream's survey (`<game folder>/<title ID>_survey/survey.md`) guesses a provisional one; with a game profile but no `port.tsv`, that profile is copied. Either way it goes to `<title ID>_build/profile/<title ID>/` with a `port.tsv` of status `experimental`, and every tool finds it there (`DM_GAMES_DIR`). That folder is where a bring-up starts; a game that works gets its profile into `nxnative/dm/games/`.
 
-`--package` installs a port under another package than the profile's, beside the player's other build of the game (a test).
+`--package` records a port under another package than the profile's in the pack's manifest (a test); the HAP still installs as `dev.eden_emu.ohos`, because DevEco's signing material is bound to that bundle name.
 
-**versionCode.** The APK's versionCode is the packed Switch version number + 1 (v196608 → 196609), so a port of a game update installs over the base game's port. Android installs an APK over one with the same versionCode, but never over a higher one (`INSTALL_FAILED_VERSION_DOWNGRADE`); the only other way past that is an uninstall, which deletes the saves. `--vercode-offset N` (or `NX2A_VERCODE_OFFSET`) adds N, 0 to 65535, so a rebuild of the same version installs over an earlier rebuild with an offset; 65535 at most keeps it below the next version's port, as Switch versions are 65536 apart. A refused downgrade names the installed versionCode.
+**Touch games** (`--touch`). `--touch` writes `overlay=0` into the data pack's `settings.txt` over the profile's settings (`pipeline.TOUCH_SETTINGS`), as Unpacking's profile does: the on-screen gamepad starts hidden. It is the first launch's default: the installer keeps a `settings.txt` the app already has. The HarmonyOS host does not draw the on-screen gamepad yet, so the pack carries the setting but nothing renders the overlay there.
 
-**Touch games** (`--touch`, the GUI's Touch game box). On Android the game's touch screen takes every touch in both modes, for every game (`hle_hid.c` `touch_on`), but the on-screen gamepad's controls take the touches that go down on them or near them (`front_android.c` `ctl_at`; about a quarter of a tablet's screen, at its sides), and the gamepad is shown by default. `--touch` writes `overlay=0` into the data pack's `settings.txt` over the profile's settings (`pipeline.TOUCH_SETTINGS`), as Unpacking's profile does: the gamepad starts hidden, only the menu button takes touches, and the pause menu shows the gamepad again. It is the first launch's default: the installer keeps a `settings.txt` the app already has. It costs nothing at run time (the host's touch reads are the same with the gamepad shown or hidden). A game that ignores touch while docked needs handheld mode too (the pause menu's mode item).
-
-**60 fps** (`--fps60`). A Switch game capped at 30 needs per-build knowledge to run at 60: which memory holds its frame limit, or which code counts frames. A profile that has it (`fps_target`: the rewriter's frame-step stubs or `hle_fpslock.c`'s rows) gets `DM_FPS_TARGET=60` in `env.txt`. Otherwise the port fetches the community's config for the packed `main` build from masagrator's FPSLocker-Warehouse (`porter/fpslocker.py`; GitHub, `SaltySD/plugins/FPSLocker/patches/<title ID>/<build ID>.yaml`) and converts it: the `ALL_FPS` memory writes (pointer chains from `main`, compares; the expressions evaluated for 30 and 60) become `fpslock.tsv` in the data pack, which `hle_fpslock.c` writes on every present (`DM_FPS_LOCKS`); `MASTER_WRITE` bytes become cuts for the rewriter (`patch_nso.py` `DM_PATCHES_EXTRA`, original bytes from the game's `main`); presents follow the display (`DM_PRESENT_INTERVAL=display`), as FPSLocker paces them itself. A config using what the host lacks (`asm_a64`, `DECLARATIONS`, non-`MAIN` regions, `refresh_rate`) is refused whole, and the game keeps its own frame rate; 1,160 of the 1,462 configs convert (2026-10-28). The warehouse has no license, so its configs are fetched per port and never committed. Whether 60 holds on a device, and whether the config fixes every speed issue, is the config's and the device's: it is the player's choice.
+**60 fps** (`--fps60`). A Switch game capped at 30 needs per-build knowledge to run at 60: which memory holds its frame limit, or which code counts frames. A profile that has it (`fps_target`: the rewriter's frame-step stubs or `hle_fpslock.c`'s rows) gets `DM_FPS_TARGET=60` in `env.txt`. Otherwise the port fetches the community's config for the packed `main` build from masagrator's FPSLocker-Warehouse (`porter/fpslocker.py`; GitHub, `SaltySD/plugins/FPSLocker/patches/<title ID>/<build ID>.yaml`) and converts it: the `ALL_FPS` memory writes (pointer chains from `main`, compares; the expressions evaluated for 30 and 60) become `fpslock.tsv` in the data pack, which `hle_fpslock.c` writes on every present (`DM_FPS_LOCKS`); `MASTER_WRITE` bytes become cuts for the rewriter (`patch_nso.py` `DM_PATCHES_EXTRA`, original bytes from the game's `main`); presents follow the display (`DM_PRESENT_INTERVAL=display`), as FPSLocker paces them itself. A config using what the host lacks (`asm_a64`, `DECLARATIONS`, non-`MAIN` regions, `refresh_rate`) is refused whole, and the game keeps its own frame rate. The warehouse has no license, so its configs are fetched per port and never committed. Whether 60 holds on a device, and whether the config fixes every speed issue, is the config's and the device's: it is the player's choice.
 
 Events: with `--progress json`, every line on stdout is one JSON object, the protocol of upstream's NSP script: `stage`, `step`, `progress`, `stage_end`, `say`; `porter` adds `result` (the outputs) at the end. A line starting `[RED] ` in a `say` is an error or warning.
 
 ## What the player installs
 
-The player gets the bundle (`dist/nx2android-<version>-<os>-<cpu>.zip` from `python packaging/build_bundle.py`, for Windows and macOS): unzip, start `nx2android.exe` (`nx2android` on a Mac), nothing to install with pip. It does not ship toolchains; the Setup tab (`nx2android.exe -m porter doctor`, or `python -m porter doctor` from the repository) checks them and the free disk space, and its **Download missing tools** button (`porter tools --download`, `porter/fetch.py`) fetches the missing NDK, .NET SDK and platform-tools from Google's SDK repository and Microsoft's release list, checks each archive against the checksum its list gives, and unpacks them into the player's nx2android folder (`toolchains/`), which the finders search:
-- **Android NDK r27c** (`ANDROID_NDK_HOME`, the configured path, or the usual install folders). No Android SDK or JDK: `mkapk.py` writes and signs the APK itself.
+The tool runs from the repository: **Python 3.11+** with `requirements.txt` (`lz4`, `capstone`, `pillow`, `fonttools`, `pyyaml`, `pycryptodome`, and `backports.zstd` before Python 3.14). It does not ship toolchains; `python -m porter doctor` checks them and the free disk space, and `porter tools --download` (`porter/fetch.py`) fetches the missing .NET SDK from Microsoft's release list, checks the archive against the checksum its list gives, and unpacks it into the player's nx2android folder, which the finders search:
 - **.NET SDK 10**: builds `nx_extract` and the shader translator, and runs them.
-- From the repository instead of the bundle: **Python 3.11+** with `requirements.txt` (`lz4`, `capstone`, `pillow`, `fonttools`, and `PySide6` for the GUI): the port runs the engine's own Python tools (the rewriter, the shader split). The bundle carries that Python.
-- **adb** (platform-tools), only to install from the tool.
+- **The OHOS SDK / DevEco Studio**: its `native/llvm/bin/clang` builds the host (`build_ohos.py`), and its `hdc` installs on a device. Found via `OHOS_SDK` / `DEVECO_SDK_HOME` / `HOS_SDK_HOME`, the usual SDK folders, or DevEco's own (`sdk/default/openharmony`).
+- **hdc** (DevEco's toolchains), only to install from the tool; the HAP and the data pack are made without it.
 - Their own **prod.keys**. Keys and game files are never copied into the repository or the app.
 
-The player's settings, APK signing key and built translator live in their nx2android folder: `%APPDATA%\nx2android` on Windows, `~/Library/Application Support/nx2android` on a Mac, `~/.config/nx2android` elsewhere (`NX2A_HOME` overrides it). An app keeps the same signer across ports, so updates install over it.
+The player's settings and built translator live in their nx2android folder: `%APPDATA%\nx2android` on Windows, `~/Library/Application Support/nx2android` on a Mac, `~/.config/nx2android` elsewhere (`NX2A_HOME` overrides it).
 
 ## Repository layout
 
@@ -117,20 +104,18 @@ The player's settings, APK signing key and built translator live in their nx2and
 nx2android/
   docs/ARCHITECTURE.md   this file
   porter/                port pipeline (python -m porter)
-  gui/                   desktop app (python -m gui)
   devtools/              device bring-up scripts
-  packaging/             the player's bundle: build_bundle.py, build_bootloader.py, nx2android.spec, nx2android.py, INSTALL.md
   tests/                 unit tests (python -m unittest discover tests); arch_rules.py checks this file's layer rules
   requirements.txt       the Python modules the tool needs
   probes/                first on-device probes (research)
-  nxnative/              our fork: engine, Android runtime, profiles
+  nxnative/              our fork: engine, HarmonyOS front end, profiles
   RESEARCH.md            feasibility study
 ```
 
-The engine is our own fork since 2026-10-29: no subtree pull from upstream, and no `upstream` remote ([DEVELOPMENT_GUIDE.md](DEVELOPMENT_GUIDE.md#nxnative)).
+The engine is our own fork: no subtree pull from upstream, and no `upstream` remote ([DEVELOPMENT_GUIDE.md](DEVELOPMENT_GUIDE.md#nxnative)).
 
 ## Adding a game
 
 1. `python -m porter port <folder> --experimental --install`: the survey, a provisional profile and a first try on the device. Bring it up from there with the upstream tools and `devtools/` (docs in `nxnative/docs/agents`): the profile moves to `dm/games/<title ID>/`, fixes go into the core as general rules.
-2. Add `android.tsv` with `status` and `tested`.
+2. Add `port.tsv` with `status` and `tested`.
 3. `python -m porter port` on its folder, install, play. Raise `status` to `playable` when it is.

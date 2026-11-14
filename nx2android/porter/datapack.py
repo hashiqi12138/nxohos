@@ -1,13 +1,13 @@
-# The data pack: everything the app reads from its files folder on the device, as a folder beside the APK (Android: /sdcard/Android/data/<package>/files,
-# front_android.c; HarmonyOS: the app's sandbox folder, front_ohos.c, which puts its root in front of the pack's relative paths — dev_root=''):
+# The data pack: everything the app reads from its sandbox folder on the device, as a folder beside the HAP (HarmonyOS: the app's sandbox folder, front_ohos.c,
+# which puts its root in front of the pack's relative paths — dev_root=''):
 #   mods/          the rewritten code modules (patch_nso.py's outputs)
 #   RomFS/         the game's files (the packed version's merged RomFS)
 #   aoc/<index>/   the DLC the player has
-#   shaders.dmsv   the Vulkan shaders (dm/android/tools/shader_vk.py)
+#   shaders.dmsv   the Vulkan shaders (dm/tools/shader_vk.py)
 #   nintendo_ext.ttf  the button-icon font, the stand-in for the Nintendo extension shared font (dm/tools/make_ext_font.py; env.txt's DM_SHARED_FONT_EXT)
 #   env.txt        host switches: the game language, the DLC folder, the profile's env rows
 #   settings.txt   the pause menu's first-launch defaults (the profile's setting rows, then the port's: --touch); the installer never replaces the player's own
-#   nx2a-data.json what the pack is: the game, the package, the version, the device features the profile requires (android.tsv requires), which the installer checks
+#   nx2a-data.json what the pack is: the game, the package, the version, the device features the profile requires (port.tsv requires)
 # Big trees are hard links into the extraction when the volume allows, so the pack takes no extra space; the pack is rebuilt whole when anything in it changes.
 import json, os, shutil, time
 from pathlib import Path
@@ -34,19 +34,16 @@ def link_tree(src, dst):   # (files, bytes)
     return n, b
 
 
-def files_folder(package): return f'/sdcard/Android/data/{package}/files'
-
-
-def pack_path(root, name):   # a file of the pack, as env.txt names it: absolute under Android; bare when root is empty (front_ohos.c prefixes the sandbox folder)
+def pack_path(root, name):   # a file of the pack, as env.txt names it: bare when root is empty (front_ohos.c prefixes the sandbox folder)
     return f'{root}/{name}' if root else name
 
 
 def build(dst, *, profile, version, display, patched, romfs, shaders, aoc=None, language='en-US', package=None, env=(), settings=None, files=None, progress=None, dev_root=None):
-    """Write the pack to dst (replacing it). profile: the AndroidProfile; package: the app's, when not the profile's; env: more env.txt rows, after the profile's; settings: settings.txt values over the profile's;
-    files: {name in the pack: source} (the 60 fps memory writes, fpslock.tsv; the button-icon font); dev_root: where the pack is on the device (None: Android's files folder; '' for a
-    pack whose root the app sets itself, HarmonyOS's sandbox folder). Returns the manifest"""
+    """Write the pack to dst (replacing it). profile: the PortProfile; package: the app's, when not the profile's; env: more env.txt rows, after the profile's; settings: settings.txt values over the profile's;
+    files: {name in the pack: source} (the 60 fps memory writes, fpslock.tsv; the button-icon font); dev_root: where the pack is on the device ('' for a pack whose root the app sets itself,
+    HarmonyOS's sandbox folder). Returns the manifest"""
     package = package or profile.package
-    root = files_folder(package) if dev_root is None else dev_root
+    root = dev_root or ''
     tmp = dst.with_name(dst.name + '.partial')
     if tmp.exists(): shutil.rmtree(tmp)
     tmp.mkdir(parents=True)

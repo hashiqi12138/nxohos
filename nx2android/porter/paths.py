@@ -1,8 +1,8 @@
-# Where things are: the repository (and the nxnative subtree in it), the player's own folder (settings, the APK signing key).
+# Where things are: the repository (and the nxnative subtree in it), the player's own folder (settings, downloaded toolchains).
 import os, sys
 from pathlib import Path
 
-REPO = Path(sys.executable).parent if getattr(sys, 'frozen', False) else Path(__file__).resolve().parent.parent   # the bundle: nxnative/ beside nx2android.exe
+REPO = Path(sys.executable).parent if getattr(sys, 'frozen', False) else Path(__file__).resolve().parent.parent   # the bundle: nxnative/ beside the executable
 NXNATIVE = REPO / 'nxnative'
 DM = NXNATIVE / 'dm'
 LOCAL_TOOLS = REPO / 'tools'   # a developer's toolchains next to the repository (not committed); the player installs their own
@@ -19,9 +19,5 @@ def user_dir():
     return d
 
 
-def player_tools():   # the toolchains `porter tools --download` fetched for the player: android-ndk-r27c/, dotnet/, platform-tools/
+def player_tools():   # the toolchains `porter tools --download` fetched for the player: dotnet/
     return user_dir() / 'toolchains'
-
-
-def signing_key():   # one key per player: every app they port keeps its signer, so a new port installs over the last one
-    return user_dir() / 'signing-key.json'
