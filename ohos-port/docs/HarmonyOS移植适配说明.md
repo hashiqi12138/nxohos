@@ -2,7 +2,7 @@
 
 > 以《塞尔达传说：旷野之息》1.9.0（BOTW，Title ID `01007EF00011E000`）为例，总结 nx2android 宿主移植到 HarmonyOS 的架构、需要调整的位置、实际移植步骤和验收方法。
 >
-> 更新日期：2026-11-09。本文区分“已正式验证”和“诊断路径已出图”，不把替代 shader 或 direct present 当作原始渲染修复。
+> 更新日期：2026-11-14。本文区分“已正式验证”和“诊断路径已出图”，不把替代 shader 或 direct present 当作原始渲染修复。
 
 ## 1. 当前项目状态
 
@@ -20,10 +20,11 @@
 | 最终上屏链路 | XComponent → OHNativeWindow → VkSurfaceOHOS → swapchain → present 已跑通 |
 | 严重性能问题 | 每帧约 5.5 秒的问题已修复，通常降至约 32–90 ms/帧 |
 | 游戏画面 | 原始 shader 已通过深度 variant 恢复 BOTW 1.9.0 主菜单，见[原始路径截图](verify/20261109-BOTW-original-shader.png) |
+| 场景矩形块/人物残影 | 已定位 Maleoon tile-store 根因并以 pass 拆分（mode8）修复，默认开启真机验证，见 6.5 |
 
 ### 1.2 尚未收口
 
-1. 原始 shader 主菜单已修复并验证，但实际游戏场景、转场和 geometry shader 的独立真机覆盖仍需验收。
+1. 原始 shader 主菜单已修复并验证；场景蓝/黑矩形块与人物残影已定位根因并修复（6.5），但其余场景、转场和 geometry shader 的独立真机覆盖仍需验收。
 2. 目前通常约 32–90 ms/帧，尚未达到 60 fps 的 16.7 ms/帧目标。
 3. 诊断开关、替代 SPV、PPM、临时构建目录仍需清理；虚拟手柄、完整生命周期和长时间实玩还需按游戏逐项验收。
 
@@ -391,6 +392,33 @@ gl_Position.z = gl_Position.z * 0.5 + gl_Position.w * 0.5;
 
 原始 shader 已通过通用深度映射 variant 恢复主菜单；实际场景、转场和不同分辨率仍需继续验收。诊断 env 和替代 SPV 不得重新作为运行配置启用。
 
+### 6.5 场景蓝/黑矩形块与人物残影：根因、修复与真机验收（2026-11-14）
+
+**现象**：进入实际场景（如神庙内部）后画面出现整块蓝/黑矩形；另在部分诊断配置下，人物移动或转视角时出现粉色残影（鬼影）。两者同源，都指向 fog 历史目标的 store 损坏。
+
+**根因**：BOTW 的 fog（雾/历史）pass 一次绑定 6 个颜色附件，其中 MRT2 与 MRT3 是**同一张 2 层数组 image 的两个层视图**（layer0 / layer1，即 slot3 重复 slot2 的 image）。Maleoon 910 的 TBDR tile store 在“6 附件 + 别名层对”这一配置下会整 tile（16×8）写坏 fog 目标：回读表现为整块零 tile，上屏即蓝/黑矩形。
+
+判定依据（单变量对照，方法见 7.4）：
+
+- 丢重复槽使 pass 只剩 5 个颜色附件（mode3/6/7/8）→ 矩形消失；
+- 保持 6 附件、但把别名槽改走独立 scratch image 再 copy-back（`DM_VK_RT_ALIAS=1`，格式不变）→ 仍坏 ⇒ 不是“别名 image 身份”问题；
+- 6 层数组 pass（slots0-5 为同 image 各层）保持 6 附件不动 → 不坏 ⇒ 触发点是 fog 的“6 附件 + 2 层别名对”组合，而非任意多层数组；
+- 格式不变、只改附件配置即好 ⇒ 不是 fmt122 格式问题，无需引入 plain-format 旋钮。
+
+**为什么层拷贝不能修（残影来源）**：mode6/7 丢槽后把 owner 层拷贝到被丢层，矩形消失但出现残影。这证明 fog shader 对 out2/out3 写的是**不同**数据（两个历史层语义不同），拷贝把错误历史喂给后续帧 ⇒ 鬼影。因此正确修复必须让被丢槽**真正重渲染**，而不是拷贝。
+
+**正式修复（mode8：pass 拆分 + draw 重放）**，位于 `nxnative/dm/android/gfx_vk_exec.c`：
+
+- pass1：丢掉重复的别名槽，只保留 5 个颜色附件（Maleoon tile store 可正确处理的配置）；
+- pass 结束后：用本 pass 捕获的 draw/draw_idx（`P_sp[]`）重放，在一个**单附件** pass 里只写被丢槽，使其真实 store 落地（`vk_end_pass` 末尾的重放块）；
+- pipeline cache 键含每槽 cfmt/ncol，单附件 pass 自动获得正确 pipeline；draw/draw_idx 自包含重绑状态，重放安全；
+- 默认仅对 Maleoon（`vendorID == 0x19e5`）开启（`DM_VK_RT_DUP` 缺省 = 8），其他 vendor 保持 0；mode8 生效时关闭无效的 alias scratch；
+- 只处理 `im->layers == 2` 的别名对，6 层数组 pass 不受影响。
+
+**真机验收**：HAP（versionCode 2000000052）冷启动、**不追加任何 DM_CTL env**（即默认开启）：hilog 确认 `GPU Maleoon 910 (vendor 0x19e5)` 且无 env 覆盖时自动打印 `RT_DUP mode 8`；静止、转视角中途、快速大幅扫视角三种截图均无矩形块、人物无残影（对照 mode7 同操作有明显粉色残影）。诊断旋钮 `DM_VK_RT_DUP` 保留，可覆盖默认值。
+
+**边界**：本验收覆盖神庙场景的静止与视角运动；其余场景、转场和长时间实玩仍按第 10 节继续验收。
+
 ## 7. 真机调试方法
 
 ### 7.1 防止旧日志和旧截图污染
@@ -426,6 +454,18 @@ glslangValidator -V --target-env vulkan1.2 -S vert -o <key>.spv <shader.vert>
 ```
 
 每次只替换 vertex 或 fragment 一个变量。替代 SPV、direct present 和常量色 fragment 都是定位工具，最终验收必须全部关闭。
+
+### 7.4 图形损坏类问题的排查经验（矩形块/残影案例）
+
+1. **先建客观指标，再看截图**：用 pass dump 回读 + 零 tile 计数（16×8 tile 全零的个数）量化损坏，避免“看起来好了”的误判；截图只作最终验收。
+2. **单变量对照矩阵**：一次只改一个旋钮（附件数、别名 identity、格式、store op、层拷贝 vs 重渲染），用 mode3/4/5/6/7/8 与 `RT_ALIAS` 0/1 交叉定位触发条件；每个结论都要有对照帧或 dump 支撑。
+3. **pass 编号不稳定**：pass 序号是 submission 相对、跨捕获会漂移，按 PASS 编号 pin 的 dump/trace 不可靠。改用**内容地址**：`DM_VK_TRACE_SIZE=WxH:fmt:...` 与 dump 的 SIZE+FMT 过滤（不 pin PASS）。
+4. **残影是 history store 正确性的判据**：矩形消失 ≠ 修好。转视角/移动时若出现残影，说明历史层 store 仍错。用可靠的右摇杆拖拽触发并在**运动中**截图对照。
+5. **DM_CTL 在 OHOS 仅追加、冷启动不重放**：offset 从进程启动时的 EOF 开始，历史 env 不会在重启后重放。因此“默认开启”的验收必须冷启动且**不追加** env；改运行中 env 只追加新行。
+6. **hilog 旋转快**：触发后立即 grep；诊断 flood（如 RT_ALIAS 每帧日志）会冲掉目标日志，先关 flood 再 trace。
+7. **输入可靠性**：虚拟手柄左摇杆拖拽在某些会话不生效，右摇杆（视角）拖拽可靠；`uinput -T -m` 必须带 `-k <keep> <smooth>` 否则报 “invalid keep times”。验收运动相关 bug 优先用视角运动。
+8. **区分诊断出图与正式修复**：任何 knob/替代路径出图只算定位证据；正式修复必须默认开启、无诊断 env 冷启动复测，并覆盖静止 + 运动。
+9. **拷贝 vs 重渲染**：对“同 image 多层 MRT”丢槽后，先验证各层语义是否相同；不同则只能重渲染（pass 拆分），层拷贝会引入残影这类二次 bug。
 
 ## 8. 适配一款新游戏的推荐顺序
 
@@ -464,7 +504,7 @@ glslangValidator -V --target-env vulkan1.2 -S vert -o <key>.spv <shader.vert>
 
 按优先级：
 
-1. 验证实际游戏场景、转场和 geometry shader 的独立真机覆盖；
+1. 在 6.5 矩形块/残影修复基础上，继续验证其余实际游戏场景、转场和 geometry shader 的独立真机覆盖；
 2. 保存后续场景的真机截图、当前 PID 日志、性能统计和版本哈希；
 3. 清理诊断 env、临时 SPV/PPM 和构建目录；
 4. 继续降低 replay、pool 同步和 GPU 成本，目标 16.7 ms/帧；
@@ -472,4 +512,4 @@ glslangValidator -V --target-env vulkan1.2 -S vert -o <key>.spv <shader.vert>
 
 ---
 
-**当前结论：nxohos 的平台、打包、数据、宿主和 present 主链路已经打通，BOTW 原始 shader 主菜单也已通过通用深度 variant 恢复；项目进入实际场景、转场、性能和长期运行验收阶段，尚不能标记为最终可发布版本。**
+**当前结论：nxohos 的平台、打包、数据、宿主和 present 主链路已经打通，BOTW 原始 shader 主菜单也已通过通用深度 variant 恢复；场景蓝/黑矩形块与人物残影已定位 Maleoon tile-store 根因并以 pass 拆分修复、默认开启真机验证（6.5）。项目进入其余场景、转场、性能和长期运行验收阶段，尚不能标记为最终可发布版本。**
