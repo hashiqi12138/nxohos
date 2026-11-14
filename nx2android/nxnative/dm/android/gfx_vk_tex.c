@@ -226,10 +226,18 @@ static vkimg_t *img_new(const tex_t *t, const vkfmt_t *f) {
         {im->w, im->h, im->d}, im->levels, im->layers, (VkSampleCountFlagBits)im->samples, VK_IMAGE_TILING_OPTIMAL, u, VK_SHARING_MODE_EXCLUSIVE, 0, NULL, VK_IMAGE_LAYOUT_UNDEFINED};
     if (im->samples > 1) ci.flags &= ~(VkImageCreateFlags)VK_IMAGE_CREATE_2D_ARRAY_COMPATIBLE_BIT;
     VkFormat fl[2] = {f->vk, srgb_twin(f->vk)}; VkImageFormatListCreateInfo fli = {VK_STRUCTURE_TYPE_IMAGE_FORMAT_LIST_CREATE_INFO, NULL, fl[1] ? 2u : 1u, fl};
-    if (!f->compressed && (ubwc_mode() & (im->aspect == VK_IMAGE_ASPECT_COLOR_BIT ? 1 : 2))) {   // (a depth format has no twin: a list of itself, no MUTABLE_FORMAT)
+    // DM_VK_FIXED_FMT (start-up, diagnostic) on B10G11R11 colour targets only (BOTW's scene/fog MRT):
+    //   1 = the plain format-list path (drops MUTABLE_FORMAT|EXTENDED_USAGE) — reproduces Maleoon's yellow/magenta view fallback;
+    //   2 = drop EXTENDED_USAGE alone, keep MUTABLE_FORMAT and no format list — tests whether EXTENDED_USAGE corrupts the tile store.
+    static int fixed_fmt_knob = -1;
+    if (fixed_fmt_knob < 0) { const char *e = getenv("DM_VK_FIXED_FMT"); fixed_fmt_knob = e ? atoi(e) : 0; }
+    int is_122c = f->vk == VK_FORMAT_B10G11R11_UFLOAT_PACK32 && im->aspect == VK_IMAGE_ASPECT_COLOR_BIT;
+    int force_fixed = fixed_fmt_knob == 1 && is_122c;
+    if (!f->compressed && ((ubwc_mode() & (im->aspect == VK_IMAGE_ASPECT_COLOR_BIT ? 1 : 2)) || force_fixed)) {   // (a depth format has no twin: a list of itself, no MUTABLE_FORMAT)
         im->fixed_fmt = 1; im->fmt2 = fl[1]; ci.pNext = &fli;
         ci.flags &= ~(VkImageCreateFlags)VK_IMAGE_CREATE_EXTENDED_USAGE_BIT; if (!fl[1]) ci.flags &= ~(VkImageCreateFlags)VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT;
     }
+    if (fixed_fmt_knob == 2 && is_122c && !f->compressed) ci.flags &= ~(VkImageCreateFlags)VK_IMAGE_CREATE_EXTENDED_USAGE_BIT;
     im->usage = ci.usage; im->cflags = ci.flags;
     VkResult r = vkCreateImage(V.dev, &ci, NULL, &im->img);
     if (r && f->compressed && (ci.usage & VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT)) {   // the driver refused the attachment usage on a compressed image: as before, without it
