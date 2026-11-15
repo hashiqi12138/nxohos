@@ -1,0 +1,232 @@
+# ci-ohos.yml — P1.2 CI compile gate (ROADMAP.md P1.2). Runs on every PR to main and every push to
+# main, on windows-latest (the host tooling is Windows-oriented: DevEco, cp936 consoles, the serial
+# rewriter). Core gate = patch-queue guard + Python syntax check, well under 10 minutes.
+#
+# ── UPSTREAM_REF pin ─────────────────────────────────────────────────────────────────────────
+# The guard (nx2ohos/nxnative/dm/tools/test_ohos_patches.py) checks that the OHOS patch queue
+# (dm/ohos/patches, 16 patches) applies cleanly to upstream seedds/nxnative main and reproduces the
+# committed working files. The nested repo's .git is NOT tracked in this outer repo (nx2ohos/nxnative
+# is carried as plain files), so CI has no upstream/main ref to extract from. Instead we fetch the
+# pinned upstream SHA into a shallow standalone repo under RUNNER_TEMP and pass its dm/ to the guard
+# via --upstream-dir, the script's supported offline mode ("an already-extracted upstream dm/").
+#
+# UPSTREAM_REF must be the FULL 40-char SHA: GitHub serves fetch-by-object only for full SHAs
+# (`git fetch origin c365e59f` → "couldn't find remote ref"; the full SHA fetches fine — verified).
+# The committed default, c365e59f61e6df41c916cdf5664afb037980fc46 (short c365e59f), is the last
+# upstream point the nested fork merged (ROADMAP: "Nested main = 60f89e84 (upstream c365e59f
+# merged)"); the committed queue was re-exported against exactly this tree and is green.
+#   - The daily sync bot (P1.1) moves the pin forward in its sync PR, after re-running
+#     export_ohos_patches.py + the guard, so the pin always names an upstream HEAD the committed
+#     queue reproduces. Between syncs the pin keeps the gate stable day-to-day.
+#   - The repository variable `UPSTREAM_REF` overrides the committed default without a file edit.
+#   - A pin that upstream no longer serves makes the fetch step fail loudly (never a silent pass);
+#     move the pin to the newest merged point.
+#
+# ── drift vs failure (guard exit semantics, read from the script) ────────────────────────────
+# The guard exits 1 ONLY for patch-queue failures: a patch that no longer applies to upstream, or
+# one that applies but does not reproduce the committed working file (stale queue / accidental
+# edit). Upstream DRIFT — shared files upstream evolved that our fork has not synced yet — is
+# printed ("N upstream-drift files pending sync") and is exit 0: informational, the sync bot's
+# business, not the gate's. A red gate therefore means "this PR broke the port surface", never
+# "upstream moved". Verified against both heads:
+#   pinned  c365e59f… → "16 patches checked, 0 failures, 0 drift"  exit 0
+#   current upstream main → "16 checked, 5 failures, 114 drift"     exit 1 (too fresh for the queue)
+#
+# ── patch.exe on windows-latest ──────────────────────────────────────────────────────────────
+# The guard shells out to `patch -p1 -f -s`. We use Git for Windows' bundled GNU patch
+# (C:\Program Files\Git\usr\bin\patch.exe, GNU patch 2.7.6 — the same binary family the dev
+# machines run) instead of `choco install patch` or MSYS2: it is already on the runner image (no
+# extra install minute) while choco's standalone `patch` is a different, less-maintained port.
+# That directory is not on the runner's default PATH (only Git\cmd is), so the guard step prepends
+# it step-locally (not via GITHUB_PATH, so MSYS tools cannot shadow Windows ones in later steps);
+# if the Git layout ever moves, the step falls back to `choco install -y patch`.
+# The upstream temp repo sets core.autocrlf=false so the fetched upstream files stay LF, matching
+# the nested tree (nx2ohos/.gitattributes: "* text=auto eol=lf") — GNU patch is line-ending strict.
+#
+# ── capstone ─────────────────────────────────────────────────────────────────────────────────
+# The guard itself is stdlib-only. capstone is installed for parity with the rewriter
+# (dm/tools/patch_nso.py hard-rejects capstone 6 — it needs the 5.x API names — so the pin is the
+# newest 5.x on PyPI, the same major the dev machines run).
+#
+# ── the optional host build (manual-for-now) ─────────────────────────────────────────────────
+# The full build (build_ohos.py --lib → libdmhost.so) needs an OHOS SDK (aarch64-linux-ohos clang
+# under native/llvm/bin) plus glslc. build_ohos.py discovers SDKs only from local paths and env
+# vars (its find_sdk: --sdk / OHOS_SDK / DEVECO_SDK_HOME / DevEco install dirs) — this repo holds
+# no public SDK URL, and none is verifiable: Huawei distributes the OHOS SDK from its signed-in
+# developer portal (probed public mirrors → 404/403), and glslc ships no official standalone
+# binary. Rather than hardcode a guess, the build job stays SKIPPED (grey, never a fake green)
+# until repository variables are set:
+#   vars.OHOS_SDK_URL — a zip whose tree contains native/llvm/bin/clang.exe (any nesting)
+#   vars.GLSLC_URL     — a zip containing glslc.exe
+# With a stable mirror in place the job flips on with no file edit. Until then the honest full
+# build is the documented manual step on a DevEco machine (P1.3).
+
+name: ci-ohos
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+env:
+  PYTHONUTF8: "1"    # documented Windows-host quirk: cp936 consoles (ROADMAP ground rules)
+  UPSTREAM_REPO: https://github.com/seedds/nxnative.git
+  # Full 40-char SHA required (see header); committed default = last merged upstream point.
+  # The `UPSTREAM_REF` repo variable overrides it without a file edit.
+  UPSTREAM_REF: ${{ vars.UPSTREAM_REF || 'c365e59f61e6df41c916cdf5664afb037980fc46' }}
+
+jobs:
+  gate:
+    name: Patch-queue guard + Python syntax gate
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out the outer repo (nested tree comes as plain files)
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install capstone 5.x (rewriter pin; the guard itself is stdlib-only)
+        shell: pwsh
+        run: python -m pip install --disable-pip-version-check --no-input "capstone==5.0.9"
+
+      - name: Materialize the pinned upstream tree (standalone shallow repo)
+        shell: pwsh
+        run: |
+          if ($env:UPSTREAM_REF -notmatch '^[0-9a-f]{40}$') {
+            Write-Host "UPSTREAM_REF must be a full 40-char commit SHA (GitHub refuses short-SHA fetches); got: '$env:UPSTREAM_REF'"
+            exit 1
+          }
+          $up = Join-Path $env:RUNNER_TEMP 'upstream-nxnative'
+          Remove-Item -Recurse -Force $up -ErrorAction SilentlyContinue
+          git init --quiet -b main $up   # -b: no default-branch hint noise
+          git -C $up remote add origin "$env:UPSTREAM_REPO"
+          git -C $up config core.autocrlf false   # upstream files must stay LF: `patch` is line-ending strict
+          git -C $up fetch --quiet --depth=1 origin "$env:UPSTREAM_REF"
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "pin $env:UPSTREAM_REF is not fetchable from upstream; move the pin to the newest merged point (see workflow header)"
+            exit 1
+          }
+          git -C $up checkout --quiet --detach FETCH_HEAD
+          $head = git -C $up rev-parse HEAD
+          if ($head -cne $env:UPSTREAM_REF) { Write-Host "checked out $head but pin is $env:UPSTREAM_REF"; exit 1 }
+          Write-Host "upstream pinned at $head"
+
+      - name: Run the patch-queue guard
+        shell: pwsh
+        run: |
+          # patch.exe: prefer Git for Windows' bundled GNU patch (see workflow header); choco is the fallback.
+          if (Test-Path 'C:\Program Files\Git\usr\bin\patch.exe') {
+            $env:PATH = "C:\Program Files\Git\usr\bin;$env:PATH"
+          } else {
+            choco install -y --no-progress patch
+          }
+          $updm = Join-Path (Join-Path $env:RUNNER_TEMP 'upstream-nxnative') 'dm'   # nested Join-Path: 3-positional form is pwsh7-only
+          $log = Join-Path $env:RUNNER_TEMP 'guard.log'
+          python nx2ohos/nxnative/dm/tools/test_ohos_patches.py --upstream-dir $updm > $log 2>&1
+          $rc = $LASTEXITCODE
+          Get-Content $log
+          # Red = a patch fails to apply / no longer reproduces the committed file.
+          # Upstream drift alone exits 0 (informational — the daily sync bot owns it).
+          exit $rc
+
+      - name: Syntax-check the Python tools
+        shell: pwsh
+        run: |
+          # Bytecode goes to a temp prefix so the checked-out tree stays pristine.
+          $env:PYTHONPYCACHEPREFIX = Join-Path $env:RUNNER_TEMP 'pycache'
+          $files = @(Get-ChildItem 'nx2ohos/nxnative/dm/ohos' -Filter *.py | ForEach-Object { $_.FullName })
+          $files += @(
+            'nx2ohos/nxnative/dm/tools/sync_upstream.py',
+            'nx2ohos/nxnative/dm/tools/export_ohos_patches.py',
+            'nx2ohos/nxnative/dm/tools/test_ohos_patches.py'
+          )
+          $files = @($files | Sort-Object -Unique)
+          Write-Host "py_compile: $($files.Count) files"
+          python -m py_compile @files
+
+      - name: Upload guard log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: guard-log
+          path: ${{ runner.temp }}/guard.log
+          if-no-files-found: warn
+
+  host-build:
+    name: Host build libdmhost.so (manual-for-now — skipped without SDK vars)
+    needs: gate
+    runs-on: windows-latest
+    timeout-minutes: 45
+    # Stays skipped (grey, never a fake green) until both repo variables exist; see workflow header.
+    if: vars.OHOS_SDK_URL != '' && vars.GLSLC_URL != ''
+    env:
+      BUILD_GAME: "01007EF00011E000"   # BOTW, the P0 device game; its profile is tracked in dm/games/
+    steps:
+      - name: Check out the outer repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Download and locate the OHOS SDK
+        shell: pwsh
+        env:
+          OHOS_SDK_URL: ${{ vars.OHOS_SDK_URL }}
+        run: |
+          $zip = Join-Path $env:RUNNER_TEMP 'ohos-sdk.zip'
+          curl.exe -L --fail --retry 3 -o $zip $env:OHOS_SDK_URL
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $dst = Join-Path $env:RUNNER_TEMP 'ohos-sdk'
+          New-Item -ItemType Directory -Force $dst | Out-Null
+          tar -xf $zip -C $dst   # System32 bsdtar extracts zip, faster than Expand-Archive on multi-GB SDKs
+          # The SDK root is the dir holding native/llvm/bin/clang.exe (build_ohos.py's has_clang layout);
+          # build_ohos.py's find_sdk also accepts it one level down, so any nesting works.
+          $clang = Get-ChildItem -Recurse -Filter clang.exe $dst |
+            Where-Object { $_.FullName -match 'native\\llvm\\bin' } | Select-Object -First 1
+          if (-not $clang) { Write-Host 'no native/llvm/bin/clang.exe under the extracted SDK zip'; exit 1 }
+          # clang.exe lives at <root>/native/llvm/bin/clang.exe → walk up 3 dirs (bin→llvm→native→root)
+          $sdk = $clang.Directory.Parent.Parent.Parent.FullName
+          if (-not (Test-Path (Join-Path $sdk 'native/llvm/bin/clang.exe'))) {
+            Write-Host "walked up to '$sdk' but native/llvm/bin/clang.exe is not there"; exit 1
+          }
+          "OHOS_SDK=$sdk" | Add-Content $env:GITHUB_ENV
+          Write-Host "OHOS_SDK=$sdk"
+
+      - name: Download and locate glslc
+        shell: pwsh
+        env:
+          GLSLC_URL: ${{ vars.GLSLC_URL }}
+        run: |
+          $zip = Join-Path $env:RUNNER_TEMP 'glslc.zip'
+          curl.exe -L --fail --retry 3 -o $zip $env:GLSLC_URL
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $dst = Join-Path $env:RUNNER_TEMP 'glslc'
+          New-Item -ItemType Directory -Force $dst | Out-Null
+          tar -xf $zip -C $dst
+          $glslc = Get-ChildItem -Recurse -Filter glslc.exe $dst | Select-Object -First 1
+          if (-not $glslc) { Write-Host 'no glslc.exe under the extracted glslc zip'; exit 1 }
+          "GLSLC=$($glslc.FullName)" | Add-Content $env:GITHUB_ENV
+          Write-Host "GLSLC=$($glslc.FullName)"
+
+      - name: Build libdmhost.so (host build, --lib)
+        shell: pwsh
+        run: python nx2ohos/nxnative/dm/ohos/build_ohos.py --lib --game $env:BUILD_GAME
+
+      - name: Upload libdmhost.so
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: libdmhost
+          # literal path: BUILD_GAME is fixed (BOTW 01007EF00011E000 = build_ohos.py's --out layout)
+          path: nx2ohos/nxnative/dm/ohos/out/01007EF00011E000/libdmhost.so
+          if-no-files-found: warn
