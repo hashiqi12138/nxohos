@@ -246,3 +246,51 @@ Measured: 6 s for a one-file change, which is cheap enough to keep the loop tigh
 the old native code while the ArkTS side looks correct - which is exactly how a fixed bug appears to still be there.
 
 Status: not a bug, a required step.
+
+## (p) uitest drives whatever window is in front, and nothing tells you which (2026-11-16)
+
+Half a session was spent "debugging" a picker that would not accept taps. It had never been opened: a stray
+`uitest uiInput keyEvent Back` (sent to dismiss the picker, which was already gone) reached the app and sent it
+to the background. Every later click landed on the launcher.
+
+The signature is a dump whose nodes are all `clickable: false` and whose root carries
+`bundleName: com.ohos.sceneboard`. `aa start` still reports success and the process stays alive, so nothing looks
+wrong from the shell.
+
+**Rule**: before any UI verification round, dump with `-a` and check that the root's bundle is your own:
+
+```
+hdc shell uitest dumpLayout -p /data/local/tmp/x.json -a
+# root bundleName must be dev.eden_emu.ohos, not com.ohos.sceneboard
+```
+
+Do not send `Back` to close a system surface you are not sure is open; close it by its own control.
+
+Status: not a bug, a required step.
+
+## (q) A fixed-width field and a NUL-terminated constant (2026-11-16)
+
+`.nxsave` wrote files that its own reader rejected: `not a .nxsave file`, while the first bytes plainly read
+`4e 58 53 41 56 45 00 00` ("NXSAVE").
+
+`MAGIC` was the six-character string `'NXSAVE'`, and the header field is eight bytes. The writer was accidentally
+correct - `charCodeAt` past the end is `NaN`, which a `Uint8Array` stores as 0, so the two trailing bytes were
+zero-filled - but the reader compares all eight bytes, so it compared `"NXSAVE\u0000\u0000"` against `"NXSAVE"`
+and always lost.
+
+**Rule**: a magic number is a byte sequence, not a word. Write the constant with its padding (`'NXSAVE\u0000\u0000'`)
+and let both sides use the same length.
+
+Status: fixed.
+
+## (r) A round trip proves more than a tap (2026-11-16)
+
+Exporting a save through the picker looked finished: a file appeared in Download with the right name and a
+plausible size. It could not be read back - see (q).
+
+**Rule**: for anything that writes a format, the acceptance test is write -> read -> compare, inside the app.
+`SaveSelfTest.ets` does it (five taps on the settings version row): pack the live save, unpack it into a scratch
+directory, compare every file byte for byte, and print one line per check. It found the magic bug on its first
+run, and it is the only test that can.
+
+Status: in place.
