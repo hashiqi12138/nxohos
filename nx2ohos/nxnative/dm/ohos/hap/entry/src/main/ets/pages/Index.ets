@@ -20,6 +20,7 @@ import { display } from '@kit.ArkUI';
 import { resourceManager } from '@kit.LocalizationKit';
 import { preferences } from '@kit.ArkData';
 import { ConfirmDialog } from '../components/ConfirmDialog';
+import { Bg, Text as TextToken, Semantic, Space, Font, Radius, Size } from '../theme/Tokens';
 import { http } from '@kit.NetworkKit';
 import { picker } from '@kit.CoreFileKit';
 import { router } from '@kit.ArkUI';
@@ -126,8 +127,10 @@ struct Index {
   // Sticks stay geometric constants of the layout; only the button zones are user-movable (a moved stick needs its
   // own dead-zone math and is P2 polish; the profile's layout decides whether they show at all).
   private padLayout: string = 'full';       // 'full' (sticks + buttons) | 'touch' (buttons only, profile-keyed)
-  private padOpacity: number = 1.0;        // user opacity multiplier for the drawn guide (0.3..1)
-  private padScale: number = 1.0;          // user size multiplier for every zone radius
+  // @State, not private: the editor's steppers show these numbers, and a plain field would update the canvas
+  // through drawPad() while leaving the label frozen at its first value (measured: four taps, still "100%").
+  @State padOpacity: number = 1.0;         // user opacity multiplier for the drawn guide (0.3..1)
+  @State padScale: number = 1.0;           // user size multiplier for every zone radius
   @State editMode: boolean = false;         // layout editing on: touches move zones instead of pressing them
   /** The "leave the game?" question is up: the guest keeps running behind it until the answer is yes. */
   @State confirmExit: boolean = false;
@@ -370,6 +373,15 @@ struct Index {
 
     // ---- edit mode: touches move zones instead of pressing them (P1.4) ----
     if (this.editMode) {
+      // The editor panel floats over the top of the screen. A touch inside it belongs to the panel's own
+      // controls (the steppers, 完成, 恢复默认): swallowing it here is why the steppers looked dead.
+      const panelH: number = 300;   // the panel's own height in vp, from its content
+      if (ty === TouchType.Down && changed.length > 0) {
+        const t0: TouchObject = changed[0];
+        if (t0.y < panelH && t0.x < 420 + Space.s4) {
+          return;
+        }
+      }
       if (ty === TouchType.Down) {
         for (const t of changed) {
           const x: number = t.x / w;
@@ -533,8 +545,16 @@ struct Index {
     return Math.round((nx / n) * mag * DM_STICK_MAX);
   }
 
+  /**
+   * Hand the pad state to the guest, and repaint.
+   *
+   * The repaint belongs here: a press is exactly the moment the guide has to change, and every path that changes
+   * a button or a stick already funnels through this call (measured before: padButtons updated but nothing
+   * redrew, so a press looked identical to no press).
+   */
   private pushPad(): void {
     dmhost.setPad(this.padButtons | this.keyBits, this.lx, this.ly, this.rx, this.ry);
+    this.drawPad();
   }
 
   // The pad is drawn only to show where the zones are: the game reads no touch, so the overlay is a capture-safe translucent guide.
@@ -548,22 +568,31 @@ struct Index {
     const op: number = this.padOpacity;
     const drawSticks: boolean = this.padLayout !== 'touch';
     if (drawSticks) {
-      this.drawStick(c, w, h, LS_CX, LS_CY, LS_R, this.lx, this.ly);
-      this.drawStick(c, w, h, RS_CX, RS_CY, RS_R, this.rx, this.ry);
+      this.drawStick(c, w, h, LS_CX, LS_CY, LS_R, this.lx, this.ly, this.lsOwner !== -1);
+      this.drawStick(c, w, h, RS_CX, RS_CY, RS_R, this.rx, this.ry, this.rsOwner !== -1);
     }
     for (const z of this.zones) {
       const px: number = z.cx * w;
       const py: number = z.cy * h;
-      const pr: number = z.r * this.padScale * w;
+      // A pressed zone shrinks a little and fills with the product's accent: on a bright game frame a white
+      // highlight washes out, and a pink one reads as "this is the control I am touching" on any backdrop.
+      const down: boolean = (this.padButtons & z.bit) !== 0;
+      const pr: number = z.r * this.padScale * w * (down ? 0.92 : 1);
       c.beginPath();
       c.arc(px, py, pr, 0, Math.PI * 2);
-      c.fillStyle = `rgba(255,255,255,${(this.editMode ? 0.18 : 0.10) * op})`;
+      if (down) {
+        c.fillStyle = `rgba(236,72,153,${0.42 * op})`;
+      } else {
+        c.fillStyle = `rgba(255,255,255,${(this.editMode ? 0.18 : 0.10) * op})`;
+      }
       c.fill();
-      c.strokeStyle = `rgba(255,255,255,${(this.editMode ? 0.80 : 0.35) * op})`;
-      c.lineWidth = 1;
+      c.strokeStyle = down
+        ? `rgba(236,72,153,${0.95 * op})`
+        : `rgba(255,255,255,${(this.editMode ? 0.80 : 0.35) * op})`;
+      c.lineWidth = down ? 2 : 1;
       c.stroke();
-      c.fillStyle = `rgba(255,255,255,${0.60 * op})`;
-      c.font = `${Math.round(pr * 0.9)}px sans-serif`;
+      c.fillStyle = down ? `rgba(255,255,255,${op})` : `rgba(255,255,255,${0.60 * op})`;
+      c.font = `${Math.round(pr * 1.0)}px sans-serif`;
       c.textAlign = 'center';
       c.textBaseline = 'middle';
       c.fillText(z.label, px, py);
@@ -599,23 +628,32 @@ struct Index {
     this.drawPad();
   }
 
-  private drawStick(c: CanvasRenderingContext2D, w: number, h: number, cx: number, cy: number, r: number, vx: number, vy: number): void {
+  private drawStick(c: CanvasRenderingContext2D, w: number, h: number, cx: number, cy: number, r: number,
+                    vx: number, vy: number, active: boolean): void {
     const px: number = cx * w;
     const py: number = cy * h;
     const pr: number = r * w;
     c.beginPath();
     c.arc(px, py, pr, 0, Math.PI * 2);
-    c.fillStyle = 'rgba(255,255,255,0.08)';
+    c.fillStyle = active ? 'rgba(236,72,153,0.14)' : 'rgba(255,255,255,0.08)';
     c.fill();
-    c.strokeStyle = 'rgba(255,255,255,0.35)';
-    c.lineWidth = 1;
+    c.strokeStyle = active ? 'rgba(236,72,153,0.70)' : 'rgba(255,255,255,0.35)';
+    c.lineWidth = active ? 2 : 1;
     c.stroke();
     // The knob follows the stick value; ly is up-positive, the screen y is down-positive, so the knob's y is inverted.
     const kx: number = px + (vx / DM_STICK_MAX) * pr * 0.6;
     const ky: number = py - (vy / DM_STICK_MAX) * pr * 0.6;
+    // A thumb on the stick grows the knob and gives it a halo: the ring alone is too quiet to feel like input.
+    const knob: number = pr * (active ? 0.40 : 0.35);
+    if (active) {
+      c.beginPath();
+      c.arc(kx, ky, knob + 4, 0, Math.PI * 2);
+      c.fillStyle = 'rgba(236,72,153,0.22)';
+      c.fill();
+    }
     c.beginPath();
-    c.arc(kx, ky, pr * 0.35, 0, Math.PI * 2);
-    c.fillStyle = 'rgba(255,255,255,0.30)';
+    c.arc(kx, ky, knob, 0, Math.PI * 2);
+    c.fillStyle = active ? 'rgba(255,255,255,0.85)' : 'rgba(255,255,255,0.30)';
     c.fill();
   }
 
@@ -1334,37 +1372,131 @@ struct Index {
             dmhost.log(`gallery: ${e.message}`);
           });
         })
-      // ---- P1.4 layout editor: visible only in edit mode. Drag a zone to move it, a second finger to resize; the
-      // sliders tune the whole pad (opacity = the guide's alpha, scale = every radius); Save keeps the layout per
-      // game (preferences), Reset restores the pack default, and Esc leaves saving what is on screen.
+      // ---- P1.4 layout editor. Drag a zone to move it, a second finger to resize; the sliders tune the whole pad
+      // (opacity, scale). "完成" keeps the layout, "恢复默认" restores the pack's own. Esc/Enter also finish, for a
+      // keyboard. The copy is the product's, not a debug panel's: this is a screen a player reaches by accident.
       if (this.editMode) {
-        Column({ space: 10 }) {
-          Text('pad layout editor - drag to move, second finger to resize')
-            .fontSize(14).fontColor('#FFFFFF').margin({ top: 10 })
-          Row({ space: 14 }) {
-            Text(`opacity ${(this.padOpacity * 100) | 0}%`).fontSize(12).fontColor('#E0E0E0').width(96)
-            Slider({ value: this.padOpacity * 100, min: 20, max: 100 })
-              .width(220).onChange((v: number) => { this.padOpacity = v / 100; this.drawPad(); })
-          }
-          Row({ space: 14 }) {
-            Text(`size x${this.padScale.toFixed(2)}`).fontSize(12).fontColor('#E0E0E0').width(96)
-            Slider({ value: this.padScale * 100, min: 60, max: 160 })
-              .width(220).onChange((v: number) => { this.padScale = v / 100; this.drawPad(); })
-          }
-          Row({ space: 16 }) {
-            Button('Save & exit').fontSize(14).height(36)
+        Column({ space: Space.s4 }) {
+          Row() {
+            Column({ space: Space.s1 }) {
+              Text('按键布局')
+                .fontSize(Font.title)
+                .fontColor(TextToken.primary)
+                .width('100%')
+                .textAlign(TextAlign.Start)
+              Text('拖动按键移动位置 · 双指捏合调整大小')
+                .fontSize(Font.caption)
+                .fontColor(TextToken.secondary)
+                .width('100%')
+                .textAlign(TextAlign.Start)
+            }
+            .layoutWeight(1)
+            .alignItems(HorizontalAlign.Start)
+            Button('完成')
+              .fontSize(Font.label)
+              .fontColor(TextToken.inverse)
+              .backgroundColor(Semantic.accent)
+              .borderRadius(Radius.md)
+              .height(Size.buttonMd)
+              .padding({ left: Space.s5, right: Space.s5 })
               .onClick(() => this.exitEditMode(true))
-            Button('Reset').fontSize(14).height(36)
-              .onClick(() => this.exitEditMode(false))
-            Button('Exit (keep, unsaved)').fontSize(14).height(36)
-              .onClick(() => { this.editMode = false; this.drawPad(); })
           }
+          .width('100%')
+
+          Row({ space: Space.s3 }) {
+            Text('不透明度')
+              .fontSize(Font.label)
+              .fontColor(TextToken.secondary)
+              .width(72)
+              .textAlign(TextAlign.Start)
+            // Stepper instead of a Slider: the Slider's floating value bubble renders as a stray "100.000000"
+            // text node over the game, and a stepper is also what a gamepad can drive without a drag gesture.
+            Button('−')
+              .fontSize(Font.body)
+              .fontColor(TextToken.primary)
+              .backgroundColor('rgba(255,255,255,0.10)')
+              .borderRadius(Radius.sm)
+              .width(40)
+              .height(36)
+              .onClick(() => {
+                this.padOpacity = Math.max(0.2, Math.round((this.padOpacity - 0.1) * 10) / 10);
+                this.drawPad();
+              })
+            Text(`${Math.round(this.padOpacity * 100)}%`)
+              .fontSize(Font.label)
+              .fontColor(TextToken.primary)
+              .layoutWeight(1)
+              .textAlign(TextAlign.Center)
+            Button('+')
+              .fontSize(Font.body)
+              .fontColor(TextToken.primary)
+              .backgroundColor('rgba(255,255,255,0.10)')
+              .borderRadius(Radius.sm)
+              .width(40)
+              .height(36)
+              .onClick(() => {
+                this.padOpacity = Math.min(1.0, Math.round((this.padOpacity + 0.1) * 10) / 10);
+                this.drawPad();
+              })
+          }
+          .width('100%')
+
+          Row({ space: Space.s3 }) {
+            Text('整体大小')
+              .fontSize(Font.label)
+              .fontColor(TextToken.secondary)
+              .width(72)
+              .textAlign(TextAlign.Start)
+            Button('−')
+              .fontSize(Font.body)
+              .fontColor(TextToken.primary)
+              .backgroundColor('rgba(255,255,255,0.10)')
+              .borderRadius(Radius.sm)
+              .width(40)
+              .height(36)
+              .onClick(() => {
+                this.padScale = Math.max(0.6, Math.round((this.padScale - 0.05) * 100) / 100);
+                this.drawPad();
+              })
+            Text(`${this.padScale.toFixed(2)}×`)
+              .fontSize(Font.label)
+              .fontColor(TextToken.primary)
+              .layoutWeight(1)
+              .textAlign(TextAlign.Center)
+            Button('+')
+              .fontSize(Font.body)
+              .fontColor(TextToken.primary)
+              .backgroundColor('rgba(255,255,255,0.10)')
+              .borderRadius(Radius.sm)
+              .width(40)
+              .height(36)
+              .onClick(() => {
+                this.padScale = Math.min(1.6, Math.round((this.padScale + 0.05) * 100) / 100);
+                this.drawPad();
+              })
+          }
+          .width('100%')
+
+          Row() {
+            Button('恢复默认')
+              .fontSize(Font.label)
+              .fontColor(TextToken.secondary)
+              .backgroundColor('rgba(0,0,0,0)')
+              .border({ width: 1, color: Semantic.borderSubtle, radius: Radius.md })
+              .borderRadius(Radius.md)
+              .height(Size.buttonSm + 8)
+              .padding({ left: Space.s4, right: Space.s4 })
+              .onClick(() => this.exitEditMode(false))
+            Blank()
+          }
+          .width('100%')
         }
         .align(Alignment.Top)
-        .margin({ top: 14 })
-        .padding(12)
-        .borderRadius(10)
-        .backgroundColor('rgba(20,20,28,0.72)')
+        .width(420)
+        .margin({ top: Space.s4 })
+        .padding(Space.s5)
+        .borderRadius(Radius.lg)
+        .backgroundColor('rgba(19,28,46,0.94)')
       }
       // ---- S5: leaving the game ends the process, so ask first and say what it costs ----
       ConfirmDialog({
@@ -1386,6 +1518,9 @@ struct Index {
     .focusable(true)
     .focusOnTouch(true)
     .defaultFocus(true)
+    // In edit mode the overlay must not starve the panel's own controls: the steppers, 完成 and 恢复默认 are
+    // children of this Stack, and a Stack that takes the touch for itself leaves them dead (measured).
+    .hitTestBehavior(this.editMode ? HitTestMode.Transparent : HitTestMode.Default)
     .onAreaChange((oldValue: Area, newValue: Area) => {
       const w = newValue.width as number;
       const h = newValue.height as number;
