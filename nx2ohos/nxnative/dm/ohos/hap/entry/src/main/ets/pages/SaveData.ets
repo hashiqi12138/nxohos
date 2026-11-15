@@ -13,8 +13,14 @@
 
 import { fileIo as fs } from '@kit.CoreFileKit';
 
-/** The container's magic: 8 bytes, so a wrong file is rejected before any work. */
-const MAGIC: string = 'NXSAVE';
+/**
+ * The container's magic: eight bytes, so a wrong file is rejected before any work.
+ *
+ * It carries the two NULs explicitly. The writer zero-fills them anyway (charCodeAt past the end is NaN, which
+ * a Uint8Array stores as 0), but the reader compares all eight bytes, so a six-character constant made every
+ * file the app wrote fail its own check - "not a .nxsave file" with the bytes plainly reading NXSAVE.
+ */
+const MAGIC: string = 'NXSAVE\u0000\u0000';
 
 /** Header layout: magic 8, version 1, reserved 7, title 16, created 8, tar size 8 = 48 bytes. */
 export const SAVE_HEADER: number = 48;
@@ -77,7 +83,12 @@ export function readSaveHeader(uri: string): SaveInfo {
     const b: Uint8Array = new Uint8Array(buf);
     let magic: string = '';
     for (let i = 0; i < 8; i++) magic += String.fromCharCode(b[i]);
-    if (magic !== MAGIC) throw new Error('not a .nxsave file');
+    if (magic !== MAGIC) {
+      // Name what was actually there: a byte dump turns a bare rejection into a diagnosis.
+      let hex: string = '';
+      for (let i = 0; i < 16; i++) hex += (b[i] < 16 ? '0' : '') + b[i].toString(16);
+      throw new Error('not a .nxsave file (first bytes: ' + hex + ', magic was ' + JSON.stringify(magic) + ')');
+    }
     return { version: b[8], title: readFixed(b, 16, 16), created: readU64(b, 32), tarSize: readU64(b, 40) };
   } finally {
     fs.closeSync(f);

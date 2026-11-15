@@ -15,6 +15,7 @@
 import { Bg, Text as TextToken, Semantic, Space, Font, Radius, Size, Motion } from '../theme/Tokens';
 import { humanSize, gamesSize, cacheSize, clearCache, listGames } from './GameLibrary';
 import { listSaves, restoreBackup, SaveEntry } from './SaveData';
+import { runSaveSelfTest, SelfTestResult } from './SaveSelfTest';
 import { preferences } from '@kit.ArkData';
 import { router } from '@kit.ArkUI';
 import { fileIo as fs } from '@kit.CoreFileKit';
@@ -45,6 +46,9 @@ export struct SettingsPage {
   @State savesLoaded: boolean = false;
   /** The title whose backup a confirm would restore, or ''. */
   @State pendingRestore: string = '';
+  /** Taps on the version row; five run the save container's self test. */
+  private versionTaps: number = 0;
+  @State selfTestLines: string[] = [];
   /** Which group the nav has selected; the page shows all of them on a narrow screen. */
   @State group: number = 0;
   @State landscape: boolean = true;
@@ -126,6 +130,31 @@ export struct SettingsPage {
       };
       this.saves = listSaves(files, nameOf);
       this.savesLoaded = true;
+    }, 40);
+  }
+
+  /**
+   * Five taps on the version row run the save container's round trip.
+   *
+   * The picker cannot be driven from a test on this device, so this is how the export/import pair is proven:
+   * pack the live save, unpack it, compare every byte. Results go to the log and to a toast summary.
+   */
+  private onVersionTap(): void {
+    this.versionTaps++;
+    if (this.versionTaps < 5) return;
+    this.versionTaps = 0;
+    const ctx = this.getUIContext().getHostContext();
+    const files: string = ctx?.filesDir ?? '';
+    if (this.saves.length === 0) {
+      this.showToast('没有存档可测');
+      return;
+    }
+    const titleId: string = this.saves[0].titleId;
+    setTimeout(() => {
+      const r: SelfTestResult = runSaveSelfTest(files, titleId);
+      this.selfTestLines = r.lines;
+      for (const l of r.lines) console.info('save self test: ' + l);
+      this.showToast(r.ok ? '存档自检通过（见日志）' : '存档自检失败（见日志）');
     }, 40);
   }
 
@@ -440,6 +469,21 @@ export struct SettingsPage {
             Text('版本').fontSize(Font.label).fontColor(TextToken.secondary).width(120).textAlign(TextAlign.Start)
             Text('1.0.0 (1000000)').fontSize(Font.label).fontColor(TextToken.primary).layoutWeight(1).textAlign(TextAlign.End)
           }.width('100%').padding({ top: Space.s2, bottom: Space.s2 })
+            .onClick(() => this.onVersionTap())
+          // The self test's lines, shown only after it has run: five taps on the version row.
+          if (this.selfTestLines.length > 0) {
+            Column({ space: 2 }) {
+              ForEach(this.selfTestLines, (l: string) => {
+                Text(l)
+                  .fontSize(Font.caption)
+                  .fontColor(l.startsWith('FAIL') ? Semantic.warning : TextToken.tertiary)
+                  .width('100%')
+                  .textAlign(TextAlign.Start)
+              }, (l: string, i: number) => `${i}`)
+            }
+            .width('100%')
+            .padding({ left: Space.s2, right: Space.s2, top: Space.s2, bottom: Space.s2 })
+          }
           Row() {
             Text('日志').fontSize(Font.label).fontColor(TextToken.secondary).width(120).textAlign(TextAlign.Start)
             Text('游戏目录下的 log.txt').fontSize(Font.label).fontColor(TextToken.primary).layoutWeight(1).textAlign(TextAlign.End)

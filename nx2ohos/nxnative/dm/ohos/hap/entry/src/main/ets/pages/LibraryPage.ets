@@ -514,7 +514,9 @@ struct LibraryPage {
     if (!ctx) return;
     const opt = new picker.DocumentSelectOptions();
     opt.maxSelectNumber = 1;
-    opt.fileSuffixFilters = ['Save file|.nxsave'];
+    // No suffix filter: the picker's own categories (Documents, Downloads, Recents) disagree about where a
+    // .nxsave lives, and a filtered picker showed an empty list on this device even with the file present in
+    // Download. The header check below is the real gate - it rejects anything that is not a save.
     const p = new picker.DocumentViewPicker(ctx);
     p.select(opt).then((uris: string[]) => {
       if (!uris || uris.length === 0) return;
@@ -523,7 +525,7 @@ struct LibraryPage {
       try {
         info = readSaveHeader(uri);
       } catch (e) {
-        this.showToast('这不是存档文件');
+        this.showToast('这不是存档文件（没有 NXSAVE 头）');
         return;
       }
       if (info.title !== g.titleId) {
