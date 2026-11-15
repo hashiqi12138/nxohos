@@ -1,0 +1,421 @@
+/*
+ * SettingsPage.ets - the product's settings (P1.6).
+ *
+ * The rule this page follows: every row here is wired to something that actually happens. Render scale, frame
+ * caps and vsync are absent because the host reads those from a per-game profile at build time, not at runtime;
+ * a toggle that changes nothing would be worse than no toggle.
+ *
+ * Its most important job is not a setting at all: it is the discoverable way into the pad layout editor, which
+ * until now could only be reached by holding a virtual button for 800 ms - a gesture nobody finds.
+ *
+ * The pad's opacity and size live in the same preferences the editor writes ('opacity', 'scale'), so the two
+ * screens cannot disagree.
+ */
+
+import { Bg, Text as TextToken, Semantic, Space, Font, Radius, Size, Motion } from '../theme/Tokens';
+import { humanSize, gamesSize, cacheSize, clearCache } from './GameLibrary';
+import { preferences } from '@kit.ArkData';
+import { router } from '@kit.ArkUI';
+import { fileIo as fs } from '@kit.CoreFileKit';
+import { ConfirmDialog } from '../components/ConfirmDialog';
+
+/**
+ * The pad's preferences are per game ('pad_<titleId>'): a layout that suits a 2D platformer does not suit a game
+ * whose right stick is the camera. The settings page edits the layout of the game that is installed - the one a
+ * player would be adjusting for - and falls back to 'pad_default' when there is none.
+ */
+const PREF_NAME: string = 'pad';
+const PREF_OPACITY: string = 'opacity';
+const PREF_SCALE: string = 'scale';
+
+@Entry
+@Component
+export struct SettingsPage {
+  @State padOpacity: number = 1.0;
+  @State padScale: number = 1.0;
+  /** Bytes on disk; -1 while the walk runs. */
+  @State gamesBytes: number = -1;
+  @State cacheBytes: number = -1;
+  @State busy: boolean = false;
+  @State toast: string = '';
+  @State confirmClear: boolean = false;
+  /** Which group the nav has selected; the page shows all of them on a narrow screen. */
+  @State group: number = 0;
+  @State landscape: boolean = true;
+  private toastTimer: number = -1;
+  private prefs: preferences.Preferences | null = null;
+
+  aboutToAppear(): void {
+    this.loadPrefs();
+    this.measure();
+  }
+
+  private async loadPrefs(): Promise<void> {
+    try {
+      const ctx = this.getUIContext().getHostContext();
+      if (!ctx) return;
+      // The same store Index.ets reads: 'pad_<titleId>' for the installed game.
+      const name: string = PREF_NAME + '_' + this.currentTitleId(ctx.filesDir);
+      this.prefs = await preferences.getPreferences(ctx, name);
+      const op = this.prefs.getSync(PREF_OPACITY, 1.0) as number;
+      const sc = this.prefs.getSync(PREF_SCALE, 1.0) as number;
+      if (typeof op === 'number' && op > 0) this.padOpacity = op;
+      if (typeof sc === 'number' && sc > 0) this.padScale = sc;
+    } catch (e) {
+      // defaults stand
+    }
+  }
+
+  /** The installed game's title ID, or 'default' - the same rule Index.ets uses. */
+  private currentTitleId(filesDir: string): string {
+    try {
+      const names: string[] = fs.listFileSync(filesDir + '/games');
+      const tid: string | undefined = names.find((n: string): boolean => /^[0-9A-F]{16}$/.test(n));
+      return tid !== undefined ? tid : 'default';
+    } catch (e) {
+      return 'default';
+    }
+  }
+
+  private savePref(key: string, value: number): void {
+    if (this.prefs === null) return;
+    try {
+      this.prefs.putSync(key, value);
+      this.prefs.flush();
+    } catch (e) {
+      // a preference that cannot be written only costs the next launch
+    }
+  }
+
+  /**
+   * Measure the sandbox in slices.
+   *
+   * The walk yields every few hundred files: 41k stat() calls on the UI thread trip HarmonyOS's
+   * THREAD_BLOCK_3S watchdog, which force-exits the app - measured on this device, where opening settings killed
+   * the process three seconds later.
+   */
+  private measure(): void {
+    this.gamesBytes = -1;
+    this.cacheBytes = -1;
+    const ctx = this.getUIContext().getHostContext();
+    const files: string = ctx?.filesDir ?? '';
+    const cache: string = ctx?.cacheDir ?? '';
+    this.cacheBytes = cacheSize(files, cache);
+    console.info('settings: measuring games');
+    gamesSize(files).then((n: number) => {
+      console.info('settings: games = ' + n);
+      this.gamesBytes = n;
+    }).catch((e: Error) => {
+      console.info('settings: gamesSize failed: ' + e.message);
+      this.gamesBytes = 0;
+    });
+  }
+
+  private showToast(msg: string): void {
+    this.toast = msg;
+    if (this.toastTimer !== -1) clearTimeout(this.toastTimer);
+    this.toastTimer = setTimeout(() => {
+      this.toast = '';
+      this.toastTimer = -1;
+    }, 3000);
+  }
+
+  /** Open the pad editor: the game page reads this flag on load and turns edit mode on. */
+  private openPadEditor(): void {
+    this.savePref(PREF_OPACITY, this.padOpacity);
+    this.savePref(PREF_SCALE, this.padScale);
+    try {
+      const ctx = this.getUIContext().getHostContext();
+      if (ctx) {
+        // A separate preferences file keeps the flag out of the pad's own keys.
+        preferences.getPreferences(ctx, 'library').then((p: preferences.Preferences) => {
+          p.putSync('editPadOnLoad', true);
+          p.flush();
+          router.pushUrl({ url: 'pages/Index' }).catch((e: Error) => {
+            this.showToast('无法打开游戏页面');
+          });
+        }).catch((e: Error) => {
+          this.showToast('无法打开游戏页面');
+        });
+      }
+    } catch (e) {
+      this.showToast('无法打开游戏页面');
+    }
+  }
+
+  private doClear(): void {
+    this.confirmClear = false;
+    this.busy = true;
+    const ctx = this.getUIContext().getHostContext();
+    const cache: string = ctx?.cacheDir ?? '';
+    setTimeout(() => {
+      const freed: number = clearCache(cache);
+      this.busy = false;
+      this.cacheBytes = 0;
+      this.showToast(freed > 0 ? `已清理 ${humanSize(freed)}` : '没有可清理的缓存');
+    }, 80);
+  }
+
+  /** A label + value row. */
+  @Builder
+  infoRow(label: string, value: string, dim: boolean) {
+    Row() {
+      Text(label)
+        .fontSize(Font.label)
+        .fontColor(TextToken.secondary)
+        .width(120)
+        .textAlign(TextAlign.Start)
+      Text(value)
+        .fontSize(Font.label)
+        .fontColor(dim ? TextToken.tertiary : TextToken.primary)
+        .layoutWeight(1)
+        .textAlign(TextAlign.End)
+    }
+    .width('100%')
+    .padding({ top: Space.s2, bottom: Space.s2 })
+  }
+
+  /** A label + stepper row: what a gamepad can drive without a drag. */
+  @Builder
+  stepRow(label: string, value: string, onMinus: () => void, onPlus: () => void) {
+    Row({ space: Space.s3 }) {
+      Text(label)
+        .fontSize(Font.label)
+        .fontColor(TextToken.secondary)
+        .width(120)
+        .textAlign(TextAlign.Start)
+      Button('−')
+        .fontSize(Font.body)
+        .fontColor(TextToken.primary)
+        .backgroundColor('rgba(255,255,255,0.10)')
+        .borderRadius(Radius.sm)
+        .width(40)
+        .height(36)
+        .onClick(onMinus)
+      Text(value)
+        .fontSize(Font.label)
+        .fontColor(TextToken.primary)
+        .layoutWeight(1)
+        .textAlign(TextAlign.Center)
+      Button('+')
+        .fontSize(Font.body)
+        .fontColor(TextToken.primary)
+        .backgroundColor('rgba(255,255,255,0.10)')
+        .borderRadius(Radius.sm)
+        .width(40)
+        .height(36)
+        .onClick(onPlus)
+    }
+    .width('100%')
+    .padding({ top: Space.s2, bottom: Space.s2 })
+  }
+
+  /** A section heading. */
+  @Builder
+  heading(text: string) {
+    Text(text)
+      .fontSize(Font.title)
+      .fontColor(TextToken.primary)
+      .width('100%')
+      .textAlign(TextAlign.Start)
+      .margin({ top: Space.s5, bottom: Space.s2 })
+  }
+
+  build() {
+    Column() {
+      // ---- the bar ----
+      Row({ space: Space.s3 }) {
+        Button('←')
+          .fontSize(Font.body)
+          .fontColor(TextToken.primary)
+          .backgroundColor('rgba(0,0,0,0)')
+          .width(44)
+          .height(44)
+          .onClick(() => {
+            router.back();
+          })
+        Text('设置')
+          .fontSize(Font.title)
+          .fontColor(TextToken.primary)
+        Blank()
+      }
+      .width('100%')
+      .height(Size.topBar)
+      .padding({ left: Space.s4, right: Space.s6 })
+
+      Scroll() {
+        Column({ space: Space.s2 }) {
+          // ---- 控制 ----
+          this.heading('控制')
+
+          Row() {
+            Column({ space: Space.s1 }) {
+              Text('按键布局')
+                .fontSize(Font.label)
+                .fontColor(TextToken.primary)
+                .width('100%')
+                .textAlign(TextAlign.Start)
+              Text('拖动调整虚拟按键的位置与大小')
+                .fontSize(Font.caption)
+                .fontColor(TextToken.tertiary)
+                .width('100%')
+                .textAlign(TextAlign.Start)
+            }
+            .layoutWeight(1)
+            .alignItems(HorizontalAlign.Start)
+            Button('调整 →')
+              .fontSize(Font.label)
+              .fontColor(TextToken.inverse)
+              .backgroundColor(Semantic.accent)
+              .borderRadius(Radius.md)
+              .height(Size.buttonMd)
+              .padding({ left: Space.s4, right: Space.s4 })
+              .onClick(() => this.openPadEditor())
+          }
+          .width('100%')
+          .padding({ top: Space.s2, bottom: Space.s2 })
+
+          this.stepRow('按键不透明度', `${Math.round(this.padOpacity * 100)}%`,
+            () => {
+              this.padOpacity = Math.max(0.2, Math.round((this.padOpacity - 0.1) * 10) / 10);
+              this.savePref(PREF_OPACITY, this.padOpacity);
+            },
+            () => {
+              this.padOpacity = Math.min(1.0, Math.round((this.padOpacity + 0.1) * 10) / 10);
+              this.savePref(PREF_OPACITY, this.padOpacity);
+            })
+
+          this.stepRow('按键大小', `${this.padScale.toFixed(2)}×`,
+            () => {
+              this.padScale = Math.max(0.6, Math.round((this.padScale - 0.05) * 100) / 100);
+              this.savePref(PREF_SCALE, this.padScale);
+            },
+            () => {
+              this.padScale = Math.min(1.6, Math.round((this.padScale + 0.05) * 100) / 100);
+              this.savePref(PREF_SCALE, this.padScale);
+            })
+
+          // ---- 数据 ----
+          this.heading('数据')
+          // Written inline rather than through a @Builder: a builder's parameters are captured when it is called,
+          // so the row kept showing 计算中… after gamesBytes arrived (measured: the log said 15808253577 while the
+          // label never changed).
+          Row() {
+            Text('游戏数据')
+              .fontSize(Font.label)
+              .fontColor(TextToken.secondary)
+              .width(120)
+              .textAlign(TextAlign.Start)
+            Text(this.gamesBytes < 0 ? '计算中…' : humanSize(this.gamesBytes))
+              .fontSize(Font.label)
+              .fontColor(this.gamesBytes < 0 ? TextToken.tertiary : TextToken.primary)
+              .layoutWeight(1)
+              .textAlign(TextAlign.End)
+          }
+          .width('100%')
+          .padding({ top: Space.s2, bottom: Space.s2 })
+
+          Row() {
+            Text('缓存')
+              .fontSize(Font.label)
+              .fontColor(TextToken.secondary)
+              .width(120)
+              .textAlign(TextAlign.Start)
+            Text(this.cacheBytes < 0 ? '计算中…' : humanSize(this.cacheBytes))
+              .fontSize(Font.label)
+              .fontColor(this.cacheBytes < 0 ? TextToken.tertiary : TextToken.primary)
+              .layoutWeight(1)
+              .textAlign(TextAlign.End)
+          }
+          .width('100%')
+          .padding({ top: Space.s2, bottom: Space.s2 })
+
+          Row() {
+            Blank()
+            Button(this.busy ? '清理中…' : '清理缓存')
+              .fontSize(Font.label)
+              .fontColor(this.cacheBytes > 0 ? Semantic.danger : TextToken.tertiary)
+              .backgroundColor('rgba(0,0,0,0)')
+              .border({
+                width: 1,
+                color: this.cacheBytes > 0 ? Semantic.danger : Semantic.borderSubtle,
+                radius: Radius.md
+              })
+              .borderRadius(Radius.md)
+              .height(Size.buttonMd)
+              .padding({ left: Space.s5, right: Space.s5 })
+              .enabled(this.cacheBytes > 0 && !this.busy)
+              .onClick(() => { this.confirmClear = true; })
+          }
+          .width('100%')
+          .padding({ top: Space.s2, bottom: Space.s2 })
+
+          // ---- 关于 ----
+          this.heading('关于')
+          Row() {
+            Text('版本').fontSize(Font.label).fontColor(TextToken.secondary).width(120).textAlign(TextAlign.Start)
+            Text('1.0.0 (1000000)').fontSize(Font.label).fontColor(TextToken.primary).layoutWeight(1).textAlign(TextAlign.End)
+          }.width('100%').padding({ top: Space.s2, bottom: Space.s2 })
+          Row() {
+            Text('日志').fontSize(Font.label).fontColor(TextToken.secondary).width(120).textAlign(TextAlign.Start)
+            Text('游戏目录下的 log.txt').fontSize(Font.label).fontColor(TextToken.primary).layoutWeight(1).textAlign(TextAlign.End)
+          }.width('100%').padding({ top: Space.s2, bottom: Space.s2 })
+          Row() {
+            Blank()
+            Button('复制日志路径')
+              .fontSize(Font.label)
+              .fontColor(TextToken.secondary)
+              .backgroundColor('rgba(0,0,0,0)')
+              .border({ width: 1, color: Semantic.borderSubtle, radius: Radius.md })
+              .borderRadius(Radius.md)
+              .height(Size.buttonMd)
+              .padding({ left: Space.s5, right: Space.s5 })
+              .onClick(() => this.showToast('日志在游戏数据目录下：log.txt'))
+          }
+          .width('100%')
+          .padding({ top: Space.s2 })
+
+          Blank().height(Space.s6)
+        }
+        .width('100%')
+        .padding({ left: Space.s6, right: Space.s6 })
+        .alignItems(HorizontalAlign.Start)
+      }
+      .layoutWeight(1)
+      .width('100%')
+      .scrollBar(BarState.Auto)
+      .align(Alignment.TopStart)
+
+      if (this.toast.length > 0) {
+        Text(this.toast)
+          .fontSize(Font.label)
+          .fontColor(TextToken.primary)
+          .backgroundColor(Bg.elevated)
+          .borderRadius(Radius.md)
+          .padding({ left: Space.s4, right: Space.s4, top: Space.s3, bottom: Space.s3 })
+          .margin({ bottom: Space.s5 })
+      }
+
+      ConfirmDialog({
+        visible: this.confirmClear,
+        title: '清理缓存？',
+        body: this.cacheBytes > 0
+          ? `将删除 ${humanSize(this.cacheBytes)} 临时文件（未完成的导入会丢失进度）。游戏数据和存档不受影响。`
+          : '没有可清理的缓存。',
+        confirmLabel: '清理',
+        cancelLabel: '取消',
+        destructive: true,
+        onConfirm: () => this.doClear(),
+        onCancel: () => { this.confirmClear = false; }
+      })
+    }
+    .width('100%')
+    .height('100%')
+    .backgroundColor(Bg.base)
+    .onAreaChange((_o: Area, n: Area) => {
+      const w: number = n.width as number;
+      const h: number = n.height as number;
+      if (w > 0 && h > 0) this.landscape = w > h;
+    })
+  }
+}

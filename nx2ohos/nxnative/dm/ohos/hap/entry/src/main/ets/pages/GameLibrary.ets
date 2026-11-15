@@ -437,3 +437,116 @@ export function gameVersion(root: string): string {
   }
   return '';
 }
+
+// ---- the settings page's data group: what the sandbox is using, and what can be thrown away ----
+
+/**
+ * Bytes the game trees occupy, walked in slices.
+ *
+ * The walk yields every YIELD_EVERY entries: 41k stat() calls on the UI thread trip HarmonyOS's
+ * THREAD_BLOCK_3S watchdog, which force-exits the app (measured on this device - the settings page opened and the
+ * process was killed three seconds later). The same trap cost the P2.1 import four iterations.
+ */
+const YIELD_EVERY: number = 400;
+
+/** A directory being walked, with the cursor into its listing. */
+interface WalkFrame {
+  dir: string;
+  names: string[];
+  at: number;
+}
+
+function treeSizeAsync(root: string, budget: number): Promise<number> {
+  return new Promise<number>((resolve: (v: number) => void) => {
+    let total: number = 0;
+    let seen: number = 0;
+    let sinceYield: number = 0;
+    // Explicit frames with a cursor each: a bare directory stack loses its place when the walk yields in the
+    // middle of a listing, which made this never finish (measured: "计算中…" for good).
+    const stack: WalkFrame[] = [];
+    try {
+      stack.push({ dir: root, names: fs.listFileSync(root), at: 0 });
+    } catch (e) {
+      resolve(0);
+      return;
+    }
+    const step: () => void = () => {
+      while (stack.length > 0) {
+        const frame: WalkFrame = stack[stack.length - 1];
+        if (frame.at >= frame.names.length) {
+          stack.pop();
+          continue;
+        }
+        const n: string = frame.names[frame.at];
+        frame.at++;
+        const p: string = frame.dir + '/' + n;
+        try {
+          const st = fs.statSync(p);
+          if (st.isDirectory()) {
+            try {
+              stack.push({ dir: p, names: fs.listFileSync(p), at: 0 });
+            } catch (e) {
+              // an unreadable directory contributes nothing
+            }
+          } else {
+            total += st.size;
+          }
+        } catch (e) {
+          // a file that vanished mid-walk: its bytes are gone anyway
+        }
+        seen++;
+        if (seen >= budget) { resolve(total); return; }
+        sinceYield++;
+        if (sinceYield >= YIELD_EVERY) {
+          sinceYield = 0;
+          setTimeout(step, 0);
+          return;
+        }
+      }
+      resolve(total);
+    };
+    step();
+  });
+}
+
+/** Bytes the game trees occupy, yielding so the UI thread stays alive. */
+export async function gamesSize(filesDir: string): Promise<number> {
+  return await treeSizeAsync(gamesDir(filesDir), 60000);
+}
+
+/**
+ * Bytes of throwaway cache: a downloaded pack, its .part, and the temp dir.
+ *
+ * The unpacked game data is not cache - it is the install - so it is never counted here.
+ */
+export function cacheSize(filesDir: string, cacheDir: string): number {
+  let total: number = 0;
+  const names: string[] = ['/pack.nxpk', '/pack.nxpk.part'];
+  for (const n of names) {
+    try {
+      const st = fs.statSync(cacheDir + n);
+      if (st.isFile()) total += st.size;
+    } catch (e) {
+      // not there
+    }
+  }
+  return total;
+}
+
+/**
+ * Delete the throwaway cache and report the bytes freed.
+ *
+ * Only the two pack files: a .part is an unfinished import, so the confirm dialog says its progress is lost,
+ * and nothing under files/ is touched.
+ */
+export function clearCache(cacheDir: string): number {
+  const freed: number = cacheSize('', cacheDir);
+  for (const n of ['/pack.nxpk', '/pack.nxpk.part']) {
+    try {
+      fs.unlinkSync(cacheDir + n);
+    } catch (e) {
+      // already gone, or not ours to remove
+    }
+  }
+  return freed;
+}

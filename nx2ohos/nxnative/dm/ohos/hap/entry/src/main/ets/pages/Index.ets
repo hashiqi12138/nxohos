@@ -134,6 +134,8 @@ struct Index {
   @State editMode: boolean = false;         // layout editing on: touches move zones instead of pressing them
   /** The "leave the game?" question is up: the guest keeps running behind it until the answer is yes. */
   @State confirmExit: boolean = false;
+  /** The settings page asked for the pad editor: startOnce turns edit mode on once the pad has loaded. */
+  private pendingEditOnLoad: boolean = false;
   // ---- P2.1 import surface: the launcher shows when the sandbox holds no pack, and the import runs here ----
   @State showLauncher: boolean = false;     // the "no game yet" panel with the Add Game button
   @State importing: boolean = false;        // an import is running (the panel shows the progress)
@@ -175,6 +177,15 @@ struct Index {
         p.deleteSync('launchTitle');
         await p.flush();
         dmhost.log(`startOnce: the library asked for ${v}`);
+      }
+      // The settings page's "adjust layout" arrives the same way, and it must not start a game: the editor is
+      // the whole point of that trip.
+      const wantEdit = p.getSync('editPadOnLoad', false) as boolean;
+      if (wantEdit === true) {
+        p.deleteSync('editPadOnLoad');
+        await p.flush();
+        this.pendingEditOnLoad = true;
+        dmhost.log('startOnce: the settings page asked for the pad editor');
       }
       return v;
     } catch (e) {
@@ -1246,7 +1257,9 @@ struct Index {
     // time onLoad runs, so this is the one place startGame can be called with a window.
     const wanted: string = await this.takeLaunchTarget();
     const root: string = wanted.length > 0 ? gamesDir(files) + '/' + wanted : this.activeRoot(files);
-    dmhost.log(`startOnce: root=${root} wanted=${wanted} starting=${this.starting} started=${this.started} isGame=${this.isGame}`);
+    // The settings page's "adjust layout" trip: open the editor instead of starting a game. It has to happen
+    // after loadPadConfig, which runs below, so the flag is applied at the end of startOnce.
+    dmhost.log(`startOnce: root=${root} wanted=${wanted} starting=${this.starting} started=${this.started} isGame=${this.isGame} edit=${this.pendingEditOnLoad}`);
     // P2.1: the sandbox is the source of truth. A pack imported through the picker (or a loopback round) leaves
     // its stamp in .stamp, and the game starts straight from it - no HAP staging, no per-file copy, no import.
     const staged: string = await this.stageData(root);
@@ -1258,13 +1271,31 @@ struct Index {
     } catch (e) {
       hasGame = false;
     }
-    if (hasGame) {
+    if (this.pendingEditOnLoad && hasGame) {
+      // The settings page's "adjust layout" trip: show the pad over the surface WITHOUT starting the guest.
+      // startGame is one-shot per process and the guest never returns, so launching here would leave the editor
+      // unreachable - the whole reason for this path. The demo scene gives the canvas a backdrop to sit on.
+      this.pendingEditOnLoad = false;
+      this.isGame = true;
+      this.status = 'dm: pad layout';
+      dmhost.log('startOnce: pad editor only, the game is not started');
+      this.loadPadConfig(root);
+      dmhost.startDemo();
+      setTimeout(() => {
+        this.editMode = true;
+        this.editZone = null;
+        this.editDragFinger = -1;
+        this.editPinch = -1;
+      }, 300);
+    } else if (hasGame) {
+      this.pendingEditOnLoad = false;
       this.isGame = true;
       this.status = 'dm: game';
       dmhost.log('starting the game');
       this.loadPadConfig(root);   // P1.4: the pack's default layout and the user's saved layout (async, draws when loaded)
       dmhost.startGame(root, files + '/save', cache);
     } else {
+      this.pendingEditOnLoad = false;
       if (staged === 'fail') dmhost.log('the data pack is incomplete: the game is not started');
       else if (!hasGame) dmhost.log('no game in the sandbox, starting the self-test scene');
       this.isGame = false;

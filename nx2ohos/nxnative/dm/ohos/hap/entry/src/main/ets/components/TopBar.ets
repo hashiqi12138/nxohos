@@ -16,6 +16,7 @@ export struct TopBar {
   /** The bar's height: 64 in landscape, 56 in portrait. */
   @Prop barHeight: number = Size.topBar;
   onAdd: () => void = () => {};
+  onSettings: () => void = () => {};
 
   build() {
     Row() {
@@ -26,6 +27,19 @@ export struct TopBar {
         .letterSpacing(0.5)
 
       Blank()
+
+      // Settings sits left of Add: the add action is the primary one, and the gear is where a console puts it -
+      // the far end of the bar, out of the way of the daily flow.
+      Button('⚙')
+        .fontSize(Font.body)
+        .fontColor(TextToken.secondary)
+        .backgroundColor('rgba(0,0,0,0)')
+        .width(44)
+        .height(44)
+        .margin({ right: Space.s2 })
+        .onClick(() => this.onSettings())
+        .accessibilityText('设置')
+        .accessibilityRole(AccessibilityRoleType.BUTTON)
 
       if (this.showAdd) {
         Button() {

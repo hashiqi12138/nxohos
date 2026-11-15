@@ -491,7 +491,12 @@ struct LibraryPage {
         TopBar({
           showAdd: !this.loading,
           barHeight: this.landscape ? Size.topBar : 56,
-          onAdd: () => this.pickPack()
+          onAdd: () => this.pickPack(),
+          onSettings: () => {
+            router.pushUrl({ url: 'pages/SettingsPage' }).catch((e: Error) => {
+              this.showToast('无法打开设置');
+            });
+          }
         })
 
         // ---- the import heartbeat: a strip under the bar while work runs, non-modal ----
