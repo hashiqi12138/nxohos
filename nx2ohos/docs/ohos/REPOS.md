@@ -34,14 +34,22 @@ outer     this monorepo, github.com/hashiqi12138/nxohos   (the only push target)
 Files under `dm/ohos/patches/` mirror the paths they patch (`--- a/host/crash.c` etc.):
 
 ```text
-dm/ohos/patches/gfx/nvn/hle_nvn.c.patch        dm/ohos/patches/hle_table.c.patch (host/)
-dm/ohos/patches/gfx/nvn/nvn_capture.c.patch    dm/ohos/patches/loader.c.patch
-dm/ohos/patches/host/crash.c.patch             dm/ohos/patches/probe.c.patch
-dm/ohos/patches/host/dm.h.patch                dm/ohos/patches/thread.c.patch
-dm/ohos/patches/host/hle.h.patch               dm/ohos/patches/hle_bigstack.c.patch
-dm/ohos/patches/host/hle_fdstat.c.patch        dm/ohos/patches/hle_lifecycle.c.patch
-dm/ohos/patches/host/hle_offline.c.patch       dm/ohos/patches/hle_thread.c.patch
-dm/ohos/patches/tools/patch_nso.py.patch       dm/ohos/patches/tools/nso_asm.py.patch
+dm/ohos/patches/gfx/nvn/hle_nvn.c.patch
+dm/ohos/patches/gfx/nvn/nvn_capture.c.patch
+dm/ohos/patches/host/crash.c.patch
+dm/ohos/patches/host/dm.h.patch
+dm/ohos/patches/host/hle.h.patch
+dm/ohos/patches/host/hle_bigstack.c.patch
+dm/ohos/patches/host/hle_fdstat.c.patch
+dm/ohos/patches/host/hle_lifecycle.c.patch
+dm/ohos/patches/host/hle_offline.c.patch
+dm/ohos/patches/host/hle_table.c.patch
+dm/ohos/patches/host/hle_thread.c.patch
+dm/ohos/patches/host/loader.c.patch
+dm/ohos/patches/host/probe.c.patch
+dm/ohos/patches/host/thread.c.patch
+dm/ohos/patches/tools/patch_nso.py.patch
+dm/ohos/patches/tools/nso_asm.py.patch
 ```
 
 Rules of the queue:
