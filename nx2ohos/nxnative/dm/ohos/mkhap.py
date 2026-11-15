@@ -168,7 +168,12 @@ if os.path.isfile(game_tsv):
             if parts[0] == 'pad_layout': pad_layout = parts[1].strip()
             if parts[0] == 'op_mode': op_mode = parts[1].strip()
 pad_default = {'layout': pad_layout, 'handheld': 'handheld' in op_mode}
-with open(os.path.join(build, 'entry', 'src', 'main', 'resources', 'rawfile', 'pad_default.json'), 'w',
+pad_dir = os.path.join(build, 'entry', 'src', 'main', 'resources', 'rawfile')
+# The directory exists only when --data created it (make_module, or the entry copy loop). A build without --data
+# has no rawfile at all, and writing into it failed with FileNotFoundError - the pad default is the app's own
+# starting layout, so it has to be written either way.
+os.makedirs(pad_dir, exist_ok=True)
+with open(os.path.join(pad_dir, 'pad_default.json'), 'w',
           encoding='utf-8', newline='\n') as f:
     json.dump(pad_default, f)
 print('pad_default.json: layout %s%s' % (pad_layout, ' (handheld)' if pad_default['handheld'] else ''))
@@ -204,7 +209,11 @@ if multi:
     signed = True
 else:
     pat = os.path.join(build, 'entry', 'build', '*', 'outputs', '*')
-    signed, anyh = glob.glob(os.path.join(pat, '*signed*.hap')), glob.glob(os.path.join(pat, '*.hap'))
+    # '*signed*.hap' also matches 'entry-default-unsigned.hap' (the substring), so an unsigned build was taken for
+    # a signed one and shipped without the warning. Match the signed name and exclude the unsigned one explicitly.
+    allh = glob.glob(os.path.join(pat, '*.hap'))
+    signed = [p for p in allh if 'signed' in os.path.basename(p) and 'unsigned' not in os.path.basename(p)]
+    anyh = allh
     if not anyh: sys.exit('mkhap.py: no hap produced')
     src = signed[0] if signed else anyh[0]
     dst = os.path.join(a.out, 'dmhost-signed.hap' if signed else 'dmhost-unsigned.hap')

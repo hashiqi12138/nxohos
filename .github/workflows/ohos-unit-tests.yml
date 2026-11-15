@@ -1,0 +1,54 @@
+name: ohos-unit-tests
+
+# The OHOS port's own unit tests, with the 90% line-coverage gate. This is the check every merge to main has to
+# pass: dm/ohos/tests/run_tests.py exits non-zero when a test fails or the number drops below 90.
+#
+# Separate from unit-tests.yml (which runs the ohos-port T0 suite on Linux): these tests cover the files this port
+# added under nx2ohos/nxnative/dm, need only Python and pytest, and run in about 20 seconds.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  ohos-tools:
+    name: OHOS tools (coverage gate 90%)
+    runs-on: windows-latest   # devpush/mkhap hard-code Windows paths (F:, DevEco), and the suite is written for that
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install pytest coverage
+
+      - name: Run the tests and enforce the coverage gate
+        working-directory: nx2ohos/nxnative
+        env:
+          PYTHONUTF8: "1"
+        run: python dm/ohos/tests/run_tests.py
+
+      - name: Write the coverage table to the job summary
+        if: always()
+        working-directory: nx2ohos/nxnative
+        shell: pwsh
+        run: |
+          if (Test-Path 'dm/ohos/tests/cov/summary.md') {
+            Get-Content 'dm/ohos/tests/cov/summary.md' | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          }
+
+      - name: Keep the coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ohos-coverage
+          path: nx2ohos/nxnative/dm/ohos/tests/cov/
+          if-no-files-found: ignore

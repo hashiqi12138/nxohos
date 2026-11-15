@@ -20,3 +20,9 @@ dm/ohos/hap/.preview/
 **/obj/
 **/bin/dm/nca_hdr.bin
 
+
+# coverage output from dm/ohos/tests/run_tests.py
+dm/ohos/tests/cov/
+__pycache__/
+.pytest_cache/
+.coverage

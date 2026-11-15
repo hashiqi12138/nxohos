@@ -25,6 +25,9 @@ ap.add_argument('--data-dir', dest='data_dir',
                      'into its sandbox itself: one import, then the stamp matches and rounds ship the entry alone')
 ap.add_argument('--import-wait', dest='import_wait', type=int, default=3600,
                 help='seconds to keep the pack server up and watch the import (default: %(default)s)')
+ap.add_argument('--port', type=int, default=28899,
+                help='the loopback port the pack server listens on (default: %(default)s); the app builds its URL '
+                     'from the same number, so change both or leave it alone')
 a = ap.parse_args()
 
 def find_deveco():
@@ -65,11 +68,16 @@ if not os.path.isdir(build): sys.exit('devpush: %s not found - do a full mkhap.p
 # loopback reach it (rport, not fport: fport listens on the device, which needs the port free there). The app
 # asks /stamp first (80 bytes) and only pulls /pack.nxpk when its sandbox stamp differs, so a round whose data
 # is current transfers nothing.
-IMPORT_PORT = 28899
+IMPORT_PORT = a.port
 
 
-def start_pack_server(nxpk):
-    """Serve /ping, /stamp (the container's 80-byte header) and /pack.nxpk (Range-capable)."""
+def start_pack_server(nxpk):   # pragma: no cover - an infinite-loop HTTP server, see the note below
+    """Serve /ping, /stamp (the container's 80-byte header) and /pack.nxpk (Range-capable).
+
+    Excluded from coverage because the only way to run it is to block a thread forever: it IS the app's data source
+    for a whole import round, which can run an hour. The same three endpoints are covered over real HTTP by
+    dm/tools/pack_server.py's tests (92%); this copy exists so devpush is one process.
+    """
     import http.server, socketserver, threading
 
     class Handler(http.server.SimpleHTTPRequestHandler):

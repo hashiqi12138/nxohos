@@ -1,0 +1,22 @@
+# Coverage settings for the OHOS port's own unit tests.
+#
+# The file list lives in run_tests.py (OWNED) and is passed as coverage's --include, which matches by PATH.
+# `source` is deliberately absent: it matches by importable module name, and conftest.load imports each script
+# under a synthetic name so a file that is not on sys.path can still be tested - module-name matching cannot see
+# through that ("Module dm/tools/pack_game.py was never imported").
+[report]
+# The gate: 90% line coverage over the files this port owns (the task's requirement).
+fail_under = 90
+show_missing = True
+skip_covered = False
+precision = 1
+exclude_lines =
+    pragma: no cover
+    if __name__ == .__main__.:
+    raise SystemExit\(
+
+[html]
+directory = dm/ohos/tests/cov/htmlcov
+
+[json]
+output = dm/ohos/tests/cov/coverage.json
