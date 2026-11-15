@@ -22,6 +22,7 @@ import { preferences } from '@kit.ArkData';
 import { http } from '@kit.NetworkKit';
 import { picker } from '@kit.CoreFileKit';
 import { importPack, readPackHeader, readStamp, writeStamp, removeTree, PackInfo, ImportProgress } from './PackImport';
+import { GameEntry, gamesDir, listGames, deleteGame, humanSize } from './GameLibrary';
 
 // The dev data import's loopback port (P2.1): devpush.py serves the pack here and `hdc fport` forwards the
 // device's 127.0.0.1:IMPORT_PORT to it, so a 14 GB pack reaches the sandbox without a HAP module.
@@ -131,6 +132,70 @@ struct Index {
   @State importFiles: number = 0;           // files written so far
   @State importPct: number = 0;             // 0..100, from the tar bytes consumed
   @State importNote: string = '';           // the current file, or the error after a failed import
+  // ---- P2.1 step 4 / P2.2 skeleton: the installed-games library ----
+  @State games: GameEntry[] = [];           // the games under files/games/, newest stamp first
+  @State selectedTitle: string = '';        // the game the next start launches; '' = the first in the list
+  private rootChosen: string = '';          // the directory startGame was last handed
+
+  /** The directory the game runs from: the selected title's folder, or the first installed one. */
+  private activeRoot(filesDir: string): string {
+    if (this.rootChosen.length) return this.rootChosen;
+    const base: string = gamesDir(filesDir);
+    let first: string = '';
+    if (this.selectedTitle.length) {
+      first = base + '/' + this.selectedTitle;
+    } else {
+      const list: GameEntry[] = this.games.length ? this.games : listGames(filesDir);
+      if (list.length) first = list[0].root;
+    }
+    return first.length ? first : base + '/01007EF00011E000';
+  }
+
+  /** Re-read the library (after an import or a delete). */
+  private refreshLibrary(filesDir: string): void {
+    this.games = listGames(filesDir);
+    dmhost.log(`library: ${this.games.length} game(s)`);
+    for (const g of this.games) {
+      dmhost.log(`  ${g.titleId} "${g.name}" ${humanSize(g.sizeBytes)} stamp ${g.stamp.substring(0, 12)}${g.hasData ? '' : ' (incomplete)'}`);
+    }
+    if (this.selectedTitle.length === 0 && this.games.length) this.selectedTitle = this.games[0].titleId;
+  }
+
+  /**
+   * Show the library over a running game.
+   *
+   * The guest owns the native thread for the life of the process, so leaving the library cannot stop it: the
+   * panel draws over the surface and Play resumes whichever entry is chosen next time the app starts. A user who
+   * wants to switch games restarts the app (the library is what startOnce reads).
+   */
+  private openLibrary(): void {
+    const ctx = this.getUIContext().getHostContext();
+    this.refreshLibrary(ctx?.filesDir ?? '');
+    this.showLauncher = true;
+    dmhost.log('library: opened over the running game');
+  }
+
+  /** Launch one library entry. */
+  private async launchGame(filesDir: string, cache: string, titleId: string): Promise<void> {
+    if (this.isGame) return;   // the guest owns the native thread for the life of the process
+    const root: string = gamesDir(filesDir) + '/' + titleId;
+    this.selectedTitle = titleId;
+    this.rootChosen = root;
+    this.showLauncher = false;
+    this.isGame = true;
+    this.status = 'dm: game';
+    dmhost.log(`launch: ${titleId} from ${root}`);
+    this.loadPadConfig(root);
+    dmhost.startGame(root, filesDir + '/save', cache);
+  }
+
+  /** Delete one library entry (its data only; saves live apart). */
+  private removeGame(filesDir: string, titleId: string): void {
+    const ok: boolean = deleteGame(filesDir, titleId);
+    dmhost.log(`library: delete ${titleId} -> ${ok}`);
+    if (titleId === this.selectedTitle) this.selectedTitle = '';
+    this.refreshLibrary(filesDir);
+  }
   private editZone: PadZone | null = null; // the zone a finger is dragging in edit mode
   private longPressTimer: number = -1;    // a press-and-hold on a zone in play mode enters edit mode
   private prefs: preferences.Preferences | null = null;   // per-game pad layout store
@@ -294,6 +359,17 @@ struct Index {
       for (const t of changed) {
         const x: number = t.x / w;
         const y: number = t.y / h;
+        // The library's door while a game runs: hold the top-left corner (a 70x70 vp square, clear of every pad
+        // zone) for 1.2 s. The guest owns the native thread, so this only draws the panel over it; Play on an
+        // entry then takes effect on the next app start.
+        if (this.isGame && this.longPressTimer === -1 && t.x < 70 && t.y < 70) {
+          this.longPressTimer = setTimeout(() => {
+            this.longPressTimer = -1;
+            this.padButtons = 0;
+            this.pushPad();
+            this.openLibrary();
+          }, 1200);
+        }
         const zone = this.hitZone(x, y);
         if (zone) {
           this.fingerZones.set(t.id, zone.role);
@@ -749,26 +825,36 @@ struct Index {
         }
         if (wrote > 0) {
           const info: PackInfo = readPackHeader(tmp);
-          const cur: string = readStamp(root);
+          // The container names its own game: import into games/<title>, whatever root the caller passed (that
+          // root is the game the library wants to launch, which may not be the one the server is serving).
+          const filesD: string = this.getUIContext().getHostContext()?.filesDir ?? '';
+          const dst: string = gamesDir(filesD) + '/' + info.title;
+          const cur: string = readStamp(dst);
           dmhost.log(`staging: pack ${info.title} stamp ${info.stamp.substring(0, 12)} (sandbox ${cur.substring(0, 12) || 'empty'})`);
           if (cur.length && cur === info.stamp) {
             dmhost.log('staging: stamp match, the sandbox already holds this pack');
             try { fs.unlinkSync(tmp); } catch (e) { }
             this.importing = false;
+            this.selectedTitle = info.title;
+            this.rootChosen = dst;
+            this.refreshLibrary(filesD);
             return 'ok';
           }
           this.importNote = 'importing the pack';
           this.importPct = 0;
           this.importFiles = 0;
-          const n: number = await importPack(tmp, root, info, (p: ImportProgress) => {
+          const n: number = await importPack(tmp, dst, info, (p: ImportProgress) => {
             this.importFiles = p.files;
             this.importPct = p.totalBytes > 0 ? Math.min(100, Math.floor(p.bytes * 100 / p.totalBytes)) : 0;
             this.importNote = p.currentName.length ? p.currentName : 'finishing';
           });
-          writeStamp(root, info.stamp);
+          writeStamp(dst, info.stamp);
           this.importing = false;
           this.importNote = '';
-          dmhost.log(`staging: imported ${n} files over the loopback (stamp ${info.stamp.substring(0, 12)})`);
+          this.selectedTitle = info.title;
+          this.rootChosen = dst;
+          this.refreshLibrary(filesD);
+          dmhost.log(`staging: imported ${n} files over the loopback into ${dst} (stamp ${info.stamp.substring(0, 12)})`);
           try { fs.unlinkSync(tmp); } catch (e) { }
           return 'ok';
         }
@@ -902,7 +988,7 @@ struct Index {
   private reportSurface(): void {
     const ctx = this.getUIContext().getHostContext();
     const files: string = ctx?.filesDir ?? '';
-    const root: string = files + '/dm';
+    const root: string = this.activeRoot(files);   // the selected game's directory (P2.1 multi-game layout)
     const surfaceId: string = this.controller.getXComponentSurfaceId();
     // the surface's own pixels, not the layout's vp and not the display's size (which is the whole screen in split screen or a free-form window)
     let w: number = 0;
@@ -961,7 +1047,6 @@ struct Index {
     }
     const ctx = this.getUIContext().getHostContext();
     const files: string = ctx?.filesDir ?? '';
-    const root: string = files + '/dm';
     this.importing = true;
     this.importFiles = 0;
     this.importPct = 0;
@@ -969,12 +1054,17 @@ struct Index {
     try {
       const info: PackInfo = readPackHeader(uri);
       dmhost.log(`pack: title ${info.title}, stamp ${info.stamp.substring(0, 12)}, tar ${info.tarSize} bytes`);
+      // The pack's own title ID names its directory: two games coexist without a shared root, and the native
+      // layer is handed whichever one the library selects.
+      const root: string = gamesDir(files) + '/' + info.title;
       const cur: string = readStamp(root);
       if (cur.length && cur === info.stamp) {
         this.importNote = `this pack is already imported (stamp ${info.stamp.substring(0, 12)})`;
         dmhost.log('import: stamp match, nothing to do');
         this.importing = false;
         this.showLauncher = false;
+        this.refreshLibrary(files);
+        this.started = false;
         await this.startOnce();
         return;
       }
@@ -986,9 +1076,12 @@ struct Index {
       });
       writeStamp(root, info.stamp);
       this.importNote = `imported ${n} files (stamp ${info.stamp.substring(0, 12)})`;
-      dmhost.log(`import: ${n} files, stamp ${info.stamp.substring(0, 12)}`);
+      dmhost.log(`import: ${n} files into ${root}, stamp ${info.stamp.substring(0, 12)}`);
       this.importing = false;
       this.showLauncher = false;
+      this.selectedTitle = info.title;
+      this.rootChosen = root;
+      this.refreshLibrary(files);
       this.started = false;   // let startOnce run again now that data is present
       await this.startOnce();
     } catch (e) {
@@ -999,13 +1092,60 @@ struct Index {
     }
   }
 
+  /**
+   * Move a pre-multi-game sandbox (files/dm, the single flat layout) into the library.
+   *
+   * Builds before this change put the game straight in files/dm. Renaming that directory is one operation and
+   * keeps the 14.75 GB in place, where re-importing would cost an hour. The title comes from the pack's own
+   * nx2a-data.json, or the profile the app was built for.
+   */
+  private migrateLegacySandbox(filesDir: string): void {
+    const legacy: string = filesDir + '/dm';
+    try {
+      if (!fs.accessSync(legacy)) return;   // nothing to move
+    } catch (e) {
+      return;
+    }
+    // already migrated (or a games/ tree exists): leave the old directory alone, it is harmless
+    let title: string = '';
+    try {
+      const text: string = fs.readTextSync(legacy + '/nx2a-data.json');
+      const j = JSON.parse(text) as Record<string, Object>;
+      const t = j['title_id'];
+      if (typeof t === 'string' && /^[0-9A-Fa-f]{16}$/.test(t)) title = t;
+    } catch (e) {
+      title = '';
+    }
+    if (!title.length) title = '01007EF00011E000';   // the profile this build was made for
+    const dst: string = gamesDir(filesDir) + '/' + title;
+    try {
+      fs.mkdirSync(gamesDir(filesDir), true);
+    } catch (e) {
+    }
+    let dstExists: boolean = false;
+    try {
+      dstExists = fs.accessSync(dst);
+    } catch (e) {
+      dstExists = false;
+    }
+    if (dstExists) return;   // a real import already owns this title: do not overwrite it
+    try {
+      fs.renameSync(legacy, dst);
+      dmhost.log(`migrated the flat sandbox ${legacy} -> ${dst}`);
+    } catch (e) {
+      dmhost.log(`migration of ${legacy} failed: ${e}`);
+    }
+  }
+
   private async startOnce(): Promise<void> {
     if (this.starting || (this.started && this.isGame)) return;   // a game owns the native thread for the life of the process
     this.starting = true;
     const ctx = this.getUIContext().getHostContext();
     const files: string = ctx?.filesDir ?? '';
     const cache: string = ctx?.cacheDir ?? '';
-    const root: string = files + '/dm';
+    this.migrateLegacySandbox(files);
+    this.refreshLibrary(files);
+    const root: string = this.activeRoot(files);
     dmhost.log(`startOnce: root=${root} starting=${this.starting} started=${this.started} isGame=${this.isGame}`);
     // P2.1: the sandbox is the source of truth. A pack imported through the picker (or a loopback round) leaves
     // its stamp in .stamp, and the game starts straight from it - no HAP staging, no per-file copy, no import.
@@ -1058,31 +1198,66 @@ struct Index {
         .onReady(() => this.drawPad())
       // ---- P2.1 launcher: shown when the sandbox holds no pack. The user picks a .nxpk with the system
       // document picker and the import streams it into the sandbox (one sequential pass, progress below).
+      // ---- P2.1 step 4 / P2.2 skeleton: the game library. Each imported pack lives in its own directory under
+      // files/games/<title-id>/; the native layer takes that directory as its root, so the list is a pure ArkTS
+      // concern. A game row launches it, the trash icon deletes its data (saves live apart), and Add game walks
+      // into the picker import below.
       if (this.showLauncher) {
-        Column({ space: 14 }) {
-          Text('No game data yet').fontSize(20).fontColor('#FFFFFF')
-          Text('Pick a .nxpk game pack to import it. It is copied once; later starts need no import.')
-            .fontSize(13).fontColor('#B0B0B0').textAlign(TextAlign.Center).width(420)
-          if (!this.importing) {
-            Button('Add game (.nxpk)').fontSize(15).height(40).width(200)
-              .onClick(() => { this.addGame(); })
-          } else {
+        Column({ space: 12 }) {
+          Row() {
+            Text('Game library').fontSize(20).fontColor('#FFFFFF').layoutWeight(1)
+            if (!this.importing) {
+              Button('Add game (.nxpk)').fontSize(13).height(34)
+                .onClick(() => { this.addGame(); })
+            }
+          }.width(520)
+
+          if (this.importing) {
             Progress({ value: this.importPct, total: 100, type: ProgressType.Linear })
-              .width(360).height(8)
-            Text(`${this.importPct}%  -  ${this.importFiles} files`)
-              .fontSize(13).fontColor('#E0E0E0')
+              .width(500).height(8)
+            Text(`${this.importPct}%  -  ${this.importFiles} files`).fontSize(13).fontColor('#E0E0E0')
             Text(this.importNote).fontSize(11).fontColor('#909090')
-              .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis }).width(360)
+              .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis }).width(500)
+          } else if (this.games.length === 0) {
+            Text('No game data yet. Pick a .nxpk pack to import it; it is copied once and later starts need no import.')
+              .fontSize(13).fontColor('#B0B0B0').textAlign(TextAlign.Center).width(500)
+          } else {
+            List({ space: 8 }) {
+              ForEach(this.games, (g: GameEntry) => {
+                ListItem() {
+                  Row({ space: 12 }) {
+                    Column({ space: 3 }) {
+                      Text(g.name).fontSize(15).fontColor(g.hasData ? '#FFFFFF' : '#FFA0A0')
+                      Text(`${g.titleId}  -  ${humanSize(g.sizeBytes)}  -  ${g.hasData ? 'ready' : 'incomplete'}`)
+                        .fontSize(11).fontColor('#909090')
+                    }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+                    Button('Play').fontSize(13).height(32).width(72)
+                      .enabled(g.hasData)
+                      .onClick(() => {
+                        const ctx2 = this.getUIContext().getHostContext();
+                        this.launchGame(ctx2?.filesDir ?? '', ctx2?.cacheDir ?? '', g.titleId);
+                      })
+                    Button('Delete').fontSize(13).height(32).width(76)
+                      .onClick(() => {
+                        const ctx3 = this.getUIContext().getHostContext();
+                        this.removeGame(ctx3?.filesDir ?? '', g.titleId);
+                      })
+                  }.width(500)
+                }
+              }, (g: GameEntry) => g.titleId)
+            }
+            .width(500)
+            .height(Math.min(260, this.games.length * 58))
           }
           if (this.importNote.length && !this.importing) {
             Text(this.importNote).fontSize(12).fontColor('#FFA0A0')
-              .textAlign(TextAlign.Center).width(420)
+              .textAlign(TextAlign.Center).width(500)
           }
         }
         .align(Alignment.Center)
         .padding(20)
         .borderRadius(12)
-        .backgroundColor('rgba(18,18,26,0.90)')
+        .backgroundColor('rgba(18,18,26,0.92)')
       }
       // one line at the bottom, over the surface: what this build is doing, and proof for a screenshot that the window itself is on screen
       Text(this.status)
