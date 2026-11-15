@@ -16,6 +16,7 @@ import { preferences } from '@kit.ArkData';
 import { Bg, Text as TextToken, Semantic, CoverPalette, Space, Font, Radius, Motion, Size } from '../theme/Tokens';
 import { GameEntry, gamesDir, listGames, deleteGame, humanSize, writeMeta, ImportStatus, verifyGame, gameVersion, VerifyResult } from './GameLibrary';
 import { readPackHeader, importPack, readStamp, writeStamp, PackInfo, ImportProgress } from './PackImport';
+import { saveDir, backupDir, packSave, importSave, readSaveHeader, saveSize, hasBackup, SaveInfo, SaveProgress } from './SaveData';
 import { GameCard, CardState } from '../components/GameCard';
 import { AddGameCard } from '../components/AddGameCard';
 import { EmptyState } from '../components/EmptyState';
@@ -78,6 +79,12 @@ struct LibraryPage {
   @State detailVerifying: boolean = false;
   /** The title a delete confirm is pending on, or ''. */
   @State pendingDelete: string = '';
+  // ---- P2.3: saves ----
+  @State saveBusy: boolean = false;
+  @State saveNote: string = '';
+  /** The pack waiting on a "replace this save?" answer. */
+  private pendingSaveUri: string = '';
+  private pendingSaveTitle: string = '';
 
   aboutToAppear(): void {
     this.reload();
@@ -447,6 +454,132 @@ struct LibraryPage {
     return `${g.name} 占用 ${humanSize(g.sizeBytes)}。删除后需要重新导入才能再玩。存档不受影响。`;
   }
 
+  // ---- P2.3: export and import a save ----
+
+  /** Write this game's save to a file the player chooses. */
+  private exportSave(): void {
+    const g: GameEntry | null = this.detailGame;
+    if (g === null || this.saveBusy) return;
+    const ctx = this.getUIContext().getHostContext();
+    const files: string = ctx?.filesDir ?? '';
+    this.saveBusy = true;
+    this.saveNote = '正在导出存档…';
+    this.doExport(files, g).then((_v: void) => {
+      this.saveBusy = false;
+    }).catch((e: Error) => {
+      this.saveBusy = false;
+      this.saveNote = '';
+      this.showToast(`导出失败：${e.message}`);
+    });
+  }
+
+  private async doExport(files: string, g: GameEntry): Promise<void> {
+    const ctx = this.getUIContext().getHostContext();
+    if (!ctx) return;
+    const root: string = saveDir(files, g.titleId);
+    const bytes: number = saveSize(root);
+    if (bytes === 0) {
+      this.saveBusy = false;
+      this.saveNote = '';
+      this.showToast('这个游戏还没有存档');
+      return;
+    }
+    // A filename the player can recognise later: the game and the day it was written.
+    const d: Date = new Date();
+    const stamp: string = `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}`;
+    const safe: string = g.name.replace(/[\\/:*?"<>|]/g, '_').substring(0, 40);
+    const opt = new picker.DocumentSaveOptions();
+    opt.newFileNames = [`${safe}-${stamp}.nxsave`];
+    opt.fileSuffixChoices = ['.nxsave'];
+    const p = new picker.DocumentViewPicker(ctx);
+    const uris: string[] = await p.save(opt);
+    if (!uris || uris.length === 0) {
+      this.saveBusy = false;
+      this.saveNote = '';
+      return;   // cancelled
+    }
+    const n: number = packSave(root, uris[0], g.titleId, (pr: SaveProgress) => {
+      this.saveNote = `正在导出 ${pr.files} 个文件…`;
+    });
+    this.saveBusy = false;
+    this.saveNote = `已导出 ${n} 个文件`;
+    this.showToast(`已导出 ${g.name} 的存档（${humanSize(bytes)}）`);
+  }
+
+  /** Replace this game's save from a file the player chooses, after confirming. */
+  private importSave(): void {
+    const g: GameEntry | null = this.detailGame;
+    if (g === null || this.saveBusy) return;
+    const ctx = this.getUIContext().getHostContext();
+    if (!ctx) return;
+    const opt = new picker.DocumentSelectOptions();
+    opt.maxSelectNumber = 1;
+    opt.fileSuffixFilters = ['Save file|.nxsave'];
+    const p = new picker.DocumentViewPicker(ctx);
+    p.select(opt).then((uris: string[]) => {
+      if (!uris || uris.length === 0) return;
+      const uri: string = uris[0];
+      let info: SaveInfo;
+      try {
+        info = readSaveHeader(uri);
+      } catch (e) {
+        this.showToast('这不是存档文件');
+        return;
+      }
+      if (info.title !== g.titleId) {
+        this.showToast(`这是 ${info.title} 的存档，不是这个游戏的`);
+        return;
+      }
+      this.pendingSaveUri = uri;
+      this.pendingSaveTitle = g.titleId;
+      this.confirmKind = 'importSave';
+    }).catch((e: Error) => {
+      this.showToast('选择文件失败');
+    });
+  }
+
+  /** The import confirm's body: what is replaced, and that the old save is kept. */
+  private importSaveBody(): string {
+    const g: GameEntry | undefined = this.games.find((x: GameEntry): boolean => x.titleId === this.pendingSaveTitle);
+    const name: string = g !== undefined ? g.name : this.pendingSaveTitle;
+    const ctx = this.getUIContext().getHostContext();
+    const files: string = ctx?.filesDir ?? '';
+    const keep: boolean = hasBackup(backupDir(files, this.pendingSaveTitle));
+    return keep
+      ? `将用文件里的进度替换 ${name} 当前的存档。当前存档会先备份，可以再导入回来。`
+      : `将用文件里的进度替换 ${name} 当前的存档。当前存档会先备份到 ${name}.backup，可以再导入回来。`;
+  }
+
+  private doImportSave(): void {
+    const uri: string = this.pendingSaveUri;
+    const titleId: string = this.pendingSaveTitle;
+    this.pendingSaveUri = '';
+    this.pendingSaveTitle = '';
+    if (uri.length === 0) return;
+    const ctx = this.getUIContext().getHostContext();
+    const files: string = ctx?.filesDir ?? '';
+    this.saveBusy = true;
+    this.saveNote = '正在导入存档…';
+    setTimeout(() => {
+      try {
+        const n: number = importSave(uri, saveDir(files, titleId), titleId, backupDir(files, titleId),
+          (pr: SaveProgress) => {
+            this.saveNote = `正在导入 ${pr.files} 个文件…`;
+          });
+        this.saveBusy = false;
+        this.saveNote = `已导入 ${n} 个文件，重新进入游戏生效`;
+        this.showToast('存档已导入，重新进入游戏生效');
+        // the save size changed: refresh the cached number the sheet shows
+        this.detailGame = this.games.find((x: GameEntry): boolean => x.titleId === titleId) ?? this.detailGame;
+      } catch (e) {
+        const why: string = e instanceof Error ? e.message : JSON.stringify(e);
+        this.saveBusy = false;
+        this.saveNote = '';
+        this.showToast(`导入失败：${why}`);
+      }
+    }, 60);
+  }
+
   private showToast(msg: string): void {
     this.toast = msg;
     if (this.toastTimer !== -1) clearTimeout(this.toastTimer);
@@ -572,15 +705,19 @@ struct LibraryPage {
       ConfirmDialog({
         visible: this.confirmKind.length > 0,
         title: this.confirmKind === 'replaceData' ? '更新游戏数据？'
-          : (this.confirmKind === 'deleteGame' ? '删除游戏？' : '取消导入？'),
+          : (this.confirmKind === 'deleteGame' ? '删除游戏？'
+            : (this.confirmKind === 'importSave' ? '导入存档？' : '取消导入？')),
         body: this.confirmKind === 'replaceData'
           ? `${this.pendingTitle()} 已安装。新数据包将替换旧数据。存档不受影响。`
           : (this.confirmKind === 'deleteGame' ? this.deleteBody()
-            : '已下载的部分将保留，下次导入从断点继续。'),
+            : (this.confirmKind === 'importSave' ? this.importSaveBody()
+              : '已下载的部分将保留，下次导入从断点继续。')),
         confirmLabel: this.confirmKind === 'replaceData' ? '替换'
-          : (this.confirmKind === 'deleteGame' ? '删除' : '取消导入'),
+          : (this.confirmKind === 'deleteGame' ? '删除'
+            : (this.confirmKind === 'importSave' ? '导入' : '取消导入')),
         cancelLabel: this.confirmKind === 'replaceData' ? '取消'
-          : (this.confirmKind === 'deleteGame' ? '取消' : '继续导入'),
+          : (this.confirmKind === 'deleteGame' ? '取消'
+            : (this.confirmKind === 'importSave' ? '取消' : '继续导入')),
         destructive: this.confirmKind === 'replaceData' || this.confirmKind === 'deleteGame',
         onConfirm: () => {
           if (this.confirmKind === 'deleteGame') {
@@ -588,6 +725,9 @@ struct LibraryPage {
             this.pendingDelete = '';
             this.confirmKind = '';
             this.doDelete(t);
+          } else if (this.confirmKind === 'importSave') {
+            this.confirmKind = '';
+            this.doImportSave();
           } else {
             this.onConfirm();
           }
@@ -597,6 +737,10 @@ struct LibraryPage {
             this.importCancelled = true;
           }
           if (this.confirmKind === 'deleteGame') this.pendingDelete = '';
+          if (this.confirmKind === 'importSave') {
+            this.pendingSaveUri = '';
+            this.pendingSaveTitle = '';
+          }
           this.onCancelConfirm();
         }
       })
@@ -609,6 +753,10 @@ struct LibraryPage {
         verifyNote: this.detailVerifyNote,
         verifyOk: this.detailVerifyOk,
         verifying: this.detailVerifying,
+        saveBusy: this.saveBusy,
+        saveNote: this.saveNote,
+        onExportSave: () => this.exportSave(),
+        onImportSave: () => this.importSave(),
         onLaunch: () => {
           const g: GameEntry | null = this.detailGame;
           this.detailVisible = false;

@@ -32,6 +32,13 @@ export struct GameDetailSheet {
   onVerify: () => void = () => {};
   onDelete: () => void = () => {};
   onClose: () => void = () => {};
+  /** Write this game's save to a file the player picks (P2.3). */
+  onExportSave: () => void = () => {};
+  /** Replace this game's save from a file the player picks (P2.3). */
+  onImportSave: () => void = () => {};
+  /** A save operation is running: both buttons disable and the sheet says what it is doing. */
+  @Prop saveBusy: boolean = false;
+  @Prop saveNote: string = '';
 
   private facts(): Fact[] {
     const g: GameEntry | null = this.game;
@@ -55,6 +62,7 @@ export struct GameDetailSheet {
 
         Column() {
           Blank()
+          Scroll() {
           Column({ space: Space.s4 }) {
             // ---- handle ----
             Column()
@@ -146,6 +154,39 @@ export struct GameDetailSheet {
               .opacity(this.game.hasData ? 1 : 0.4)
               .onClick(() => this.onLaunch())
 
+            // ---- saves (P2.3): exporting is what a player does before a risky thing, importing is the recovery
+            // path, so both belong with the game rather than buried in settings ----
+            if (this.saveNote.length > 0) {
+              Text(this.saveNote)
+                .fontSize(Font.caption)
+                .fontColor(TextToken.secondary)
+                .width('100%')
+                .textAlign(TextAlign.Start)
+            }
+            Row({ space: Space.s3 }) {
+              Button('导出存档')
+                .fontSize(Font.label)
+                .fontColor(TextToken.primary)
+                .backgroundColor('rgba(0,0,0,0)')
+                .border({ width: 1, color: Semantic.borderSubtle, radius: Radius.md })
+                .borderRadius(Radius.md)
+                .height(Size.buttonMd)
+                .layoutWeight(1)
+                .enabled(!this.saveBusy && !this.verifying)
+                .onClick(() => this.onExportSave())
+              Button('导入存档')
+                .fontSize(Font.label)
+                .fontColor(TextToken.primary)
+                .backgroundColor('rgba(0,0,0,0)')
+                .border({ width: 1, color: Semantic.borderSubtle, radius: Radius.md })
+                .borderRadius(Radius.md)
+                .height(Size.buttonMd)
+                .layoutWeight(1)
+                .enabled(!this.saveBusy && !this.verifying)
+                .onClick(() => this.onImportSave())
+            }
+            .width('100%')
+
             Row({ space: Space.s3 }) {
               Button(this.verifying ? '正在校验…' : '校验数据')
                 .fontSize(Font.label)
@@ -180,6 +221,12 @@ export struct GameDetailSheet {
           .padding({ left: Space.s6, right: Space.s6, top: Space.s3, bottom: Space.s5 })
           .backgroundColor(Bg.elevated)
           .borderRadius({ topLeft: Radius.lg, topRight: Radius.lg })
+          }
+          // The sheet grew to six actions; on a 373 vp window that overflowed the screen, so it scrolls and
+          // never takes more than 85% of the height (the design's own limit for a bottom sheet).
+          .constraintSize({ maxHeight: '85%' })
+          .scrollBar(BarState.Auto)
+          .align(Alignment.Bottom)
         }
         .width('100%')
         .height('100%')
