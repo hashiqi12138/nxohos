@@ -167,3 +167,82 @@ A 14.75 GB pull over `http.requestInStream` failed in three different ways, each
 
 **Rule**: for a multi-GB download, set the timeout from the measured rate with headroom, keep a partial file,
 and watch for progress rather than trusting the socket state. Status: fixed.
+
+## (l) ArkUI responsiveness traps found while building the library (2026-11-16)
+
+Five separate defects, each of which looked like a different bug. All share one root: **ArkUI's reactivity
+boundaries are not where a plain TypeScript reading suggests.**
+
+| # | Symptom | Cause | Fix |
+|---|---|---|---|
+| 1 | The canvas followed `padOpacity` but the label stayed at 100% | the field was `private`, not `@State`; a plain field never triggers a rebuild | `@State` |
+| 2 | The storage rows stayed at `计算中…` although the log printed the number | a `@Builder`'s parameters are captured **when it is called**, so a value passed in is frozen | write the row inline, or read the state inside the builder |
+| 3 | Stepper buttons in a panel over the game did nothing | the overlay's `onTouch` on the parent `Stack` took the touch before the panel's children saw it | `hitTestBehavior(HitTestMode.Transparent)` in edit mode |
+| 4 | The detail sheet could not be dismissed | a transparent `Column` wrapping `Blank() + Scroll()` filled the screen above the scrim and swallowed the taps meant for it | make the sheet a `Stack({alignContent: Bottom})`; size the `Scroll` by its content |
+| 5 | A long-press gesture never fired in a test | `uitest uiInput swipe` is a drag, not a hold | `uitest uiInput longClick` |
+
+**Rules**:
+- A field that drives a label must be `@State`; `drawPad()` reading it is not enough.
+- A `@Builder` is not reactive in its parameters - pass state, not values.
+- **A transparent container still intercepts touches.** `Blank()` is not empty space, it is a full-size hit target.
+- A sheet must always render an explicit close control; the scrim alone is not one when the content fills the screen.
+- `uitest` has `click`, `doubleClick` and `longClick`; `swipe` is a drag and cannot stand in for a hold.
+
+Status: all five fixed.
+
+## (m) Walking 41k files on the UI thread force-exits the app (2026-11-16)
+
+Opening the settings page killed the process about three seconds in:
+
+```
+THREAD_BLOCK_3S   faultType: 3
+APP_INPUT_BLOCK   faultData.forceExit:1
+```
+
+`treeSize()` called `fs.statSync` on every entry of a 41,106-file tree in one synchronous run. This is the same
+watchdog that killed the P2.1 import (issue i), with a shorter deadline: **3 s for input blocking, 6 s for a
+thread block.**
+
+Two further traps came out of the fix:
+
+- The first yielding walk still never finished: it kept a bare stack of directories, so a yield in the middle of a
+  listing lost the cursor and re-read the same directory for ever. Each directory needs its own frame with an
+  index into its listing.
+- `setTimeout(cb, 0)` does **not** move work off the UI thread - it only defers it. Yielding in slices is what keeps
+  the watchdog fed; there is no worker-thread escape here.
+
+**Rule**: any walk over thousands of files yields every few hundred entries, and keeps its place while doing so.
+Measured after the fix: 15.8 GB summed in about 1 s with no watchdog trip.
+
+Status: fixed.
+
+## (n) The save directory was shared by every game (2026-11-16)
+
+`DM_SAVE` was one directory for the whole app. A second game's save would have overwritten the first's: the guest
+mounts whatever `DM_SAVE` names and knows nothing about titles.
+
+P2.1 left this behind because it was verified with a single game installed, where one shared directory and one
+per-title directory look identical.
+
+**Fix**: `DM_SAVE` is `<save>/<title id>`, taken from the root's last path component (`files/games/<title>`), with
+`default` as the fallback.
+
+**Rule**: any per-game state under the sandbox needs the title in its path, and a single-game test cannot prove it.
+
+Status: fixed.
+
+## (o) Native changes need a `--lib` rebuild, not just a HAP rebuild (2026-11-16)
+
+The OHOS port compiles from the source tree (`build_ohos.py`: `PORT = srcs('ohos/*.c')`), so editing a `.c` under
+`dm/ohos/` does nothing to the installed app until `libdmhost.so` is rebuilt:
+
+```
+python dm/ohos/build_ohos.py --lib --game <title>          # 6 s for one file
+copy dm/ohos/out/<title>/libdmhost.so  <build-tree>/entry/libs/arm64-v8a/
+hvigorw --mode module -p module=entry@default assembleHap
+```
+
+Measured: 6 s for a one-file change, which is cheap enough to keep the loop tight. Skipping the copy silently ships
+the old native code while the ArkTS side looks correct - which is exactly how a fixed bug appears to still be there.
+
+Status: not a bug, a required step.
