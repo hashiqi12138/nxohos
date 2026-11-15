@@ -58,6 +58,20 @@ t_dirty_slots: t_dirty_slots.c ../nvn/nvn_dirty.c ../../host/crash.c ../nvn/nvn_
 	clang $(CFLAGS) -o $@ t_dirty_slots.c ../../host/crash.c ../nvn/nvn_dirty.c
 t_dirty_race: t_dirty_race.c ../nvn/nvn_dirty.c ../../host/crash.c ../nvn/nvn_dirty.h $(GAME_H)
 	clang $(CFLAGS) -o $@ t_dirty_race.c ../../host/crash.c
+t_dirty_init: t_dirty_init.c ../nvn/nvn_dirty.c ../../host/crash.c ../nvn/nvn_dirty.h $(GAME_H)
+	clang $(CFLAGS) -o $@ t_dirty_init.c ../../host/crash.c ../nvn/nvn_dirty.c
+t_dirty_init_tsan: t_dirty_init.c ../nvn/nvn_dirty.c ../../host/crash.c ../nvn/nvn_dirty.h $(GAME_H)
+	clang $(CFLAGS) -fsanitize=thread -o $@ t_dirty_init.c ../../host/crash.c ../nvn/nvn_dirty.c
+.PHONY: tsan-dirty-init
+tsan-dirty-init: t_dirty_init_tsan
+	TSAN_OPTIONS=halt_on_error=1:abort_on_error=0 ./t_dirty_init_tsan   # exit, not abort: the crash handler this test installs would report the abort
+t_dirty_reuse: t_dirty_reuse.c ../nvn/nvn_dirty.c ../../host/crash.c ../nvn/nvn_dirty.h $(GAME_H)
+	clang $(CFLAGS) -o $@ t_dirty_reuse.c ../../host/crash.c ../nvn/nvn_dirty.c
+t_dirty_reuse_tsan: t_dirty_reuse.c ../nvn/nvn_dirty.c ../../host/crash.c ../nvn/nvn_dirty.h $(GAME_H)
+	clang $(CFLAGS) -fsanitize=thread -o $@ t_dirty_reuse.c ../../host/crash.c ../nvn/nvn_dirty.c
+.PHONY: tsan-dirty-reuse
+tsan-dirty-reuse: t_dirty_reuse_tsan
+	TSAN_OPTIONS=halt_on_error=1:abort_on_error=0 ./t_dirty_reuse_tsan 2000   # exit, not abort: the crash handler this test installs would report the abort
 t_dirty_retire_race: t_dirty_retire_race.c ../nvn/nvn_dirty.c ../../host/crash.c ../nvn/nvn_dirty.h $(GAME_H)
 	clang $(CFLAGS) -o $@ t_dirty_retire_race.c ../../host/crash.c
 t_host_msl: t_host_msl.m ../nvn/host_msl.m ../nvn/host_msl.h $(MSL_H)
@@ -256,6 +270,8 @@ t_ub: t_ub.m $(MTL_T_DEP)
 	clang $(CFLAGS) -fobjc-arc -o $@ t_ub.m $(MTL_T_SRC) $(FW)
 t_gpuprof: t_gpuprof.m $(MTL_T_DEP)
 	clang $(CFLAGS) -fobjc-arc -o $@ t_gpuprof.m $(MTL_T_SRC) $(FW)
+t_sub_overlap: t_sub_overlap.m $(MTL_T_DEP)
+	clang $(CFLAGS) -fobjc-arc -o $@ t_sub_overlap.m $(MTL_T_SRC) $(FW)
 t_dispatch_own: t_dispatch_own.m $(MTL_T_DEP)
 	clang $(CFLAGS) -fobjc-arc -o $@ t_dispatch_own.m $(MTL_T_SRC) $(FW)
 .PHONY: check_t_dispatch_own
@@ -347,7 +363,7 @@ check_t_geometry_mesh: t_geometry_mesh
 	@set -e; work=$$(mktemp -d); trap 'rm -rf "$$work"' EXIT; python3 test_dmsh_geometry.py --fixture "$$work"; MTL_DEBUG_LAYER=1 ./t_geometry_mesh "$$work"; DM_NVN_GEO_MESH_RUN=0 MTL_DEBUG_LAYER=1 ./t_geometry_mesh "$$work"; DM_NVN_ENC_THREAD=1 MTL_DEBUG_LAYER=1 ./t_geometry_mesh "$$work"
 .PHONY: check_t_feedback
 check_t_feedback: t_feedback
-	@set -e; work=$$(mktemp -d); trap 'rm -rf "$$work"' EXIT; python3 test_dmsh_fetch.py --fixture "$$work"; MTL_DEBUG_LAYER=1 ./t_feedback "$$work"
+	@set -e; work=$$(mktemp -d); trap 'rm -rf "$$work"' EXIT; python3 test_dmsh_fetch.py --fixture "$$work"; MTL_DEBUG_LAYER=1 ./t_feedback "$$work"; DM_NVN_ENC_THREAD=1 MTL_DEBUG_LAYER=1 ./t_feedback "$$work"; DM_NVN_ENC_THREAD=1 DM_NVN_SUB_IDLE_FB=1 MTL_DEBUG_LAYER=1 ./t_feedback "$$work"
 t_mip_extent: t_mip_extent.m ../nvn/hle_nvn.c ../../host/crash.c ../../host/hle_bigstack.c t_host_stubs.c $(GFX) $(GFX_H)
 	clang $(CFLAGS) -fobjc-arc -o $@ t_mip_extent.m ../../host/crash.c ../../host/hle_bigstack.c t_host_stubs.c $(filter-out ../nvn/nvn_mtl.m,$(GFX)) $(FW)
 .PHONY: check_t_mip_extent
@@ -395,8 +411,8 @@ check_t_pull_inv: RUN_ENV = MTL_DEBUG_LAYER=1
 t_wline: t_wline.m ../tools/dmsh_pull.py ../tools/dmsh_pull.metal
 	clang -O1 -g -Wall -fobjc-arc -o $@ t_wline.m -framework Metal -framework Foundation
 check_t_wline: RUN_ENV = MTL_DEBUG_LAYER=1
-t_pso_archive: t_pso_archive.m $(MTL_T_DEP)
-	clang $(CFLAGS) -fobjc-arc -o $@ t_pso_archive.m $(MTL_T_SRC) $(FW)
+t_pso_archive: t_pso_archive.m $(MTL_T_DEP) ../../host/hle_lifecycle.c
+	clang $(CFLAGS) -fobjc-arc -o $@ t_pso_archive.m $(MTL_T_SRC) ../../host/hle_lifecycle.c $(FW)
 .PHONY: check_t_pso_archive
 check_t_pso_archive: t_pso_archive
 	MTL_DEBUG_LAYER=1 ./t_pso_archive
@@ -525,6 +541,9 @@ t_upgrade_alias: t_upgrade_alias.m $(MTL_T_DEP)
 check_t_upgrade_alias: RUN_ENV = MTL_DEBUG_LAYER=1
 t_alias_takeover: t_alias_takeover.m $(MTL_T_DEP)
 	clang $(CFLAGS) -fobjc-arc -o $@ t_alias_takeover.m $(MTL_T_SRC) $(FW)
+t_dead_targets: t_dead_targets.m $(MTL_T_DEP)
+	clang $(CFLAGS) -fobjc-arc -o $@ t_dead_targets.m $(MTL_T_SRC) $(FW)
+check_t_dead_targets: RUN_ENV = MTL_DEBUG_LAYER=1
 check_t_alias_takeover: RUN_ENV = MTL_DEBUG_LAYER=1
 # The resource owner alone: nvn_owner.m (and the texture layouts it sizes shared entries with) with this test's stand-ins for the replay layer's hooks, no nvn_mtl.m
 t_serial_owner: t_serial_owner.m ../nvn/nvn_owner.m ../nvn/nvn_owner.h ../nvn/nvn_tex.c ../nvn/nvn_tex.h ../nvn/nvn_hmap.h ../nvn/nvn_obj.h $(GAME_H)
@@ -568,6 +587,13 @@ check_t_dlss_mfx: t_dlss_mfx
 	NSZombieEnabled=YES DM_NVN_ENC_THREAD=0 ./t_dlss_mfx
 	NSZombieEnabled=YES DM_NVN_ENC_THREAD=1 ./t_dlss_mfx
 	NSZombieEnabled=YES DM_NVN_ENC_THREAD=1 DM_NVN_BARRIER=game ./t_dlss_mfx
+t_pso_msaa: t_pso_msaa.m $(MTL_T_DEP)
+	clang $(CFLAGS) -fobjc-arc -o $@ t_pso_msaa.m $(MTL_T_SRC) $(FW)
+.PHONY: check_t_pso_msaa
+check_t_pso_msaa: t_pso_msaa
+	DM_PSO_MTL4=1 MTL_DEBUG_LAYER=1 ./t_pso_msaa
+	DM_PSO_MTL4=0 MTL_DEBUG_LAYER=1 ./t_pso_msaa
+	DM_NVN_ENC_THREAD=1 DM_PSO_MTL4=1 MTL_DEBUG_LAYER=1 ./t_pso_msaa
 t_buffer_image_bias: t_buffer_image_bias.m $(MTL_T_DEP)
 	clang $(CFLAGS) -fobjc-arc -o $@ t_buffer_image_bias.m $(MTL_T_SRC) $(FW)
 check_t_buffer_image_bias: RUN_ENV = MTL_DEBUG_LAYER=1

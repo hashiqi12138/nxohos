@@ -64,6 +64,12 @@ void mtl_prog_snapshot(prog_t *copy, const prog_t *source) { *copy = *source; }
 void mtl_prog_prefetch(const prog_t *p) { (void)p; }
 void mtl_prog_forget(const prog_t *p) { (void)p; }
 
+// ---- lifecycle / stats hooks of the upstream Metal side (dm_gfx_quit_begin, the frame summary's geometry line, counter timestamps) ----
+// The OHOS backend has no prewarm and no submission timestamps; the geocomp stats are empty (the Vulkan replay's geometry path reports through its own logs)
+void mtl_warm_stop(void) { }   // dm_gfx_quit_begin: no pipeline prewarm to stop on OHOS
+void mtl_sub_ready(uint64_t guest_ns) { (void)guest_ns; }   // the submission's ready time: no counter-timestamp spans on OHOS
+uint64_t mtl_geocomp_stats(char *out, size_t cap) { (void)out; (void)cap; return 0; }   // geometry compute-path stats: none on the Vulkan replay
+
 // ---- snapshots / probes / prebuild ----
 int mtl_snap_on(void) { return 0; }
 uint64_t mtl_snap_acquire_wait(void) { return 0; }

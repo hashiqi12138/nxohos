@@ -992,6 +992,45 @@ def cpk_shaders(path, rel, ents, out):
             print(f'[RED] /{rel}/{e[0]}: {x}; not scanned', flush=True); continue
         scan_blob(d, f'/{rel}/{e[0]}', out)
 
+LSPK = b'LSPK'   # job tag: Larian's footer-indexed packages (lspk.py)
+def lspk_jobs(files, parts=64):
+    """Larian packages: read the indices, then only BSHD members. Other assets and numbered sound/video continuations need no whole-file scan."""
+    import lspk
+    found, consumed, errors = [], set(), []
+    for p, r in files:
+        if p in consumed or not p.lower().endswith('.pak'): continue
+        try: package = lspk.package(p)
+        except (ValueError, OSError, struct.error) as e:
+            errors.append((p, r, (LSPK, None, str(e)))); consumed.add(p); continue
+        if package is None: continue
+        paths, entries = package; consumed.update(paths)
+        found.append((p, r, [e for e in entries if e[0].lower().endswith('.bshd')]))
+    jobs, step = errors, max(sum(e[3] for _, _, es in found for e in es) // parts, 1)
+    for p, r, entries in found:
+        cur, size = [], 0
+        for e in entries:
+            cur.append(e); size += e[3]
+            if size >= step: jobs.append((p, r, (LSPK, tuple(cur)))); cur, size = [], 0
+        if cur: jobs.append((p, r, (LSPK, tuple(cur))))
+    return jobs, consumed
+
+def bshd_shaders(data, label):
+    """Larian's per-program BSHD records: NX stages are GLSLC outputs; the same archives also carry other platforms' compiled stages."""
+    import lspk
+    out = []
+    for stage, program in lspk.bshd_sections(data, label):
+        if program[:4] != b'\x91\x68\x86\x19': continue
+        expected = {1: 'vs', 3: 'ps', 4: 'cs'}.get(stage)
+        stages = glslc_shaders(program, label, need=True)
+        if len(stages) != 1 or stages[0][1] != expected: red(f'{label}: BSHD stage {stage} disagrees with its GLSLC program')
+        _, st, ctl, code = stages[0]
+        out.append((f'{label}#BSHD#var', st, ctl, code))
+    return out
+
+def lspk_shaders(entries, rel, out):
+    import lspk
+    for e in entries: out.extend(bshd_shaders(lspk.read(e), f'/{rel}/{e[0]}'))
+
 D3CPK = b'D3CPK'   # job tag of a Diablo III package's byte range (d3cpk_jobs)
 def d3cpk_jobs(files, parts=64):
     """Diablo III's console packages (d3cpk.py; .cpk like CRI's, another format) in byte ranges of about equal length: Diablo III: Eternal Collection 2.7.7 has 37, 16 GB.
@@ -2293,13 +2332,22 @@ def raw_shaders(d, label, known=()):
     Of 25 mains on hand only that one has such control sections, so the tables of every other game stay as they were.
     Diablo II: Resurrected's main holds 10 (3 vertex, 3 pixel, 4 compute; 9 distinct) in the record its SHAD containers hold (shad_record: a 0x14-byte header, the code area, the control section): the code points at
     the record's start, not at either section (main+0x88d270 builds the first with adrp + add; four are relocated pointers at main+0x20ff410 + 0x28 i), so a record whose header gives
-    exactly this control section and the code area before it, referenced either way, gives that code area"""
+    exactly this control section and the code area before it, referenced either way, gives that code area.
+    A control section nothing references takes the code area that ends right at it, when that area has a header and exactly the length the control section gives (+0x704): the form Phyre's
+    effects use (phyre_shaders), labelled as theirs. FINAL FANTASY XII THE ZODIAC AGE's main holds 23 PhyreEngine built-in programs so (main+0xfc3e13 to +0xfd5d88, among them the UI's and the
+    cutscenes' composite passes), outside any RYHP container, 16 of them at unaligned addresses, and nothing in its code or data points at either part; without them its menus, dialogue icons and
+    cutscene backgrounds drew nothing. An unaligned control section is taken in this form only. References still decide first, so a neighbour that only looks right (Advance Wars above) is not taken"""
+    def adjacent(c):   # the start of the headed code area of the control section's length that ends right at it, else None
+        nctl, n = struct.unpack_from('<I', d, c + 0x20)[0], struct.unpack_from('<I', d, c + 0x704)[0]
+        k = c - n
+        return k if n >= 0x80 and nctl >= 0x760 and c + nctl <= len(d) and k >= 0 and d[k:k + 4] in (GFX_MAGIC, CS_MAGIC) and CTL_MAGIC not in d[k:c] else None
     skip = []
     for m in re.finditer(b'\x91\x68\x86\x19', d):
         size, _, first, _ = glslc_layout(d, m.start())
         if (0 if first == 0xa8 else 0x760) < size <= len(d) - m.start(): skip.append((m.start(), m.start() + size))
     for m in re.finditer(b'BNSH\0\0\0\0', d): skip.append((m.start(), m.start() + struct.unpack_from('<I', d, m.start() + 0x1c)[0]))
-    ctls = [c for m in re.finditer(re.escape(CTL_MAGIC), d) if not (c := m.start()) & 3 and not any(a <= c < b for a, b in skip) and d[c:c + struct.unpack_from('<I', d, c + 0x20)[0]] not in known]
+    ctls = [c for m in re.finditer(re.escape(CTL_MAGIC), d) if (c := m.start()) + 0x708 <= len(d) and not any(a <= c < b for a, b in skip) and (not c & 3 or adjacent(c) is not None)
+            and d[c:c + struct.unpack_from('<I', d, c + 0x20)[0]] not in known]
     if not ctls: return []
     rel, code_of, cset = rel_targets(d), {}, set(ctls)
     for s, c in rel.items():
@@ -2311,11 +2359,14 @@ def raw_shaders(d, label, known=()):
         nctl, n = struct.unpack_from('<I', d, c + 0x20)[0], struct.unpack_from('<I', d, c + 0x704)[0]
         r = c - n - 0x14   # a SHAD record's start (shad_record), when this control section ends one
         if c not in code_of and r >= 0 and (r in targets or r in built) and shad_record(d, r, r + 0x14 + n + struct.unpack_from('<I', d, r + 4)[0]): code_of[c] = c - n
-        ctl, why = d[c:c + nctl], 'no code area: no data record points at one, and the code builds the address of none right after or right before it'
+        ctl, why = d[c:c + nctl], 'no code area: no data record points at one, the code builds the address of none right after or right before it, and none of its length ends at it'
         near = lambda k: min(abs(a - b) for a in built[k] for b in built[c])   # how close the code builds this code area's address to the control section's
         for k in ([code_of[c]] if c in code_of else sorted((k for k in ((c + nctl + 15) & ~15, c - n) if k in built and c in built and near(k) < 0x400), key=near)):
             code = d[k:k + n]; st = glslc_stage(ctl, code) if k >= 0 and CTL_MAGIC not in code else None
             if st and not check(label, st, ctl, code): out.append((f'{label}#RAW@{c:#x}', st, ctl, code)); why = None; break
+        if why and c not in code_of and (k := adjacent(c)) is not None:   # nothing references it: the code area that ends right at it (Phyre's form)
+            code = d[k:c]; st = glslc_stage(ctl, code)
+            if st and not check(label, st, ctl, code): out.append((f'{label}#PHYRE@{k:#x}', st, ctl, code)); why = None
         if why: print(f'[RED] {label} control section @{c:#x}: {why}; left out', flush=True)
     return out
 
@@ -3351,6 +3402,10 @@ def scan_file_in(args):
     if ext in ('.data', '.patch', '.debug', '.nxpc') and os.path.exists(stem + '.dict'): return rel, {}, set(), {}   # read through its Next Level Games index (nlg_shaders)
     with open(path, 'rb') as f: head = f.read(16)
     found = []; trees = {}
+    if len(args) > 2 and args[2][0] == LSPK:
+        if args[2][1] is None: red(args[2][2])
+        lspk_shaders(args[2][1], rel, found)
+        return rel, uniq_keys(found), var_pairs(found), trees
     if len(args) > 2 and args[2][0] == b'ARH1':
         arh_shaders(path, rel, args[2][1], found)
         return rel, uniq_keys(found), var_pairs(found), trees
@@ -3586,8 +3641,9 @@ def main():
     fb_jobs, fbs = frostbite_jobs(files)   # EA SPORTS FC 27's Frostbite bundles, Oodle Leviathan decoded by the game's own decoder in the Mac host
     pd_jobs, pdats = pdat_jobs(files)   # Kirby Air Riders' PDAT archives: the PMAP records in byte ranges
     rp_jobs, rpfs = rpf_jobs(files, main_v)   # Red Dead Redemption's RPF6 archives, their tables decrypted with the key in main (rpf6.py)
-    big += pak_jobs + tr_jobs + ue_jobs + bd_jobs + arc_jobs + pz_jobs + ck_jobs + d3_jobs + ca_jobs + cr_jobs + zp_jobs + ah_jobs + fb_jobs + pd_jobs + rp_jobs
-    files = [(p, r) for p, r in files if not linkdata_jobs(p, r) and p not in paks and p not in trp and p not in uep and p not in bdts and p not in arcs and p not in pkzs and p not in cpks and p not in d3s and p not in cascs and p not in cras and p not in zips and p not in arhs and p not in fbs and p not in pdats and p not in rpfs]
+    ls_jobs, lsps = lspk_jobs(files)   # Larian's packages: indexed BSHD programs, without reading unrelated assets
+    big += pak_jobs + tr_jobs + ue_jobs + bd_jobs + arc_jobs + pz_jobs + ck_jobs + d3_jobs + ca_jobs + cr_jobs + zp_jobs + ah_jobs + fb_jobs + pd_jobs + rp_jobs + ls_jobs
+    files = [(p, r) for p, r in files if not linkdata_jobs(p, r) and p not in paks and p not in trp and p not in uep and p not in bdts and p not in arcs and p not in pkzs and p not in cpks and p not in d3s and p not in cascs and p not in cras and p not in zips and p not in arhs and p not in fbs and p not in pdats and p not in rpfs and p not in lsps]
     with cf.ProcessPoolExecutor(J, initializer=_pool_init, initargs=(common, {}, zdicts)) as ex:
         n = len(big) + len(files)
         results += pooled(ex, big, n) + pooled(ex, files, n, len(big), chunk=16)
@@ -3630,12 +3686,13 @@ def main():
     for name, rr in recs.items():
         with open(os.path.join(pkg, name), 'wb') as f: f.write(b''.join(rr))
     with open(mapout, 'w') as f:
-        kinds = ' / '.join(k for k, hit in (('BNSH / BAHS', any('#BNSH@' in r[4] or '#BAHS@' in r[4] for r in rows)), ('Unity Shader', any('#var' in r[4] and '#PMAP@' not in r[4] and '#BNSH@' not in r[4] and '#MSHD#' not in r[4] and '#SDF#' not in r[4] and '#GLSLC@' not in r[4] and '#SNVN@' not in r[4] for r in rows)),
+        kinds = ' / '.join(k for k, hit in (('BNSH / BAHS', any('#BNSH@' in r[4] or '#BAHS@' in r[4] for r in rows)), ('Unity Shader', any('#var' in r[4] and '#PMAP@' not in r[4] and '#BNSH@' not in r[4] and '#MSHD#' not in r[4] and '#SDF#' not in r[4] and '#GLSLC@' not in r[4] and '#SNVN@' not in r[4] and '#BSHD#' not in r[4] for r in rows)),
                                             ('Retro Studios SNVN', any('#SNVN@' in r[4] for r in rows)),
                                             ('phx PMAP', any('#PMAP@' in r[4] for r in rows)), ('MSHD', any('#MSHD#' in r[4] for r in rows)), ('GLSLC', any('#GLSLC@' in r[4] for r in rows)), ('RE Engine SDF', any('#SDF#' in r[4] for r in rows)),
                                             ('MT Framework SPK', any('#MTSPK@' in r[4] for r in rows)), ('MonoGame MGFX', any('#MGFX@' in r[4] for r in rows)),
                                             ('PlatinumGames shader objects', any('#PGSO' in r[4] for r in rows)),
                                             ('Snowdrop shader objects', any('#SNOWDROP@' in r[4] for r in rows)),
+                                            ('Larian BSHD', any('#BSHD#' in r[4] for r in rows)),
                                             ('Needle', any('#NEEDLE@' in r[4] for r in rows)),
                                             ('Unreal Engine shader code archives', any('#UE' in r[4] for r in rows))) if hit)
         f.write(f'# kind: evidence  {NOTE} ({kinds} in RomFS + main) → control section + code area keys (dm/gfx/tools/shader_split.py)\n')

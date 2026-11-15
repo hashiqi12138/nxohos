@@ -41,7 +41,7 @@
  }
  NVN(nvnProgramFinalize, void, NVNprogram *p) {
      pthread_mutex_lock(&g_sub_mu); mtl_prog_forget((const prog_t *)p); mtl_prog_release((prog_t *)p); pthread_mutex_unlock(&g_sub_mu);
-@@ -1455,6 +1465,8 @@
+@@ -1472,6 +1482,8 @@
  }
  NVN(nvnCommandBufferSetDepthRange, void, NVNcommandBuffer *c, float n, float f) { *REC(c, OP_DEPTH_RANGE, p_depth_range) = (p_depth_range){n, f}; }
  NVN(nvnCommandBufferBindProgram, void, NVNcommandBuffer *c, const NVNprogram *p, int stages) {
@@ -50,7 +50,7 @@
      *REC(c, OP_BIND_PROGRAM, p_bind_program) = (p_bind_program){(const prog_t *)p, stages};
  }
  static void bind_state(NVNcommandBuffer *c, int kind, const void *st, size_t n) {
-@@ -3235,6 +3247,7 @@
+@@ -3264,6 +3276,7 @@
  // The host identifies stages by the control section and does not use the extension field: convert to plain NVNshaderData and hand it to SetShaders.
  typedef struct { NVNbufferAddress data; const void *control; uint64_t ext; } shader_data_ext;
  NVN_NOPROTO(nvnProgramSetShadersExt, NVNboolean, NVNprogram *p, int n, const shader_data_ext *sd) {

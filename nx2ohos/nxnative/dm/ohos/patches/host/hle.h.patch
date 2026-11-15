@@ -1,6 +1,6 @@
 --- a/host/hle.h
 +++ b/host/hle.h
-@@ -6,7 +6,7 @@
+@@ -7,7 +7,7 @@
  typedef struct { const char *name; void *fn; } hle_ent;
  #define HLE(mangled, ret, cname, ...)                                                             \
      static ret cname(__VA_ARGS__);                                                                \
@@ -9,7 +9,7 @@
      static ret cname(__VA_ARGS__)
  
  typedef uint32_t Result;   // nn::Result: w0, 0 = success
-@@ -51,18 +51,18 @@
+@@ -52,18 +52,18 @@
      _Static_assert(HLE_NARG(__VA_ARGS__) <= 16, #cname ": more parameters than the big-stack entry carries over (hle.h)"); \
      static ret cname(__VA_ARGS__) __attribute__((used));                                          \
      extern const char cname##_bs[];                                                               \

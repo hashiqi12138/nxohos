@@ -1,8 +1,8 @@
 --- a/host/hle_lifecycle.c
 +++ b/host/hle_lifecycle.c
-@@ -2,16 +2,32 @@
- // Pause audio, suspend graphics (wait for in-flight NVN calls to end and drain GPU work), then _exit(0); a 1.5 s fallback goes straight to _exit(0).
- // The default action also exits in about 0.08 s (exit code 143); the value of this function is stopping background threads in order, exit code 0, and giving the iOS lifecycle callback an entry.
+@@ -4,10 +4,14 @@
+ // EXIT_DRAIN_MS), wait for the archive's write within DM_QUIT_ARCH_MS of the start, the same time a quit gives it, then the continuation (then: execve of the next program) or _exit(0).
+ // The default action also exits in about 0.08 s (exit code 143); the value of this function is that order, exit code 0, the pipelines the run compiled kept, and the next program.
  #include "hle.h"
 -#include <dispatch/dispatch.h>
  #include <stdatomic.h>
@@ -14,29 +14,59 @@
 +#include <time.h>
 +#endif
  void hlecount_flush(void); void dm_rec_finish(void);
-+#if !defined(__APPLE__)
-+static void (*g_exit_then)(void *); static void *g_exit_arg;
-+static void *exit_fallback(void *a) {   // OHOS port: the 1.5 s fallback on a thread of its own (no GCD)
-+    (void)a; struct timespec t = {1, 500000000}; while (nanosleep(&t, &t)) ;
-+    LOG("[RED] graceful exit not done in 1.5 seconds, exiting at once"); if (g_exit_then) g_exit_then(g_exit_arg); _exit(0);
-+}
-+#endif
+ // The drain waits for the NVN calls under way. One that compiles its pipeline can take seconds (a draw waiting in pso_get → arch_capture → MTLCompiler: the stall a harness stops a
+ // run for with SIGTERM), and before, the exit waited for it and ended at a 1.5 s fallback with nothing written: every SIGTERM run of Ocarina of Time without a window lost 400-500
+@@ -20,6 +24,7 @@
+     _exit(0);
+ }
+ static int ms_left(uint64_t t0, int budget_ms) { int64_t left = budget_ms - (int64_t)((now_ns() - t0) / 1000000); return left > 0 ? (int)left : 0; }
++#if defined(__APPLE__)
  void dm_host_shutdown_then(const char *why, void (*then)(void *), void *arg) {
      static _Atomic int once; if (atomic_exchange(&once, 1)) return;
      uint64_t t0 = now_ns(); LOG("received %s: graceful exit", why);
-+#if defined(__APPLE__)
-     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 1500 * NSEC_PER_MSEC), dispatch_get_global_queue(QOS_CLASS_USER_INTERACTIVE, 0), ^{
-         LOG("[RED] graceful exit not done in 1.5 seconds, exiting at once"); if (then) then(arg); _exit(0); });
-+#else
-+    g_exit_then = then; g_exit_arg = arg;
-+    pthread_t th; if (!pthread_create(&th, NULL, exit_fallback, NULL)) pthread_detach(th);
-+#endif
-     hlecount_flush();                               // DM_HLECOUNT: _exit does not run atexit, write a copy here
-     dm_rec_finish();                                // DM_REC: the held state and the buffered steps (hle_hid.c)
-     dm_cheats_exit();                               // a clean exit: no safe mode for the cheats at the next launch (atexit does not run either)
-@@ -23,10 +39,22 @@
-     _exit(0);
+@@ -39,11 +44,62 @@
+     LOG("graceful exit done (%.3f s)", (now_ns() - t0) / 1e9);
+     exit_end(then, arg);
  }
++#else
++// OHOS port: no GCD - the deadline runs on a thread of its own, the drain beside the rest on another, and the wait is a poll of the drain's atomic flag
++static void (*g_exit_then)(void *); static void *g_exit_arg;
++static void *exit_deadline(void *a) {   // the EXIT_LATE_MS deadline: ends the process if the exit is stuck, starting the next program if it has not
++    (void)a;
++    int left = DM_QUIT_ARCH_MS + EXIT_LATE_MS;
++    struct timespec t = {left / 1000, (long)(left % 1000) * 1000000};
++    while (nanosleep(&t, &t)) ;
++    LOG("[RED] graceful exit not done in %.1f seconds, exiting at once", (DM_QUIT_ARCH_MS + EXIT_LATE_MS) / 1e3);
++    exit_end(g_exit_then, g_exit_arg);   // does not return (_exit)
++    return NULL;
++}
++static _Atomic int g_drained;
++static void *drain_thread(void *a) {   // dm_gfx_suspend beside the rest, as the Apple side's dispatch_async block
++    dm_gfx_suspend(1); atomic_store(&g_drained, 1);
++    return NULL;
++}
++void dm_host_shutdown_then(const char *why, void (*then)(void *), void *arg) {
++    static _Atomic int once; if (atomic_exchange(&once, 1)) return;
++    uint64_t t0 = now_ns(); LOG("received %s: graceful exit", why);
++    g_exit_then = then; g_exit_arg = arg;
++    pthread_t th; if (!pthread_create(&th, NULL, exit_deadline, NULL)) pthread_detach(th);
++    hlecount_flush();                               // DM_HLECOUNT: _exit does not run atexit, write a copy here
++    dm_rec_finish();                                // DM_REC: the held state and the buffered steps (hle_hid.c)
++    dm_cheats_exit();                               // a clean exit: no safe mode for the cheats at the next launch (atexit does not run either)
++    dm_audio_suspend(1);
++    dm_gfx_quit_begin();                            // no more prewarm compiles; what the pipeline archive holds starts writing now, beside the drain
++    atomic_store(&g_drained, 0);
++    pthread_t dr; if (pthread_create(&dr, NULL, drain_thread, NULL)) atomic_store(&g_drained, 1);   // could not start: wait inline below
++    for (int left = ms_left(t0, EXIT_DRAIN_MS); left > 0 && !atomic_load(&g_drained); left = ms_left(t0, EXIT_DRAIN_MS)) {
++        struct timespec t = {left / 1000, (long)(left % 1000) * 1000000}; nanosleep(&t, NULL);
++    }
++    if (!atomic_load(&g_drained))
++        LOG("[RED] graceful exit: graphics not suspended in %.1f seconds (a draw under way, most often one compiling its pipeline): the pipeline archive is written all the same", EXIT_DRAIN_MS / 1e3);
++    dm_gfx_quit(ms_left(t0, DM_QUIT_ARCH_MS));      // what the archive has not written yet, within the time a quit gives it
++    LOG("graceful exit done (%.3f s)", (now_ns() - t0) / 1e9);
++    exit_end(then, arg);
++}
++#endif
  void dm_host_shutdown(const char *why) { dm_host_shutdown_then(why, NULL, NULL); }
 +#if !defined(__APPLE__)
 +static void *term_wait(void *a) {   // OHOS port: SIGTERM is blocked in every thread created after dm_term_install and taken here with sigwait

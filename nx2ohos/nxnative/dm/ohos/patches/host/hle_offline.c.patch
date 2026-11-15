@@ -1,6 +1,6 @@
 --- a/host/hle_offline.c
 +++ b/host/hle_offline.c
-@@ -12,7 +12,7 @@
+@@ -13,7 +13,7 @@
  // own default context has: GetCompletionEvent makes a signaled event (sdk+0x5a9298), GetResult answers 0 and the destructor does nothing, so only this call is taken over. Naked because x8 is the
  // hidden result pointer, 8 bytes on the caller's stack, which no C return type can name
  __attribute__((naked)) static void h_prepo_Send(void) { __asm__("str xzr, [x8]\n    ret"); }
