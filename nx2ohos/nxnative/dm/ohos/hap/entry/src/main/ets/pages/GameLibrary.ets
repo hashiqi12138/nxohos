@@ -21,6 +21,64 @@ export interface GameEntry {
   stamp: string;        // the pack stamp this data came from
   sizeBytes: number;    // bytes on disk (du-style sum of the tree)
   hasData: boolean;     // RomFS/ and mods/main.patched.bin both present
+  iconPath: string;     // <root>/icon.jpg when the pack carries one, else ''
+}
+
+/**
+ * The cached metadata a game's directory keeps, so listing does not walk 41k files.
+ *
+ * Written once after an import (the import already knows the size and stamp), read on every library load. A
+ * missing or stale cache falls back to a real walk, and the walk's answer is written back.
+ */
+interface GameMeta {
+  stamp: string;
+  name: string;
+  sizeBytes: number;
+  hasData: boolean;
+  icon: string;
+}
+
+const META_FILE: string = '/.meta.json';
+
+/** Read the cached metadata, or null when it is absent or unreadable. */
+function readMeta(root: string): GameMeta | null {
+  try {
+    const text: string = fs.readTextSync(root + META_FILE);
+    const j = JSON.parse(text) as Record<string, Object>;
+    const stamp = j['stamp'];
+    const name = j['name'];
+    const size = j['sizeBytes'];
+    const has = j['hasData'];
+    const icon = j['icon'];
+    return {
+      stamp: typeof stamp === 'string' ? stamp : '',
+      name: typeof name === 'string' ? name : '',
+      sizeBytes: typeof size === 'number' ? size : 0,
+      hasData: has === true,
+      icon: typeof icon === 'string' ? icon : ''
+    };
+  } catch (e) {
+    return null;
+  }
+}
+
+/**
+ * Write the cache for a game. Called after an import, when the size and stamp are already known, and by the
+ * library after a real walk that found no cache.
+ */
+export function writeMeta(root: string, stamp: string, name: string, sizeBytes: number,
+                          hasData: boolean, icon: string): void {
+  const meta: GameMeta = { stamp: stamp, name: name, sizeBytes: sizeBytes, hasData: hasData, icon: icon };
+  try {
+    const f = fs.openSync(root + META_FILE, fs.OpenMode.CREATE | fs.OpenMode.READ_WRITE | fs.OpenMode.TRUNC);
+    try {
+      fs.writeSync(f.fd, JSON.stringify(meta));
+    } finally {
+      fs.closeSync(f);
+    }
+  } catch (e) {
+    // a cache that cannot be written only costs a walk next time
+  }
 }
 
 /** The games directory, beside the per-game folders. */
@@ -83,8 +141,11 @@ function readPackName(root: string): string {
 }
 
 /**
- * List the installed games, newest stamp first. Cheap enough for a launcher: one listFileSync per game plus a
- * bounded size walk (the UI shows an approximation and the exact number is not worth 41k stats).
+ * List the installed games, newest stamp first.
+ *
+ * Each game's directory carries a .meta.json written at import time, so a load costs one read per game instead of
+ * a walk over 41k files (measured: 500 ms for five games without the cache). A game whose cache is missing or
+ * whose stamp no longer matches its .stamp gets a real walk, and the result is cached for next time.
  */
 export function listGames(filesDir: string): GameEntry[] {
   const base: string = gamesDir(filesDir);
@@ -105,26 +166,52 @@ export function listGames(filesDir: string): GameEntry[] {
       isDir = false;
     }
     if (!isDir) continue;
+
     let stamp: string = '';
     try {
       stamp = fs.readTextSync(root + '/.stamp').trim();
     } catch (e) {
       stamp = '';
     }
+
+    const cached: GameMeta | null = readMeta(root);
+    let name: string = '';
+    let size: number = 0;
     let hasData: boolean = false;
-    try {
-      hasData = fs.accessSync(root + '/RomFS') && fs.accessSync(root + '/mods/main.patched.bin');
-    } catch (e) {
+    let icon: string = '';
+
+    if (cached !== null && cached.stamp === stamp) {
+      name = cached.name;
+      size = cached.sizeBytes;
+      hasData = cached.hasData;
+      icon = cached.icon;
+    } else {
+      // no cache, or it describes a different pack: walk once and remember the answer
       hasData = false;
+      try {
+        hasData = fs.accessSync(root + '/RomFS') && fs.accessSync(root + '/mods/main.patched.bin');
+      } catch (e) {
+        hasData = false;
+      }
+      name = readPackName(root);
+      size = treeSize(root, 60000);
+      icon = '';
+      try {
+        if (fs.accessSync(root + '/icon.jpg')) icon = 'icon.jpg';
+      } catch (e) {
+        icon = '';
+      }
+      writeMeta(root, stamp, name, size, hasData, icon);
     }
-    const named: string = readPackName(root);
+
     out.push({
       titleId: titleId,
-      name: named.length > 0 ? named : titleId,
+      name: name.length > 0 ? name : titleId,
       root: root,
       stamp: stamp,
-      sizeBytes: treeSize(root, 60000),
-      hasData: hasData
+      sizeBytes: size,
+      hasData: hasData,
+      iconPath: icon.length > 0 ? root + '/' + icon : ''
     });
   }
   // newest stamp first: a fresh import floats to the top
