@@ -133,3 +133,37 @@ BOTW sets the tessellation patch size once at boot. The Vulkan replay stage has 
 tessellated draws too), so the op is recorded and ignored: a case OP_PATCH_SIZE: break; in the switch keeps it out of
 the unknown-op default. No draw content is affected while the game draws no tessellated geometry.
 **Fix**: the no-op case, marked with an OHOS comment (the patch exporter claims the file through it). Status: fixed.
+
+## (i) THREAD_BLOCK_6S: the system kills the app during a long unpack (2026-11-15)
+
+**Signature**: the process disappears with no crash signal in `hilog -T dmhost`; `hisysevent` has
+`foundation/AppMS: [AMSI6516] ... PROCESS_KILL, msg=THREAD_BLOCK_6S, reason=THREAD_BLOCK_6S, FOREGROUND=1`.
+**Source**: any long synchronous loop on the ArkTS thread — here the 41,106-file `.nxpk` unpack.
+**Triage**: HarmonyOS kills a foreground app whose thread blocks for 6 s. It looked like a random crash at
+three different points (180 MB, 5 GB, 6 GB) because each yield policy left stretches that were still too long.
+`setTimeout(0)` is not enough: ArkTS drains microtasks in the same turn.
+**Fix**: yield every 1 MB of data **and** every 5 files with `setTimeout(1)`. The byte-based check matters —
+one 500 MB asset would otherwise hold the thread for seconds. Verified: 41,106 files, no kill.
+**Rule for any future long loop in ArkTS**: keep each synchronous stretch well under a second; measure with the
+byte count, not just the iteration count. Status: fixed.
+
+## (j) lseek does not hold across many reads; ReadOptions.offset does (2026-11-15)
+
+**Signature**: a 0-byte file named `NXPK` appears in the sandbox; the tar reader parses the container header.
+**Source**: `fs.lseek(fd, 80, SEEK_SET)` once, then `readSync(fd, buf, {offset: 0, length: 512})` in a loop.
+**Triage**: `ReadOptions.offset` is the **file position**, not a buffer offset. After the first read the
+descriptor had advanced past the container header and the loop never re-established the intended position.
+**Fix**: track the position in the loop and pass it on every `readSync`; drop `lseek` entirely. Status: fixed.
+
+## (k) HTTP streaming on the device: three separate limits (2026-11-15)
+
+A 14.75 GB pull over `http.requestInStream` failed in three different ways, each with its own signature:
+
+| Signature | Cause | Fix |
+|---|---|---|
+| `code 2300023 Failed to write the received data to the disk` at ~52 MB | `expectDataType: ARRAY_BUFFER` buffers the whole body in memory | `requestInStream` + `dataReceive`, write each chunk to the descriptor |
+| `code 2300028 Operation timeout` with `dlSz == Content-Length` | `readTimeout` is the **whole request's** budget; one hour expired after every byte arrived | six hours, and a timeout no longer discards what arrived |
+| connection `Established`, no bytes for 17 minutes, no error | TCP half-open after a WiFi drop; the six-hour budget would have waited that long | 60 s no-data watchdog destroys the request, `.part` keeps the bytes |
+
+**Rule**: for a multi-GB download, set the timeout from the measured rate with headroom, keep a partial file,
+and watch for progress rather than trusting the socket state. Status: fixed.
