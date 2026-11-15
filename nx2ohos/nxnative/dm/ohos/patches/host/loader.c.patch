@@ -122,7 +122,7 @@
          if (sscanf(line, "# %47s %lx", key, &v) != 2) die("%s: the output comes from an old rewriter; rewrite the modules again with dm/tools/patch_nso.py", path);
          if (!strcmp(key, "PATCH_OFF")) m->patch_off = strtoll(line + 2 + strlen(key), NULL, 16);   // may be negative (patch area before the base)
          else if (!strcmp(key, "IMAGE_SIZE")) m->image_size = v;
-@@ -293,6 +381,9 @@
+@@ -295,6 +383,9 @@
          }
      }
      fclose(f);
@@ -132,7 +132,7 @@
      if (!m->patch_off || m->key_page_off % 0x4000 || m->key_page_size != 0x4000 || seen != (1u << KEY_N) - 1)
          die("%s: the output comes from an old rewriter; rewrite the modules again with dm/tools/patch_nso.py", path);
      if (m->patch_off < 0 && (!m->image_size || !m->file_image_len || m->file_image_len % 0x4000 || m->patch_off % 0x4000 || m->key_page_off + m->key_page_size > m->image_size))
-@@ -376,6 +467,9 @@
+@@ -378,6 +469,9 @@
      uint64_t *page = (uint64_t *)(m->base + m->key_page_off);
      memset(page, 0, m->key_page_size);
      for (unsigned i = 0; i < KEY_N; i++) page[m->key_idx[i]] = (uint64_t)key_value(i) * 8;

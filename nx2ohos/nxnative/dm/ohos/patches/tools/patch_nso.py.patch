@@ -1,6 +1,6 @@
 --- a/tools/patch_nso.py
 +++ b/tools/patch_nso.py
-@@ -179,6 +179,12 @@
+@@ -190,6 +190,12 @@
  # Key page indices are fixed; the key page content is written by the loader as "actual key number × 8".
  KEYS = {'K18': 508, 'KTLS': 509, 'KTLR': 510, 'KGATE': 511}
  KEY_INDEX = {k: i for i, k in enumerate(('K18', 'KTLS', 'KTLR', 'KGATE'))}
@@ -13,7 +13,7 @@
  
  # ---- Unreal console variables in main (dm/tools/ue_cvar.py finds them by their registered names, without a build ID) ----
  # The fixups table names each one's TAutoConsoleVariable (UE_CVAR:<name>); the host writes those the profile decides on (hle_fpslock.c, hle_uecvar.c)
-@@ -272,6 +278,11 @@
+@@ -289,6 +295,11 @@
      if kind: fix.append((len(patch), kind))
      patch.extend(struct.pack('<I', w & 0xFFFFFFFF))
  
@@ -25,7 +25,7 @@
  def emit_key_addr(reg, kind):
      fix.append((len(patch), kind)); emit(ADRP(reg, here(), KEY_PAGE_OFF)); emit(LDRX(reg, reg, KEY_INDEX[kind]))
  
-@@ -347,7 +358,7 @@
+@@ -364,7 +375,7 @@
      save = -16 if dlt == 0 else -112          # Instructions that modify sp write below sp, so the scratch save is placed deep in the reserved area
      assert dlt == 0 or dlt >= -96, f'sp delta {dlt} at {ins.address:x}'
      start = here()
@@ -34,7 +34,7 @@
      emit(subst(ins, S))
      emit(STRX(S, T))                 # Always write back: capstone can miss reporting a write (the adds w18 instance)
      emit(LDP(S, T, 31, save - dlt)); emit(BX(here(), ins.address + 4))
-@@ -358,7 +369,7 @@
+@@ -375,7 +386,7 @@
      copy the old sp into T first, and after the instruction restore S / T relative to T (without writeback, ldp may use the base register as a destination). x18 is not written, so the slot is not written back"""
      S, T = pick(regs_in(ins))
      start = here()
@@ -43,7 +43,7 @@
      emit(ADDI(T, 31, 0))             # mov T, sp (in add immediate, 31 is sp)
      emit(subst(ins, S))
      emit(LDP(S, T, T, -16)); emit(BX(here(), ins.address + 4))
-@@ -388,7 +399,7 @@
+@@ -405,7 +416,7 @@
      if (dd.mnemonic, dd.op_str) != (ins.mnemonic, want): raise RuntimeError(f'casp subst fail {ins.address:x} {ins.mnemonic} {ins.op_str}: {dd.mnemonic} {dd.op_str}')
      start = here()
      emit(STP(P, P + 1, 31, -16)); emit(STUR(T, 31, -24))
@@ -52,7 +52,7 @@
      emit(nw)
      if rs == 18: emit(STRX(P, T)); emit(MOVX(19, P + 1))
      emit(LDUR(T, 31, -24)); emit(LDP(P, P + 1, 31, -16)); emit(BX(here(), ins.address + 4))
-@@ -409,7 +420,7 @@
+@@ -426,7 +437,7 @@
      S, T = pick(regs_in(ins))
      tgt = ins.operands[-1].imm
      start = here()
@@ -61,7 +61,7 @@
      m = ins.mnemonic
      taken = here() + 4 * 3
      off = (taken - here()) >> 2
-@@ -425,7 +436,7 @@
+@@ -442,7 +453,7 @@
      tgt = ins.operands[1].imm
      S, T = pick(set())
      start = here()
@@ -70,7 +70,7 @@
      pc = here(); emit(ADRP(S, pc, tgt))
      if ins.mnemonic == 'adr': emit(ADDI(S, S, tgt & 0xFFF))
      emit(STRX(S, T))
-@@ -436,7 +447,7 @@
+@@ -453,7 +464,7 @@
      """Jump table br x18: target = base + 4i. Stash x16 in the red zone → equally spaced landing pads → restore x16 → original target."""
      start = here()
      emit(STUR(16, 31, -16)); emit(STUR(17, 31, -24))   # x16 / x17 are temporary registers that can stay live within a function; save them to the red zone before borrowing
@@ -79,7 +79,7 @@
      padbase = start + 4 * 24
      delta = padbase - base
      op = ADDI if delta >= 0 else SUBI; dl = abs(delta)
-@@ -459,7 +470,7 @@
+@@ -476,7 +487,7 @@
      x16 = guest x18, compared with each target in turn (adrp + add put the target address in x17); on a match restore x16 / x17 and jump to the original target; no match → brk (the original bounds check already stops out-of-range indices)"""
      start = here()
      emit(STUR(16, 31, -16)); emit(STUR(17, 31, -24))   # as in site_br: save x16 / x17 to the red zone before borrowing
@@ -88,7 +88,7 @@
      uniq = sorted(set(targets))
      pads = here() + 4 * (4 * len(uniq) + 1)
      for k, t in enumerate(uniq):
-@@ -473,7 +484,7 @@
+@@ -490,7 +501,7 @@
      """blr x18 (Engage main+0x9ff324): x16 = guest x18, x30 = the instruction after the original blr, br x16. At a call site x16 / x17 are intra-procedure-call temporaries under the calling convention, so they need no saving;
      the return address is the original one, so the callee returns straight there (IL2CPP's C++ exceptions look up unwind tables by return address and must not stop in the patch area)"""
      start = here()
@@ -97,7 +97,7 @@
      ret = ins.address + 4
      emit(ADRP(30, here(), ret)); emit(ADDI(30, 30, ret & 0xFFF)); emit(BR(16))
      return start
-@@ -481,7 +492,7 @@
+@@ -498,7 +509,7 @@
  def site_br_call(ins):
      """br x18 as an indirect tail call (tail_call): x16 = guest x18, br x16. As at site_blr, x16 / x17 are intra-procedure-call temporaries at a call, and x30 keeps the caller's return address"""
      start = here()
@@ -106,7 +106,7 @@
      return start
  
  def site_slot_copy(ins, src, dst):
-@@ -490,9 +501,9 @@
+@@ -507,9 +518,9 @@
      The Apple kernel may change x18 at any instruction, so the value never passes through it: x15 carries it, and x16 / x17 form the slot addresses, all three saved in the red zone"""
      start = here()
      emit(STP(16, 17, 31, -16)); emit(STUR(15, 31, -24))
@@ -118,7 +118,7 @@
      emit(LDUR(15, 31, -24)); emit(LDP(16, 17, 31, -16))
      emit(BX(here(), ins.address + 4))
      return start
-@@ -503,7 +514,7 @@
+@@ -520,7 +531,7 @@
      if N == 18: return site_slot_copy(ins, kind, 'K18')
      tmp = 16 if N != 16 else 17
      start = here()
@@ -127,7 +127,7 @@
      emit(BX(here(), ins.address + 4))
      return start
  
-@@ -514,7 +525,7 @@
+@@ -531,7 +542,7 @@
      start = here()
      emit(0xF81F0000 | (31 << 5) | T)           # stur xT,[sp,#-16]
      tmp = next(x for x in (16, 17) if x not in (N, T))
@@ -136,7 +136,7 @@
      emit(0xF85F0000 | (31 << 5) | T)           # ldur xT,[sp,#-16]
      emit(BX(here(), ins.address + 4))
      return start
-@@ -523,7 +534,7 @@
+@@ -540,7 +551,7 @@
      """Common section of a gate block (right after stp x29,x30,[sp,#-16]! and before blr x30): x30 = the gate address in thread slot KGATE.
          Fetching the slot through the key page needs a second register to be borrowed; x29 is borrowed and then immediately restored from the stack: the x29 saved by _dm_gate must be
          the guest's original value, since the crash backtrace walks the x29 chain."""
@@ -145,7 +145,7 @@
  
  def site_gate(ins, kind, arg):
      """svc / mrs cntpct_el0 → host gate. The gate address is taken from thread slot KGATE; the gate looks up gates.tsv by return point (the address of this block's ldp)."""
-@@ -609,7 +620,7 @@
+@@ -626,7 +637,7 @@
      S, T = pick(used)
      lo, hi = seg[0].address, seg[-1].address + 4
      start = here()
@@ -154,7 +154,7 @@
      copy0 = here(); n = len(seg)
      # Exit stubs: the first stub right after the window must be the fall-through one (after the last window instruction, hi); targets of branches leaving the window come after it.
      # Previously the fall-through stub came last: as soon as a window contains a conditional branch out (e.g. ldxr; cmp; b.ne out; stxr; cbnz), a successful stxr fell into the
-@@ -662,7 +673,7 @@
+@@ -679,7 +690,7 @@
          for x in seg: used |= regs_in(x)
      S, T = pick(used)
      start = here()
@@ -163,7 +163,7 @@
      pos, at = {}, here()
      for seg, _ in parts:
          for x in seg: pos[x.address] = at; at += 4
-@@ -872,8 +883,8 @@
+@@ -889,8 +900,8 @@
      start first). So SIGTERM stays blocked across the fork, which keeps it pending in the kernel, until a worker has the default action back and that action can end it.
      In this process it acts only while waiting for the results: the handler's sys.exit raised during the pool's teardown could stop a terminate halfway and leave workers behind, or be discarded
      in a destructor."""
@@ -174,8 +174,8 @@
      def worker_signals():
          signal.signal(signal.SIGTERM, signal.SIG_DFL)
          signal.pthread_sigmask(signal.SIG_UNBLOCK, {signal.SIGTERM})
-@@ -2095,6 +2106,7 @@
-     for src_ in (os.path.abspath(__file__), nso.__file__, nso_code.__file__, nso_asm.__file__, ue_cvar.__file__, ue_malloc.__file__, fps_target.__file__, ue_fixed_rate.__file__, unity_fps.__file__, unity_bucket.__file__, ue_region.__file__, ue_ring.__file__, snowdrop_pools.__file__, os.path.join(os.path.dirname(ue_malloc.__file__), 'loader_census.py'), *PATCH_FILES): f.write(hashlib.sha256(open(src_, 'rb').read()).hexdigest() + f'  {os.path.relpath(os.path.abspath(src_), os.path.dirname(os.path.abspath(__file__)))}\n')
+@@ -2121,6 +2132,7 @@
+     for src_ in (os.path.abspath(__file__), nso.__file__, nso_code.__file__, nso_asm.__file__, ue_cvar.__file__, ue_malloc.__file__, fps_target.__file__, monolith_fps.__file__, ue_fixed_rate.__file__, unity_fps.__file__, unity_bucket.__file__, ue_region.__file__, ue_ring.__file__, snowdrop_pools.__file__, os.path.join(os.path.dirname(ue_malloc.__file__), 'loader_census.py'), *PATCH_FILES): f.write(hashlib.sha256(open(src_, 'rb').read()).hexdigest() + f'  {os.path.relpath(os.path.abspath(src_), os.path.dirname(os.path.abspath(__file__)))}\n')
  with open(P('fixups.tsv'), 'w') as f:
      f.write(f'# PATCH_OFF\t{PATCH_OFF:#x}\n# KEY_PAGE_OFF\t{KEY_PAGE_OFF:#x}\n# KEY_PAGE_SIZE\t0x4000\n# TEXT_END\t{TEXT_END:#x}\n# RO_OFF\t{RO_OFF:#x}\n# DATA_OFF\t{DATA_OFF:#x}\n')
 +    f.write(f'# TARGET\t{TARGET}\n')   # the loader refuses a module rewritten for another target (loader.c read_layout)

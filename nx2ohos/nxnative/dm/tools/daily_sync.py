@@ -11,7 +11,7 @@
 # The log is dm/ohos/out/daily_sync.log (verdicts, abort reasons, the conflict list).
 #   python tools/daily_sync.py [--dry-run] [--no-push] [--self-test] [--game <id>]
 # Windows scheduled task "NxohosDailySync" runs it daily (06:30), see tools/daily_sync.ps1 outside the repo.
-import argparse, datetime, os, re, subprocess, sys
+import argparse, datetime, os, re, subprocess, sys, time
 
 os.environ.setdefault('PYTHONUTF8', '1')
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -82,18 +82,22 @@ def main():
     a = ap.parse_args()
     if a.self_test: return self_test()
 
-    git = lambda *c, **kw: sh(['git', *c], cwd=kw.get('cwd', NESTED), timeout=kw.get('timeout', 3600))
+    git = lambda *c, **kw: sh(['git', '-c', 'user.name=seedds', '-c', 'user.email=seedds@gmail.com', *c],
+                             cwd=kw.get('cwd', NESTED), timeout=kw.get('timeout', 3600))
 
-    # ---- preflight: both trees clean (tracked changes only; untracked session debris is not "work in progress"), upstream reachable ----
+    # ---- preflight: nested clean; outer clean outside the nested projection (projection drift is the bot's own
+    # mirror lag - the mirror step at the end commits it; anything else outside it is a person's work in progress) ----
     rc, out = git('status', '--porcelain', '--untracked-files=no')
     if rc or out.strip(): log('ABORT: nested tree dirty (work in progress): %s' % out.strip()[:200]); return 1
     rc, out = git('status', '--porcelain', '--untracked-files=no', cwd=OUTER)
-    if rc or out.strip(): log('ABORT: outer tree dirty (work in progress): %s' % out.strip()[:200]); return 1
+    outside = [l for l in out.splitlines() if l.strip() and not l[3:].strip().startswith('nx2ohos/nxnative/')]
+    if rc or outside:
+        log('ABORT: outer tree changed outside the nested projection (work in progress): %s' % ('; '.join(l.strip() for l in outside[:6]) or out.strip()[:200]))
+        return 1
     rc, out = git('fetch', 'upstream', timeout=600)
-    for attempt in range(3):
+    for _ in range(3):
         if rc == 0: break
-        time.sleep(20) if False else None
-        import time as _t; _t.sleep(20)
+        time.sleep(20)
         rc, out = git('fetch', 'upstream', timeout=600)
     if rc: log('ABORT: upstream fetch failed 3x (network): %s' % out.strip()[:200]); return 1
 
@@ -119,14 +123,21 @@ def main():
 
     rc, out = sh([sys.executable, SYNC], cwd=NESTED)
     if rc:
+        # sync_upstream leaves the merge half-done. Classify by git status --porcelain's CONFLICT codes only
+        # (DU/DD/UD/UU/AA/AU/UA): staged adds and changes of the merge in progress (A /M ) are not conflicts.
+        # git diff --name-status --diff-filter=U shows a single 'U' and cannot tell keep-deletion from content.
         rc2, st = git('status', '--porcelain')
-        keep_del, human = classify(st.splitlines())
+        conf = [l for l in st.splitlines() if len(l) >= 4 and l[:2] in ('DU', 'DD', 'UD', 'UU', 'AA', 'AU', 'UA')]
+        # keep-deletion: anything the port deleted (DU/DD) and any UU inside docs/ - the port snapshot carries no
+        # docs/, so even an upstream-added docs file (UU after our deletion) keeps the deletion. UU elsewhere is real.
+        keep_del = [l[3:].strip() for l in conf if l[:2] in ('DU', 'DD') or (l[:2] == 'UU' and l[3:].strip().startswith('docs/'))]
+        human = [l[3:].strip() for l in conf if l[3:].strip() not in keep_del]
         if human:
-            log('ABORT: content conflict(s) need a human: %s' % '; '.join('%s %s' % h for h in human[:8]))
+            log('ABORT: content conflict(s) need a human: %s' % '; '.join(human[:8]))
             cleanup(); return 1
-        if not keep_del:
-            log('ABORT: sync_upstream failed with no conflicts: %s' % out.strip()[:300]); cleanup(); return 1
-        for p in keep_del: git('rm', '-q', '--', p)   # delete/modify: keep the deletion (the port has no docs/)
+        if not conf:
+            log('ABORT: sync_upstream failed with no conflicts: %s' % out.strip()[-300:]); cleanup(); return 1
+        for p in keep_del: git('rm', '-q', '--', p)
         rc3, st2 = git('diff', '--name-only', '--diff-filter=U')
         if rc3 or st2.strip(): log('ABORT: unmerged files remain after the keep-deletion pass'); cleanup(); return 1
         rc3, out3 = git('commit', '-m', 'Merge upstream main (%s) into the OHOS port' % up_sha[:8])
@@ -178,11 +189,10 @@ def main():
     if a.no_push:
         log('no-push: outer commit kept local at %s' % sh(['git', 'rev-parse', '--short', 'HEAD'], cwd=OUTER)[1].strip())
         return 0
-    import time as _t
-    for attempt in range(3):
+    for _ in range(3):
         rc, out = git('push', 'origin', 'main', cwd=OUTER, timeout=600)
         if rc == 0: break
-        _t.sleep(30)
+        time.sleep(30)
     if rc: log('ABORT: push failed 3x (network): the commit is local, push by hand when github answers: %s' % out.strip()[:200]); return 1
     log('PUSHED: outer main %s, upstream %s, %d commit(s) synced' % (
         sh(['git', 'rev-parse', '--short', 'HEAD'], cwd=OUTER)[1].strip(), up_sha[:8], n_new))

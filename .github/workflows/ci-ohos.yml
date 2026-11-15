@@ -12,7 +12,7 @@
 #
 # UPSTREAM_REF must be the FULL 40-char SHA: GitHub serves fetch-by-object only for full SHAs
 # (`git fetch origin c365e59f` → "couldn't find remote ref"; the full SHA fetches fine — verified).
-# The committed default, c365e59f61e6df41c916cdf5664afb037980fc46 (short c365e59f), is the last
+# The committed default, aa9e0ff71d9315b5ada964ab3d8e0ecb6f9b9481 (short aa9e0ff7), is the last
 # upstream point the nested fork merged (ROADMAP: "Nested main = 60f89e84 (upstream c365e59f
 # merged)"); the committed queue was re-exported against exactly this tree and is green.
 #   - The daily sync bot (P1.1) moves the pin forward in its sync PR, after re-running
@@ -77,7 +77,7 @@ env:
   UPSTREAM_REPO: https://github.com/seedds/nxnative.git
   # Full 40-char SHA required (see header); committed default = last merged upstream point.
   # The `UPSTREAM_REF` repo variable overrides it without a file edit.
-  UPSTREAM_REF: ${{ vars.UPSTREAM_REF || 'c365e59f61e6df41c916cdf5664afb037980fc46' }}
+  UPSTREAM_REF: ${{ vars.UPSTREAM_REF || 'aa9e0ff71d9315b5ada964ab3d8e0ecb6f9b9481' }}
 
 jobs:
   gate:
