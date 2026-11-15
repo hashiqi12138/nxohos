@@ -53,16 +53,18 @@ export struct GameDetailSheet {
 
   build() {
     if (this.visible && this.game !== null) {
-      Stack() {
+      Stack({ alignContent: Alignment.Bottom }) {
+        // The scrim: fills the sheet's own stack, so a tap anywhere it shows closes the sheet.
         Column()
           .width('100%')
           .height('100%')
           .backgroundColor(Bg.overlay)
           .onClick(() => this.onClose())
 
-        Column() {
-          Blank()
-          Scroll() {
+        // The sheet itself sits at the bottom. It is sized by its content up to 85% of the height, and it must
+        // NOT fill the stack: when it did, its transparent upper half swallowed the taps meant for the scrim
+        // (measured: tapping above the sheet did nothing, and only the ✕ could close it).
+        Scroll() {
           Column({ space: Space.s4 }) {
             // ---- handle ----
             Column()
@@ -70,6 +72,20 @@ export struct GameDetailSheet {
               .height(Size.sheetHandleHeight)
               .borderRadius(Radius.full)
               .backgroundColor('rgba(255,255,255,0.15)')
+
+            // An explicit close: a sheet must always show a way out.
+            Row() {
+              Blank()
+              Button('✕')
+                .fontSize(Font.body)
+                .fontColor(TextToken.secondary)
+                .backgroundColor('rgba(0,0,0,0)')
+                .width(40)
+                .height(40)
+                .onClick(() => this.onClose())
+                .accessibilityText('关闭')
+            }
+            .width('100%')
 
             // ---- identity: the same cover the grid shows, small ----
             Row({ space: Space.s4 }) {
@@ -226,11 +242,6 @@ export struct GameDetailSheet {
           // never takes more than 85% of the height (the design's own limit for a bottom sheet).
           .constraintSize({ maxHeight: '85%' })
           .scrollBar(BarState.Auto)
-          .align(Alignment.Bottom)
-        }
-        .width('100%')
-        .height('100%')
-        .justifyContent(FlexAlign.End)
       }
       .width('100%')
       .height('100%')
