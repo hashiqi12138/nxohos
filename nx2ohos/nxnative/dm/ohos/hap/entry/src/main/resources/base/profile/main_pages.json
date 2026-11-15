@@ -1,5 +1,6 @@
 {
   "src": [
+    "pages/GalleryPage",
     "pages/Index"
   ]
 }

@@ -21,6 +21,7 @@ import { resourceManager } from '@kit.LocalizationKit';
 import { preferences } from '@kit.ArkData';
 import { http } from '@kit.NetworkKit';
 import { picker } from '@kit.CoreFileKit';
+import { router } from '@kit.ArkUI';
 import { importPack, readPackHeader, readStamp, writeStamp, removeTree, PackInfo, ImportProgress } from './PackImport';
 import { GameEntry, gamesDir, listGames, deleteGame, humanSize } from './GameLibrary';
 
@@ -1265,6 +1266,13 @@ struct Index {
         .fontColor('#808080')
         .align(Alignment.BottomStart)
         .margin({ left: 12, bottom: 8 })
+        // A development door to the design-system proof page: tapping the status line opens it. The library
+        // replaces this entry point once S2 lands; until then the gallery has to be reachable on the device.
+        .onClick(() => {
+          router.pushUrl({ url: 'pages/GalleryPage' }).catch((e: Error) => {
+            dmhost.log(`gallery: ${e.message}`);
+          });
+        })
       // ---- P1.4 layout editor: visible only in edit mode. Drag a zone to move it, a second finger to resize; the
       // sliders tune the whole pad (opacity = the guide's alpha, scale = every radius); Save keeps the layout per
       // game (preferences), Reset restores the pack default, and Esc leaves saving what is on screen.
