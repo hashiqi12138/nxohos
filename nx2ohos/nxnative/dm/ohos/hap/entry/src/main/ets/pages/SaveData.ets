@@ -429,3 +429,70 @@ export function hasBackup(backup: string): boolean {
     return false;
   }
 }
+
+/** One game's save, as the settings list shows it. */
+export interface SaveEntry {
+  titleId: string;
+  name: string;
+  bytes: number;
+  files: number;
+  /** True when an import left a backup that could be restored. */
+  hasBackup: boolean;
+}
+
+/**
+ * Every game that has a save on disk.
+ *
+ * Reads the save directory rather than the game list: a game whose data was deleted keeps its save, and a player
+ * looking for a backup wants to see it there. Names come from the caller, which knows the display names.
+ */
+export function listSaves(filesDir: string, nameOf: (titleId: string) => string): SaveEntry[] {
+  const base: string = `${filesDir}/save`;
+  let names: string[] = [];
+  try {
+    names = fs.listFileSync(base);
+  } catch (e) {
+    return [];
+  }
+  const out: SaveEntry[] = [];
+  for (const n of names) {
+    if (!/^[0-9A-Fa-f]{16}$/.test(n)) continue;
+    const root: string = `${base}/${n}`;
+    let isDir: boolean = false;
+    try {
+      isDir = fs.statSync(root).isDirectory();
+    } catch (e) {
+      isDir = false;
+    }
+    if (!isDir) continue;
+    const rels: string[] = [];
+    listFiles(root, '', rels);
+    let bytes: number = 0;
+    for (const rel of rels) {
+      try {
+        bytes += fs.statSync(`${root}/${rel}`).size;
+      } catch (e) {
+        // gone
+      }
+    }
+    out.push({
+      titleId: n,
+      name: nameOf(n),
+      bytes: bytes,
+      files: rels.length,
+      hasBackup: hasBackup(`${base}/${n}.backup`)
+    });
+  }
+  out.sort((a: SaveEntry, b: SaveEntry): number => a.name < b.name ? -1 : (a.name > b.name ? 1 : 0));
+  return out;
+}
+
+/** Restore a game's save from the backup an earlier import left, and report whether there was one. */
+export function restoreBackup(filesDir: string, titleId: string): boolean {
+  const live: string = saveDir(filesDir, titleId);
+  const backup: string = backupDir(filesDir, titleId);
+  if (!hasBackup(backup)) return false;
+  removeTree(live);
+  copyTree(backup, live);
+  return true;
+}

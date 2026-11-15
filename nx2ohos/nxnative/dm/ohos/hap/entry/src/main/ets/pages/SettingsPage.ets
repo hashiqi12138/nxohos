@@ -13,7 +13,8 @@
  */
 
 import { Bg, Text as TextToken, Semantic, Space, Font, Radius, Size, Motion } from '../theme/Tokens';
-import { humanSize, gamesSize, cacheSize, clearCache } from './GameLibrary';
+import { humanSize, gamesSize, cacheSize, clearCache, listGames } from './GameLibrary';
+import { listSaves, restoreBackup, SaveEntry } from './SaveData';
 import { preferences } from '@kit.ArkData';
 import { router } from '@kit.ArkUI';
 import { fileIo as fs } from '@kit.CoreFileKit';
@@ -39,6 +40,11 @@ export struct SettingsPage {
   @State busy: boolean = false;
   @State toast: string = '';
   @State confirmClear: boolean = false;
+  // ---- P2.3: the save list ----
+  @State saves: SaveEntry[] = [];
+  @State savesLoaded: boolean = false;
+  /** The title whose backup a confirm would restore, or ''. */
+  @State pendingRestore: string = '';
   /** Which group the nav has selected; the page shows all of them on a narrow screen. */
   @State group: number = 0;
   @State landscape: boolean = true;
@@ -101,14 +107,38 @@ export struct SettingsPage {
     const files: string = ctx?.filesDir ?? '';
     const cache: string = ctx?.cacheDir ?? '';
     this.cacheBytes = cacheSize(files, cache);
-    console.info('settings: measuring games');
     gamesSize(files).then((n: number) => {
-      console.info('settings: games = ' + n);
       this.gamesBytes = n;
     }).catch((e: Error) => {
-      console.info('settings: gamesSize failed: ' + e.message);
       this.gamesBytes = 0;
     });
+    this.loadSaves(files);
+  }
+
+  /** The save list: one row per game that has one. Cheap - a save is a handful of files. */
+  private loadSaves(files: string): void {
+    this.savesLoaded = false;
+    setTimeout(() => {
+      const games = listGames(files);
+      const nameOf: (titleId: string) => string = (titleId: string): string => {
+        const hit = games.find((g) => g.titleId === titleId);
+        return hit !== undefined ? hit.name : titleId;
+      };
+      this.saves = listSaves(files, nameOf);
+      this.savesLoaded = true;
+    }, 40);
+  }
+
+  /** Put a game's save back from the backup an earlier import left. */
+  private doRestore(): void {
+    const titleId: string = this.pendingRestore;
+    this.pendingRestore = '';
+    if (titleId.length === 0) return;
+    const ctx = this.getUIContext().getHostContext();
+    const files: string = ctx?.filesDir ?? '';
+    const ok: boolean = restoreBackup(files, titleId);
+    this.loadSaves(files);
+    this.showToast(ok ? '已恢复上次导入前的存档' : '没有可恢复的备份');
   }
 
   private showToast(msg: string): void {
@@ -350,6 +380,60 @@ export struct SettingsPage {
           .width('100%')
           .padding({ top: Space.s2, bottom: Space.s2 })
 
+          // ---- 存档 (P2.3) ----
+          // One row per game that has a save, with the restore action only where an import left a backup - the
+          // list is how a player finds their way back after a bad import without hunting through files.
+          this.heading('存档')
+          if (!this.savesLoaded) {
+            Text('读取中…')
+              .fontSize(Font.label)
+              .fontColor(TextToken.tertiary)
+              .width('100%')
+              .textAlign(TextAlign.Start)
+              .padding({ top: Space.s2, bottom: Space.s2 })
+          } else if (this.saves.length === 0) {
+            Text('还没有存档。进入游戏并保存一次后，这里会列出来。')
+              .fontSize(Font.label)
+              .fontColor(TextToken.tertiary)
+              .width('100%')
+              .textAlign(TextAlign.Start)
+              .padding({ top: Space.s2, bottom: Space.s2 })
+          } else {
+            ForEach(this.saves, (s: SaveEntry) => {
+              Row({ space: Space.s3 }) {
+                Column({ space: 2 }) {
+                  Text(s.name)
+                    .fontSize(Font.label)
+                    .fontColor(TextToken.primary)
+                    .maxLines(1)
+                    .textOverflow({ overflow: TextOverflow.Ellipsis })
+                    .width('100%')
+                    .textAlign(TextAlign.Start)
+                  Text(`${humanSize(s.bytes)} · ${s.files} 个文件${s.hasBackup ? ' · 有备份' : ''}`)
+                    .fontSize(Font.caption)
+                    .fontColor(TextToken.tertiary)
+                    .width('100%')
+                    .textAlign(TextAlign.Start)
+                }
+                .layoutWeight(1)
+                .alignItems(HorizontalAlign.Start)
+                if (s.hasBackup) {
+                  Button('恢复备份')
+                    .fontSize(Font.caption)
+                    .fontColor(TextToken.secondary)
+                    .backgroundColor('rgba(0,0,0,0)')
+                    .border({ width: 1, color: Semantic.borderSubtle, radius: Radius.md })
+                    .borderRadius(Radius.md)
+                    .height(32)
+                    .padding({ left: Space.s3, right: Space.s3 })
+                    .onClick(() => { this.pendingRestore = s.titleId; })
+                }
+              }
+              .width('100%')
+              .padding({ top: Space.s2, bottom: Space.s2 })
+            }, (s: SaveEntry) => s.titleId)
+          }
+
           // ---- 关于 ----
           this.heading('关于')
           Row() {
@@ -407,6 +491,18 @@ export struct SettingsPage {
         destructive: true,
         onConfirm: () => this.doClear(),
         onCancel: () => { this.confirmClear = false; }
+      })
+
+      // Restoring a backup replaces the live save, so it asks first like every other destructive action.
+      ConfirmDialog({
+        visible: this.pendingRestore.length > 0,
+        title: '恢复备份？',
+        body: '将用上次导入前的备份替换当前存档。当前存档会被备份覆盖，但游戏数据不受影响。',
+        confirmLabel: '恢复',
+        cancelLabel: '取消',
+        destructive: true,
+        onConfirm: () => this.doRestore(),
+        onCancel: () => { this.pendingRestore = ''; }
       })
     }
     .width('100%')
