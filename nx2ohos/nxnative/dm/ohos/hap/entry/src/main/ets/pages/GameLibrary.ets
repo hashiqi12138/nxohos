@@ -373,3 +373,67 @@ export function humanSize(bytes: number): string {
   if (bytes >= 1 << 10) return `${(bytes / (1 << 10)).toFixed(0)} KB`;
   return `${bytes} B`;
 }
+
+/** What a data check found. */
+export interface VerifyResult {
+  ok: boolean;
+  /** A sentence for the user: what is there, or what is missing. */
+  detail: string;
+  /** The paths the check looked for, for the detail line. */
+  checked: string[];
+}
+
+/**
+ * Check one game's tree against what startGame needs.
+ *
+ * Not a hash of 14 GB - that would take minutes and answer a question nobody asked. It confirms the two things
+ * the loader actually opens (RomFS/ and mods/main.patched.bin), the pack's own metadata, and that the stamp is
+ * still the one the import wrote. A missing piece is named so the user knows what to re-import.
+ */
+export function verifyGame(root: string): VerifyResult {
+  const checked: string[] = [];
+  const missing: string[] = [];
+  const need: string[] = ['RomFS', 'mods/main.patched.bin', 'nx2a-data.json', '.stamp'];
+  for (const rel of need) {
+    checked.push(rel);
+    let there: boolean = false;
+    try {
+      there = fs.accessSync(root + '/' + rel);
+    } catch (e) {
+      there = false;
+    }
+    if (!there) missing.push(rel);
+  }
+  if (missing.length === 0) {
+    return { ok: true, detail: '数据完整，可以运行', checked: checked };
+  }
+  return {
+    ok: false,
+    detail: `缺少 ${missing.join('、')}，请重新导入`,
+    checked: checked
+  };
+}
+
+/** The stamp a game's tree currently carries, for the detail sheet. */
+export function gameStamp(root: string): string {
+  try {
+    return fs.readTextSync(root + '/.stamp').trim();
+  } catch (e) {
+    return '';
+  }
+}
+
+/** The pack's own metadata, for the detail sheet's version line. */
+export function gameVersion(root: string): string {
+  try {
+    const text: string = fs.readTextSync(root + '/nx2a-data.json');
+    const j = JSON.parse(text) as Record<string, Object>;
+    const d = j['display'];
+    const v = j['version'];
+    if (typeof d === 'string' && d.length > 0) return d;
+    if (typeof v === 'string' && v.length > 0) return v;
+  } catch (e) {
+    // no metadata: the line stays empty
+  }
+  return '';
+}

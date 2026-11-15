@@ -12,7 +12,7 @@
 import dmhost from 'libdmhost.so';
 import { picker } from '@kit.CoreFileKit';
 import { Bg, Text as TextToken, Semantic, CoverPalette, Space, Font, Radius, Motion, Size } from '../theme/Tokens';
-import { GameEntry, gamesDir, listGames, deleteGame, humanSize, writeMeta, ImportStatus } from './GameLibrary';
+import { GameEntry, gamesDir, listGames, deleteGame, humanSize, writeMeta, ImportStatus, verifyGame, gameVersion, VerifyResult } from './GameLibrary';
 import { readPackHeader, importPack, readStamp, writeStamp, PackInfo, ImportProgress } from './PackImport';
 import { GameCard, CardState } from '../components/GameCard';
 import { AddGameCard } from '../components/AddGameCard';
@@ -21,6 +21,7 @@ import { TopBar } from '../components/TopBar';
 import { ImportBanner } from '../components/ImportBanner';
 import { ImportPanel } from '../components/ImportPanel';
 import { ConfirmDialog } from '../components/ConfirmDialog';
+import { GameDetailSheet } from '../components/GameDetailSheet';
 
 /** A grid cell: either a game or the add tile. */
 interface Cell {
@@ -65,6 +66,16 @@ struct LibraryPage {
   private importTimer: number = -1;
   /** Whether the running import wants cancelling; the loop checks between phases. */
   @State importCancelled: boolean = false;
+
+  // ---- S4: the detail sheet ----
+  @State detailVisible: boolean = false;
+  @State detailGame: GameEntry | null = null;
+  @State detailVersion: string = '';
+  @State detailVerifyNote: string = '';
+  @State detailVerifyOk: boolean = true;
+  @State detailVerifying: boolean = false;
+  /** The title a delete confirm is pending on, or ''. */
+  @State pendingDelete: string = '';
 
   aboutToAppear(): void {
     this.reload();
@@ -360,6 +371,68 @@ struct LibraryPage {
     return installed !== undefined ? installed.name : (this.pendingInfo !== null ? this.pendingInfo.title : '');
   }
 
+  // ---- S4: the detail sheet, its check, and delete ----
+
+  /** Open the sheet for one game. */
+  private openDetail(g: GameEntry): void {
+    this.detailGame = g;
+    this.detailVersion = gameVersion(g.root);
+    this.detailVerifyNote = '';
+    this.detailVerifyOk = true;
+    this.detailVerifying = false;
+    this.detailVisible = true;
+  }
+
+  /**
+   * Check the game's tree. Cheap by design: the loader's two entries plus the metadata and stamp, not a hash of
+   * 14 GB (which would take minutes and answer nothing the player asked).
+   */
+  private verifyDetail(): void {
+    const g: GameEntry | null = this.detailGame;
+    if (g === null) return;
+    this.detailVerifying = true;
+    // let the button's disabled state paint before the (fast) filesystem work
+    setTimeout(() => {
+      const r: VerifyResult = verifyGame(g.root);
+      this.detailVerifyNote = r.detail;
+      this.detailVerifyOk = r.ok;
+      this.detailVerifying = false;
+      console.info(`library: verify ${g.titleId} -> ${r.ok ? 'ok' : r.detail}`);
+    }, 80);
+  }
+
+  /** Ask before deleting: the confirm names the game and the size, and says the saves survive. */
+  private askDelete(): void {
+    const g: GameEntry | null = this.detailGame;
+    if (g === null) return;
+    this.pendingDelete = g.titleId;
+    this.confirmKind = 'deleteGame';
+  }
+
+  /** Delete one game's tree after the confirm. */
+  private doDelete(titleId: string): void {
+    const ctx = this.getUIContext().getHostContext();
+    const files: string = ctx?.filesDir ?? '';
+    const g: GameEntry | undefined = this.games.find((x: GameEntry): boolean => x.titleId === titleId);
+    const ok: boolean = deleteGame(files, titleId);
+    console.info(`library: delete ${titleId} -> ${ok}`);
+    this.detailVisible = false;
+    this.detailGame = null;
+    this.reload();
+    if (ok) {
+      this.showToast(g !== undefined ? `已删除 ${g.name}` : '已删除');
+    } else {
+      this.showToast('删除失败，请重试');
+    }
+  }
+
+  /** The delete confirm's body: the game's name and size, and the reassurance about saves. */
+  private deleteBody(): string {
+    const g: GameEntry | undefined = this.games.find((x: GameEntry): boolean => x.titleId === this.pendingDelete);
+    if (g === undefined) return '将删除该游戏的数据。存档不受影响。';
+    return `${g.name} 占用 ${humanSize(g.sizeBytes)}。删除后需要重新导入才能再玩。存档不受影响。`;
+  }
+
   private showToast(msg: string): void {
     this.toast = msg;
     if (this.toastTimer !== -1) clearTimeout(this.toastTimer);
@@ -476,22 +549,57 @@ struct LibraryPage {
         .height('100%')
       }
 
-      // ---- the confirm dialog: replace-data (destructive) or cancel-import (soft) ----
+      // ---- the confirm dialog: replace-data, cancel-import, or delete-game ----
       ConfirmDialog({
         visible: this.confirmKind.length > 0,
-        title: this.confirmKind === 'replaceData' ? '更新游戏数据？' : '取消导入？',
+        title: this.confirmKind === 'replaceData' ? '更新游戏数据？'
+          : (this.confirmKind === 'deleteGame' ? '删除游戏？' : '取消导入？'),
         body: this.confirmKind === 'replaceData'
           ? `${this.pendingTitle()} 已安装。新数据包将替换旧数据。存档不受影响。`
-          : '已下载的部分将保留，下次导入从断点继续。',
-        confirmLabel: this.confirmKind === 'replaceData' ? '替换' : '取消导入',
-        cancelLabel: this.confirmKind === 'replaceData' ? '取消' : '继续导入',
-        destructive: this.confirmKind === 'replaceData',
-        onConfirm: () => this.onConfirm(),
+          : (this.confirmKind === 'deleteGame' ? this.deleteBody()
+            : '已下载的部分将保留，下次导入从断点继续。'),
+        confirmLabel: this.confirmKind === 'replaceData' ? '替换'
+          : (this.confirmKind === 'deleteGame' ? '删除' : '取消导入'),
+        cancelLabel: this.confirmKind === 'replaceData' ? '取消'
+          : (this.confirmKind === 'deleteGame' ? '取消' : '继续导入'),
+        destructive: this.confirmKind === 'replaceData' || this.confirmKind === 'deleteGame',
+        onConfirm: () => {
+          if (this.confirmKind === 'deleteGame') {
+            const t: string = this.pendingDelete;
+            this.pendingDelete = '';
+            this.confirmKind = '';
+            this.doDelete(t);
+          } else {
+            this.onConfirm();
+          }
+        },
         onCancel: () => {
           if (this.confirmKind === 'cancelImport') {
             this.importCancelled = true;
           }
+          if (this.confirmKind === 'deleteGame') this.pendingDelete = '';
           this.onCancelConfirm();
+        }
+      })
+
+      // ---- the detail sheet ----
+      GameDetailSheet({
+        visible: this.detailVisible,
+        game: this.detailGame,
+        version: this.detailVersion,
+        verifyNote: this.detailVerifyNote,
+        verifyOk: this.detailVerifyOk,
+        verifying: this.detailVerifying,
+        onLaunch: () => {
+          const g: GameEntry | null = this.detailGame;
+          this.detailVisible = false;
+          if (g !== null) this.launch(g);
+        },
+        onVerify: () => this.verifyDetail(),
+        onDelete: () => this.askDelete(),
+        onClose: () => {
+          this.detailVisible = false;
+          this.detailGame = null;
         }
       })
     }
@@ -539,7 +647,7 @@ struct LibraryPage {
               coverSize: this.coverSize,
               state: this.cardState(cell.game as GameEntry, index),
               onActivate: () => this.activate(cell),
-              onDetails: () => this.showToast('详情在 S4 中实现')
+              onDetails: () => this.openDetail(cell.game as GameEntry)
             })
           }
         }

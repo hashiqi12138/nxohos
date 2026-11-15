@@ -1,0 +1,193 @@
+/*
+ * GameDetailSheet.ets - one game's facts and its three actions.
+ *
+ * Opened by holding a card. The sheet answers what the grid cannot: how big the data is, which version and which
+ * pack stamp it came from, and whether it is actually intact. The three actions are the ones a player needs -
+ * launch, check the data, delete it - and the destructive one is separated from the other two and says what it
+ * costs and what it does not (the saves live elsewhere and are untouched).
+ */
+
+import { Bg, Text as TextToken, Semantic, CoverPalette, Space, Font, Radius, Motion, Z, Size } from '../theme/Tokens';
+import { GameEntry, humanSize } from '../pages/GameLibrary';
+
+/** One labelled line in the facts block. */
+interface Fact {
+  label: string;
+  value: string;
+}
+
+@Component
+export struct GameDetailSheet {
+  @Prop visible: boolean = false;
+  @Prop game: GameEntry | null = null;
+  /** The pack's display version, from its own metadata. */
+  @Prop version: string = '';
+  /** The last data-check sentence, or ''. */
+  @Prop verifyNote: string = '';
+  /** Whether the last check passed (drives the note's colour). */
+  @Prop verifyOk: boolean = true;
+  /** A check is running: the button shows a spinner and disables. */
+  @Prop verifying: boolean = false;
+  onLaunch: () => void = () => {};
+  onVerify: () => void = () => {};
+  onDelete: () => void = () => {};
+  onClose: () => void = () => {};
+
+  private facts(): Fact[] {
+    const g: GameEntry | null = this.game;
+    if (g === null) return [];
+    const out: Fact[] = [];
+    out.push({ label: '大小', value: humanSize(g.sizeBytes) });
+    if (this.version.length > 0) out.push({ label: '版本', value: this.version });
+    out.push({ label: '数据包', value: g.stamp.length > 0 ? g.stamp.substring(0, 12) : '未知' });
+    out.push({ label: '状态', value: g.hasData ? '可运行' : '数据不完整' });
+    return out;
+  }
+
+  build() {
+    if (this.visible && this.game !== null) {
+      Stack() {
+        Column()
+          .width('100%')
+          .height('100%')
+          .backgroundColor(Bg.overlay)
+          .onClick(() => this.onClose())
+
+        Column() {
+          Blank()
+          Column({ space: Space.s4 }) {
+            // ---- handle ----
+            Column()
+              .width(Size.sheetHandleWidth)
+              .height(Size.sheetHandleHeight)
+              .borderRadius(Radius.full)
+              .backgroundColor('rgba(255,255,255,0.15)')
+
+            // ---- identity: the same cover the grid shows, small ----
+            Row({ space: Space.s4 }) {
+              Stack({ alignContent: Alignment.BottomEnd }) {
+                Column()
+                  .width('100%')
+                  .height('100%')
+                  .linearGradient({
+                    angle: 160,
+                    colors: [[CoverPalette.forTitle(this.game.titleId), 0.0],
+                      [CoverPalette.darken(CoverPalette.forTitle(this.game.titleId), 0.55), 1.0]]
+                  })
+                Text(CoverPalette.initialOf(this.game.name))
+                  .fontSize(28)
+                  .fontWeight(FontWeight.Bold)
+                  .fontColor('rgba(255,255,255,0.14)')
+                  .lineHeight(30)
+                  .margin({ right: 2, bottom: -2 })
+              }
+              .width(72)
+              .height(72)
+              .borderRadius(Radius.md)
+              .clip(true)
+
+              Column({ space: Space.s1 }) {
+                Text(this.game.name)
+                  .fontSize(Font.title)
+                  .fontColor(TextToken.primary)
+                  .maxLines(2)
+                  .textOverflow({ overflow: TextOverflow.Ellipsis })
+                  .width('100%')
+                  .textAlign(TextAlign.Start)
+                Text(this.game.titleId)
+                  .fontSize(Font.caption)
+                  .fontColor(TextToken.tertiary)
+                  .width('100%')
+                  .textAlign(TextAlign.Start)
+              }
+              .layoutWeight(1)
+              .alignItems(HorizontalAlign.Start)
+            }
+            .width('100%')
+
+            // ---- facts ----
+            Column({ space: Space.s2 }) {
+              ForEach(this.facts(), (f: Fact) => {
+                Row() {
+                  Text(f.label)
+                    .fontSize(Font.label)
+                    .fontColor(TextToken.tertiary)
+                    .width(72)
+                    .textAlign(TextAlign.Start)
+                  Text(f.value)
+                    .fontSize(Font.label)
+                    .fontColor(TextToken.secondary)
+                    .layoutWeight(1)
+                    .textAlign(TextAlign.Start)
+                }
+                .width('100%')
+              }, (f: Fact) => f.label)
+            }
+            .width('100%')
+
+            // ---- the check's verdict ----
+            if (this.verifyNote.length > 0) {
+              Text(this.verifyNote)
+                .fontSize(Font.caption)
+                .fontColor(this.verifyOk ? Semantic.success : Semantic.warning)
+                .width('100%')
+                .textAlign(TextAlign.Start)
+            }
+
+            // ---- actions ----
+            Button('启动游戏')
+              .fontSize(Font.body)
+              .fontColor(TextToken.inverse)
+              .backgroundColor(Semantic.accent)
+              .borderRadius(Radius.md)
+              .height(Size.buttonLg)
+              .width('100%')
+              .enabled(this.game.hasData && !this.verifying)
+              .opacity(this.game.hasData ? 1 : 0.4)
+              .onClick(() => this.onLaunch())
+
+            Row({ space: Space.s3 }) {
+              Button(this.verifying ? '正在校验…' : '校验数据')
+                .fontSize(Font.label)
+                .fontColor(TextToken.primary)
+                .backgroundColor('rgba(0,0,0,0)')
+                .border({ width: 1, color: Semantic.borderSubtle, radius: Radius.md })
+                .borderRadius(Radius.md)
+                .height(Size.buttonMd)
+                .layoutWeight(1)
+                .enabled(!this.verifying)
+                .onClick(() => this.onVerify())
+              Button('删除游戏')
+                .fontSize(Font.label)
+                .fontColor(Semantic.danger)
+                .backgroundColor('rgba(0,0,0,0)')
+                .border({ width: 1, color: Semantic.danger, radius: Radius.md })
+                .borderRadius(Radius.md)
+                .height(Size.buttonMd)
+                .layoutWeight(1)
+                .enabled(!this.verifying)
+                .onClick(() => this.onDelete())
+            }
+            .width('100%')
+
+            Text('存档保存在单独的目录中，删除游戏数据不会影响存档。')
+              .fontSize(Font.caption)
+              .fontColor(TextToken.tertiary)
+              .width('100%')
+              .textAlign(TextAlign.Start)
+          }
+          .width('100%')
+          .padding({ left: Space.s6, right: Space.s6, top: Space.s3, bottom: Space.s5 })
+          .backgroundColor(Bg.elevated)
+          .borderRadius({ topLeft: Radius.lg, topRight: Radius.lg })
+        }
+        .width('100%')
+        .height('100%')
+        .justifyContent(FlexAlign.End)
+      }
+      .width('100%')
+      .height('100%')
+      .zIndex(Z.sheet)
+    }
+  }
+}
