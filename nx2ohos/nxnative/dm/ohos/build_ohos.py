@@ -139,6 +139,9 @@ if failed and not a.keep_going: sys.exit(1)
 if a.only_compile: sys.exit(1 if failed else 0)
 
 LIBS = ['-lvulkan', '-lEGL', '-lGLESv3', '-lhilog_ndk.z', '-lohaudio', '-lnative_window', '-lnative_buffer', '-lnative_vsync', '-lace_napi.z', '-lace_ndk.z',
+        # qos: OH_QoS_SetThreadQoS, the platform's thread scheduling class (compat/darwin_compat.c maps Mach's
+        # time-constraint policy onto it; without it every frame thread ran at the default priority)
+        '-lqos',
         '-lz', '-lm', '-ldl']
 LDFLAGS = [TARGET, f'--sysroot={SYSROOT}', '-fuse-ld=lld', '-Wl,--error-limit=0', '-Wl,-z,max-page-size=16384', '-Wl,--build-id', '-Wl,-z,nostart-stop-gc',
            '-Wl,--no-undefined']   # the loader on the device has no weak fallback: every symbol must resolve at link time

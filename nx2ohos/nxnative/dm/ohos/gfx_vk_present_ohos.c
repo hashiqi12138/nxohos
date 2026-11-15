@@ -3,6 +3,7 @@
 // (aspect-fit, no crop stretch), and the mtl_* entry points the NVN layer calls.
 // Not here yet, and not needed for a first picture: the touch-gamepad overlay, the FPS counter, display-timing pacing (the FIFO swapchain
 // paces instead), frame shots. Their callers are stubbed below so the shared code links unchanged.
+#include <qos/qos.h>   // OH_QoS_SetThreadQoS: the present thread's scheduling class
 #include "gfx_vk.h"
 #include "nvn_mtl.h"
 #include <native_window/external_window.h>
@@ -23,6 +24,12 @@ static VkSemaphore g_acq[8], g_done_sem[8]; static VkFence g_pfence[8]; static V
 static uint32_t g_pi; static uint64_t g_presents;
 static pthread_mutex_t g_present_mu = PTHREAD_MUTEX_INITIALIZER;   // the swapchain against the window going away
 static _Atomic int g_lost;                                          // the window was destroyed: rebuild the swapchain on the next present
+// The present thread's scheduling class, reported by mtl_present_qos for the "[nvn] thread policy" line. The host's
+// frame threads raise themselves through compat's thread_policy_set, but the present thread is this port's own
+// (present_thread) and was never raised: it ran at QoS 0, so each frame's blit competed with background work and the
+// present path's time swung between 9 and 31 ms. Measured on the device (2026-11-16): the replay thread reported
+// "demoted in 301 of 301 frames" while "present QoS 0".
+static _Atomic uint32_t g_present_qos;
 
 static void swap_destroy(void) {
     if (g_swap) { vkDeviceWaitIdle(V.dev); for (uint32_t i = 0; i < g_ni; i++) { if (g_sview[i]) vkDestroyImageView(V.dev, g_sview[i], NULL); g_sview[i] = VK_NULL_HANDLE; g_simg[i] = VK_NULL_HANDLE; }
@@ -74,7 +81,11 @@ static int swap_make(void) {
         mode = pm[0];
         for (uint32_t i = 0; i < nmodes; i++) if (pm[i] == VK_PRESENT_MODE_FIFO_KHR) mode = pm[i];   // vsync: the refresh rate paces the game
     }
-    uint32_t n = caps.minImageCount + 1; if (caps.maxImageCount && n > caps.maxImageCount) n = caps.maxImageCount;
+    // Ask for more images than the minimum. minImageCount is 3 here, so +1 gave 4, and at 30 fps a 4-deep swapchain
+    // has the present thread waiting on the compositor for the image it needs: measured on the device
+    // (2026-11-16), NVN submit+present was p50 18.3 ms while the GPU took 14.1 ms, so most of that was the acquire
+    // wait, not work. Six images keep a frame or two in hand for the compositor to drain.
+    uint32_t n = caps.minImageCount + 3; if (caps.maxImageCount && n > caps.maxImageCount) n = caps.maxImageCount;
     VkCompositeAlphaFlagBitsKHR alpha = (caps.supportedCompositeAlpha & VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR)
         ? VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR : VK_COMPOSITE_ALPHA_INHERIT_BIT_KHR;   // the device reports INHERIT only (alpha 0x8)
     // every frame clears and blits into the presented image, so a surface without TRANSFER_DST cannot be presented to at all
@@ -166,7 +177,12 @@ static void record_frame(VkCommandBuffer cb, VkImage src, uint32_t idx, int cx, 
     vkCmdClearColorImage(cb, g_simg[idx], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &black, 1, &rg);
     VkImageBlit b = {{VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, {{cx, cy, 0}, {cx + cw, cy + ch, 1}}, {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, {{dx, dy, 0}, {dx + dw, dy + dh, 1}}};
     if (vk_window_bottom_up()) { b.srcOffsets[0].y = cy + ch; b.srcOffsets[1].y = cy; }
-    vkCmdBlitImage(cb, src, VK_IMAGE_LAYOUT_GENERAL, g_simg[idx], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &b, VK_FILTER_LINEAR);
+    // NEAREST, not LINEAR: this blit upscales the game's 1920x1080 window texture to the screen (2844x1260 here) every
+    // frame, and a linear-filtered upscale of that size is real work on the phone's tile renderer. Measured
+    // (2026-11-16): the present path's GPU time stayed at 18-20 ms even when the game rendered at half size, so the
+    // cost was this blit, not the scene. NEAREST is a plain sample copy; at 30 fps the price is a slightly harder
+    // edge on the upscale.
+    vkCmdBlitImage(cb, src, VK_IMAGE_LAYOUT_GENERAL, g_simg[idx], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &b, VK_FILTER_NEAREST);
     if (g_sb && shot_on()) {   // the game's frame as the game left it, before anything of ours touches it
         barrier(cb, src, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
         vkCmdFillBuffer(cb, g_sb, 0, (VkDeviceSize)g_shot_w * g_shot_h * 4, 0x5a5a5a5au);   // a copy that never ran leaves 0x5a behind, not a frame of zeros
@@ -250,6 +266,51 @@ static void present_window(vkimg_t *im, const int crop[4]) {
     if (r == VK_ERROR_OUT_OF_DATE_KHR) { atomic_store(&g_lost, 1); }
 }
 
+// ---- frame-rate measurement -----------------------------------------------------------------------------------
+// The game ran with no way to tell 60 fps from 20: the only output was a slow-frame warning. This counts at
+// present_enqueue, which the GAME thread calls once per frame - that is the number the user means by "fps". The
+// present thread can drop or repeat a frame; counting there would measure the compositor, not the game.
+//   fps:  game frames submitted in the last completed second
+//   avg/max: the mean and worst gap between submissions in that second (ms)
+//   slow: how many gaps exceeded 33.3 ms - a frame that missed the 30 fps deadline
+static struct {
+    pthread_mutex_t mu;
+    struct timespec win, last;
+    int frames, slow;
+    double sum_ms, max_ms;
+} g_fps = {PTHREAD_MUTEX_INITIALIZER};
+
+static void fps_frame(void) {
+    const double DEADLINE_MS = 1000.0 / 30.0;   // a gap over this is a missed 30 fps deadline
+    int report = 0, f = 0, s = 0;
+    double avg = 0, mx = 0;
+    struct timespec now; clock_gettime(CLOCK_MONOTONIC, &now);
+    pthread_mutex_lock(&g_fps.mu);
+    if (g_fps.win.tv_sec == 0) { g_fps.win = now; g_fps.last = now; }
+    // The gap since the previous submission is this frame's time; the first frame of a run has none.
+    double gap = (double)(now.tv_sec - g_fps.last.tv_sec) * 1e3 + (double)(now.tv_nsec - g_fps.last.tv_nsec) / 1e6;
+    g_fps.last = now;
+    g_fps.frames++;
+    if (gap > 0 && gap < 10000) {   // a paused game can leave a huge gap; it is not a slow frame
+        g_fps.sum_ms += gap;
+        if (gap > g_fps.max_ms) g_fps.max_ms = gap;
+        if (gap > DEADLINE_MS) g_fps.slow++;
+    }
+    double elapsed = (double)(now.tv_sec - g_fps.win.tv_sec) + (double)(now.tv_nsec - g_fps.win.tv_nsec) / 1e9;
+    if (elapsed >= 1.0) {
+        report = 1;
+        f = g_fps.frames; s = g_fps.slow;
+        avg = f > 1 ? g_fps.sum_ms / (f - 1) : 0.0; mx = g_fps.max_ms;
+        g_fps.frames = g_fps.slow = 0;
+        g_fps.sum_ms = g_fps.max_ms = 0.0;
+        g_fps.win = now;
+    }
+    pthread_mutex_unlock(&g_fps.mu);
+    // Outside the lock: a log line can block on the logger, and holding the counter lock through it would make the
+    // measurement perturb what it measures.
+    if (report) VKLOG("fps: %d frames/s, avg %.1f ms, max %.1f ms, %d slow (>%.1f ms)", f, avg, mx, s, DEADLINE_MS);
+}
+
 // The present thread: mtl_present only queues a frame and returns, so the game thread never waits for a vsync inside the swapchain.
 #define PQ_N 4
 static struct { vkimg_t *im; int crop[4], has_crop; uint64_t n; } g_pq[PQ_N];
@@ -259,6 +320,13 @@ static _Atomic int g_redraw;
 void dm_overlay_redraw(void) { atomic_store(&g_redraw, 1); pthread_mutex_lock(&g_pq_mu); pthread_cond_broadcast(&g_pq_cv); pthread_mutex_unlock(&g_pq_mu); }
 static void *present_thread(void *arg) {
     (void)arg; pthread_setname_np(pthread_self(), "vk present");
+    // Raise this thread's scheduling class once, at the top: presenting is a deadline job (one blit and one present
+    // per display period) and at the default class the OS was demoting it every frame. See g_present_qos above.
+    {
+        int rc = OH_QoS_SetThreadQoS(QOS_DEADLINE_REQUEST);
+        atomic_store(&g_present_qos, rc == 0 ? (uint32_t)QOS_DEADLINE_REQUEST + 1u : 0u);
+        if (rc != 0) VKLOG("present thread: QoS not raised (%d); it runs at the default class", rc);
+    }
     typeof(g_pq[0]) last = {0};
     for (;;) {
         pthread_mutex_lock(&g_pq_mu);
@@ -280,6 +348,9 @@ static void present_thread_start(void) { pthread_t t; pthread_create(&t, NULL, p
 static uint64_t present_enqueue(vkimg_t *im, const int crop[4], uint64_t n) {
     static int sync = -1; static pthread_once_t once = PTHREAD_ONCE_INIT;
     if (sync < 0) sync = getenv("DM_VK_SYNC_PRESENT") != NULL;
+    // One game frame, counted where the game hands it over: the gap between these calls is the frame time the
+    // player feels. Nothing below can drop a frame from this count.
+    fps_frame();
     if (sync || !dm_front_window()) {   // headless (nothing to show) or presenting on this thread
         if (sync && im) { pthread_mutex_lock(&g_present_mu); if (swap_make()) present_window(im, crop); pthread_mutex_unlock(&g_present_mu); }
         pthread_mutex_lock(&g_pq_mu); if (g_pq_tail == g_pq_head) g_pq_done = n; pthread_mutex_unlock(&g_pq_mu);
@@ -343,7 +414,7 @@ int mtl_display_hz(void) { return 60; }
 int mtl_fps_target(void) { return DM_GAME_FPS_TARGET > 0 ? DM_GAME_FPS_TARGET : 60; }
 void mtl_xv_window_tex(uint64_t serial) { (void)serial; }
 void mtl_prog_release(prog_t *p) { (void)p; }
-uint32_t mtl_present_qos(void) { return 0; }   // only for the "[nvn] thread policy" log line
+uint32_t mtl_present_qos(void) { return atomic_load(&g_present_qos); }
 
 // ---- no overlay on this port yet: the shared code's overlay hooks answer "nothing to draw" ----
 int dm_overlay_visible(void) { return 0; }

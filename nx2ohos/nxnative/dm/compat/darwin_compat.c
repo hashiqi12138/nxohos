@@ -156,7 +156,46 @@ kern_return_t task_threads(task_t task, thread_act_array_t *list, mach_msg_type_
     while ((e = readdir(d)) && n < cap) if (e->d_name[0] >= '0' && e->d_name[0] <= '9') a[n++] = atoi(e->d_name);
     closedir(d); *list = a; *count = n; return KERN_SUCCESS;
 }
-int thread_policy_set(int thread, thread_policy_flavor_t flavor, thread_policy_t policy, unsigned count) { (void)thread; (void)flavor; (void)policy; (void)count; return KERN_NOT_SUPPORTED; }
+// Time-constraint (real-time) thread policy. Android has no such class for apps, so the port reported
+// KERN_NOT_SUPPORTED and every frame thread kept its nice value. HarmonyOS does have one: OH_QoS_SetThreadQoS
+// (qos/qos.h, API 12) raises the calling thread's scheduling class, and QOS_DEADLINE_REQUEST is the level that
+// matches what this policy asks for (a deadline the thread must meet each period). Measured on the device
+// (2026-11-16): with the policy unsupported, Breath of the Wild ran at 21 fps with a steady 52.5 ms frame and the
+// acquire thread declared its 16.667 ms period in vain every frame.
+//
+// Only the calling thread can be raised: OH_QoS_SetThreadQoS acts on the current thread, while the policy here
+// names a thread by port. The host calls this from each frame thread about itself (hle_nvn.c rt_declare runs on the
+// thread), so the common case is exact; for another thread's port it reports KERN_NOT_SUPPORTED as before rather
+// than raising the wrong thread.
+#if defined(DM_OHOS)
+#include <qos/qos.h>
+#endif
+// HarmonyOS: OH_QoS_SetThreadQoS acts on the CALLING thread, and there is no port-to-thread mapping here to address
+// another one. The host only calls this from the thread it means (hle_nvn.c's rt_declare runs on the frame thread
+// about itself), so the call is made without comparing `thread`: on this platform the port comes from
+// pthread_mach_thread_np, which does not return a pthread_t, so a comparison would never match.
+int thread_policy_set(int thread, thread_policy_flavor_t flavor, thread_policy_t policy, unsigned count) {
+    (void)policy; (void)count; (void)thread;
+#if defined(DM_OHOS)
+    if (flavor == THREAD_TIME_CONSTRAINT_POLICY) {
+        // USER_INTERACTIVE, not DEADLINE_REQUEST. Both raise the thread, but the device's scheduler demotes a
+        // DEADLINE_REQUEST thread again almost at once when it keeps missing its deadline: measured on the device
+        // (2026-11-16), the replay thread reported "demoted in 300 of 300 frames" under DEADLINE_REQUEST, i.e. the
+        // class was granted and then taken away every frame. USER_INTERACTIVE is the class the UI thread itself
+        // runs at, so it holds; the frame threads are the work the user is waiting on, which is what the class means.
+        return OH_QoS_SetThreadQoS(QOS_USER_INTERACTIVE) == 0 ? KERN_SUCCESS : KERN_NOT_SUPPORTED;
+    }
+    if (flavor == THREAD_STANDARD_POLICY) {
+        // Back to ordinary scheduling: the host demotes a frame thread when its period moves or it no longer needs
+        // the deadline.
+        OH_QoS_ResetThreadQoS();
+        return KERN_SUCCESS;
+    }
+#else
+    (void)flavor;
+#endif
+    return KERN_NOT_SUPPORTED;
+}
 int thread_policy_get(int thread, thread_policy_flavor_t flavor, thread_policy_t policy, unsigned *count, int *get_default) {
     (void)thread; (void)flavor; (void)count; if (get_default) *get_default = 1;
     memset(policy, 0, sizeof(thread_time_constraint_policy_data_t)); return KERN_NOT_SUPPORTED;
