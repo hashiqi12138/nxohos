@@ -51,6 +51,12 @@ ohos-port/probe/hap/oh_modules/
 ohos-port/probe/__pycache__/
 ohos-port/tools/__pycache__/
 
+# ---- session debris (debug dumps and screenshots of past triage rounds; never tracked) ----
+/.screenshots/
+/bm_dump.txt
+/layout_dump.json
+/layout_dump_latest.json
+
 # ---- Python / 通用 ----
 __pycache__/
 *.pyc

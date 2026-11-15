@@ -84,10 +84,10 @@ def main():
 
     git = lambda *c, **kw: sh(['git', *c], cwd=kw.get('cwd', NESTED), timeout=kw.get('timeout', 3600))
 
-    # ---- preflight: both trees clean, upstream reachable ----
-    rc, out = git('status', '--porcelain')
+    # ---- preflight: both trees clean (tracked changes only; untracked session debris is not "work in progress"), upstream reachable ----
+    rc, out = git('status', '--porcelain', '--untracked-files=no')
     if rc or out.strip(): log('ABORT: nested tree dirty (work in progress): %s' % out.strip()[:200]); return 1
-    rc, out = git('status', '--porcelain', cwd=OUTER)
+    rc, out = git('status', '--porcelain', '--untracked-files=no', cwd=OUTER)
     if rc or out.strip(): log('ABORT: outer tree dirty (work in progress): %s' % out.strip()[:200]); return 1
     rc, out = git('fetch', 'upstream', timeout=600)
     for attempt in range(3):
