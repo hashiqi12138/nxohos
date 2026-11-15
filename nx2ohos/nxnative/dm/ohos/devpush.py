@@ -61,29 +61,95 @@ if not os.path.isdir(build): sys.exit('devpush: %s not found - do a full mkhap.p
 
 # 2b. --data-dir: serve the pack over loopback for the app's own import (P2.1). Neither the shell domain nor the
 # app can cross the SELinux boundary (tmp is data_local_tmp, the sandbox is debug_hap_data_file), so the pack
-# travels over http: this process serves it, `hdc fport tcp:PORT tcp:PORT` forwards the device's loopback to it,
-# and the app pulls what it does not have into its sandbox. Once the stamp matches, nothing is pulled again.
-IMPORT_PORT = 18899
-def start_pack_server(pack, manifest):
+# travels over http. This process serves ONE .nxpk container; `hdc rport tcp:PORT tcp:PORT` makes the device's
+# loopback reach it (rport, not fport: fport listens on the device, which needs the port free there). The app
+# asks /stamp first (80 bytes) and only pulls /pack.nxpk when its sandbox stamp differs, so a round whose data
+# is current transfers nothing.
+IMPORT_PORT = 28899
+
+
+def start_pack_server(nxpk):
+    """Serve /ping, /stamp (the container's 80-byte header) and /pack.nxpk (Range-capable)."""
     import http.server, socketserver, threading
+
     class Handler(http.server.SimpleHTTPRequestHandler):
-        def __init__(self, *a, **kw):
-            super().__init__(*a, directory=pack, **kw)
+        protocol_version = 'HTTP/1.1'   # 1.0 closes the socket after each response, which the app reports as 2300018
+        timeout = 3600                  # a 14.75 GB body over WiFi runs an hour; do not time out mid-send
+
+        def _send_file(self, path, head_only=False):
+            size = os.path.getsize(path)
+            start = 0
+            rng = self.headers.get('Range', '')
+            if rng.startswith('bytes='):
+                first = rng[len('bytes='):].split(',')[0].strip().split('-')[0]
+                if first.isdigit():
+                    start = min(int(first), size)
+            body = size - start
+            if start:
+                self.send_response(206)
+                self.send_header('Content-Range', 'bytes %d-%d/%d' % (start, size - 1, size))
+            else:
+                self.send_response(200)
+            self.send_header('Content-Type', 'application/octet-stream')
+            self.send_header('Content-Length', str(body))
+            self.send_header('Accept-Ranges', 'bytes')
+            self.end_headers()
+            if head_only:
+                return
+            with open(path, 'rb') as f:
+                if start:
+                    f.seek(start)
+                while True:
+                    buf = f.read(1 << 20)
+                    if not buf:
+                        break
+                    try:
+                        self.wfile.write(buf)
+                    except (BrokenPipeError, ConnectionResetError):
+                        return   # the app went away; its .part keeps what arrived
+                try:
+                    self.wfile.flush()
+                except (BrokenPipeError, ConnectionResetError):
+                    pass
+
+        def do_HEAD(self):
+            if self.path == '/pack.nxpk':
+                self._send_file(nxpk, head_only=True)
+                return
+            self.send_response(404)
+            self.end_headers()
+
         def do_GET(self):
             if self.path == '/ping':
                 body = b'PONG'
-                self.send_response(200); self.send_header('Content-Length', str(len(body))); self.end_headers()
-                self.wfile.write(body); return
-            if self.path == '/dm.files.tsv':
-                with open(manifest, 'rb') as f: body = f.read()
-                self.send_response(200); self.send_header('Content-Length', str(len(body))); self.end_headers()
-                self.wfile.write(body); return
-            super().do_GET()
-        def log_message(self, *a): pass
+                self.send_response(200)
+                self.send_header('Content-Length', str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                return
+            if self.path == '/stamp':
+                with open(nxpk, 'rb') as f:
+                    body = f.read(80)
+                self.send_response(200)
+                self.send_header('Content-Length', str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                return
+            if self.path == '/pack.nxpk':
+                self._send_file(nxpk)
+                return
+            self.send_response(404)
+            self.end_headers()
+
+        def log_message(self, *a):
+            pass
+
+    socketserver.ThreadingTCPServer.allow_reuse_address = True
     srv = socketserver.ThreadingTCPServer(('127.0.0.1', IMPORT_PORT), Handler)
     srv.daemon_threads = True
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     return srv
+
 
 if a.data_dir:
     rc, out = hdc('list', 'targets', timeout=60)
@@ -91,30 +157,37 @@ if a.data_dir:
     pack = os.path.abspath(a.data_dir)
     if not os.path.isfile(os.path.join(pack, 'nx2a-data.json')):
         sys.exit('devpush: %s has no nx2a-data.json - point --data-dir at the porter data pack folder' % pack)
-    # The manifest is mkhap's product (a stamp over rel/size/mtime of the pack). The build tree's copy may be
-    # gone (a slim entry carries none), so take it from wherever it survives - the build tree first, then a
-    # previously staged dmdata dir - and otherwise generate it here from the pack itself.
-    man = os.path.join(build, 'entry', 'src', 'main', 'resources', 'rawfile', 'dm.files.tsv')
-    if not os.path.isfile(man):
-        man = os.path.join(build, 'dm.files.tsv')
-    if not os.path.isfile(man):
-        import hashlib
-        files = sorted(os.path.relpath(os.path.join(d, f), pack).replace('\\', '/')
-                       for d, _, fs_ in os.walk(pack) for f in fs_ if f != 'dm.files.tsv')
-        h = hashlib.sha1()
-        for rel in files:
-            st = os.stat(os.path.join(pack, rel))
-            h.update(('%s\t%d\t%d\n' % (rel, st.st_size, st.st_mtime_ns)).encode())
-        man = os.path.join(build, 'dm.files.tsv')
-        with open(man, 'w', encoding='utf-8', newline='\n') as f:
-            f.write('# DM_DATA %s\n' % h.hexdigest())
-            for rel in files:
-                f.write('%s\t%d\tentry\n' % (rel, os.path.getsize(os.path.join(pack, rel))))
-        print('manifest generated from the pack: %d files' % len(files))
-    srv = start_pack_server(pack, man)
-    print('pack server on 127.0.0.1:%d (the app pulls from it on start)' % IMPORT_PORT)
-    rc, out = hdc('fport', 'rm', 'tcp:%d' % IMPORT_PORT, 'tcp:%d' % IMPORT_PORT, timeout=60)
-    rc, out = hdc('fport', 'tcp:%d' % IMPORT_PORT, 'tcp:%d' % IMPORT_PORT, timeout=60)
+    # Build (or reuse) the container. pack_game.py writes it beside the pack and validates the header; a cached
+    # one is reused when its stamp still matches the pack's manifest, so repeated data rounds do not re-tar 14 GB.
+    nxpk = os.path.join(os.path.dirname(pack), a.game + '.nxpk')
+    rebuild = True
+    if os.path.isfile(nxpk):
+        try:
+            with open(nxpk, 'rb') as f:
+                hdr = f.read(80)
+            cached_stamp = hdr[24:24 + 48].rstrip(b'\x00').decode('ascii', 'replace')
+            man_probe = os.path.join(pack, 'dm.files.tsv')
+            if os.path.isfile(man_probe):
+                with open(man_probe, encoding='utf-8', errors='replace') as f:
+                    first = f.readline().strip()
+                cur_stamp = first[len('# DM_DATA '):].strip() if first.startswith('# DM_DATA ') else ''
+                if cur_stamp and cur_stamp == cached_stamp:
+                    rebuild = False
+                    print('reusing the container %s (stamp %s)' % (nxpk, cached_stamp[:12]))
+        except Exception:
+            rebuild = True
+    if rebuild:
+        t0 = time.time()
+        rc, out = run([sys.executable, os.path.join(DM, 'tools', 'pack_game.py'),
+                       '--pack', pack, '--title', a.game, '--out', nxpk], timeout=3600)
+        if rc: sys.exit('devpush: pack_game failed:\n' + out[-800:])
+        print('container built in %.0f s: %s' % (time.time() - t0, out.strip().splitlines()[-1]))
+    srv = start_pack_server(nxpk)
+    print('pack server on 127.0.0.1:%d serving %s' % (IMPORT_PORT, os.path.basename(nxpk)))
+    hdc('rport', 'tcp:%d' % IMPORT_PORT, 'tcp:%d' % IMPORT_PORT, timeout=60)
+    rc, out = hdc('fport', 'ls', timeout=60)
+    print('forward:', 'tcp:%d' % IMPORT_PORT in out and 'Reverse' in out and 'ok' or out.strip()[:100])
+    globals()['_pack_server'] = srv   # kept alive until the process ends
     print('fport:', out.strip()[:120])
     globals()['_pack_server'] = srv   # kept alive until the process ends
 
@@ -229,4 +302,15 @@ if not a.no_start:
 # 8. keep or clean the remote staging dir
 if not a.keep:
     hdc('shell', 'rm -rf %s/nx2a-entry' % REMOTE_DIR, timeout=120)
+
+# 9. --data-dir keeps this process alive: the pack server IS the data source, so exiting takes the import with
+# it. Without a start the app may already be running and about to ask for /stamp; with one, the watch loop above
+# has finished (game started or the budget ran out). Either way, serve until Ctrl+C.
+if a.data_dir and '_pack_server' in globals():
+    print('serving the pack on 127.0.0.1:%d - Ctrl+C to stop' % IMPORT_PORT)
+    try:
+        while True:
+            time.sleep(3600)
+    except KeyboardInterrupt:
+        print('stopped')
 print('DEVPUSH DONE')
