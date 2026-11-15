@@ -68,3 +68,6 @@ Thumbs.db
 
 # ---- 本仓库保留的可选基线（如需入库，删掉下一行）----
 # *.png
+
+# uitest dumpLayout output lands in the repo root
+/*.json
