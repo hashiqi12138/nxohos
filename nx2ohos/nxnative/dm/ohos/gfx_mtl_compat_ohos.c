@@ -59,7 +59,8 @@ void mtl_reg_image(int id, const tex_t *t, const view_t *v) { (void)id; (void)t;
 void mtl_tex_gpu_written(const tex_t *t) { (void)t; }
 void mtl_tex_linear_cpu_written(const tex_t *t) { (void)t; }
 void mtl_prog_unpin(prog_t *p) { (void)p; }
-void mtl_prog_snapshot(prog_t *copy, const prog_t *source) { (void)copy; (void)source; }
+// the queue rebinds the record to this job-owned copy (nvn_queue.inc); without the struct copy replay sees a zeroed prog_t and skips every draw. Vulkan resolves shaders by key, so no Metal library pinning
+void mtl_prog_snapshot(prog_t *copy, const prog_t *source) { *copy = *source; }
 void mtl_prog_prefetch(const prog_t *p) { (void)p; }
 void mtl_prog_forget(const prog_t *p) { (void)p; }
 

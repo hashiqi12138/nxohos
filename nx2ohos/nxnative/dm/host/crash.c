@@ -2,6 +2,42 @@
 // Crash state: prints the faulting address, pc, lr (converted to module-relative offsets) and the registers; dispatches page fault hooks.
 // Only signal handling itself lives here: diagnostic features (probes / UI messages / sampling) are in diag.c, and this file does not depend on them (the graphics unit tests link only this file).
 #include "dm.h"
+#if defined(DM_OHOS)
+// The app's stderr is a black hole on OHOS: crash.c writes its report with fprintf/fputc, so the same calls go to a line
+// buffer that hilog emits line by line (ohos_log.c's LOG). Signal-handler context: vsnprintf and OH_LOG are async-safe
+// enough for the report (they never return into arbitrary code); the buffer is one per thread so nested handlers keep their own.
+#define CRASH_SHIM
+#include <stdarg.h>
+#include <stdio.h>
+extern void dm_ohos_logv(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
+static __thread char g_cs_buf[2048];
+static __thread int g_cs_n;
+static void cs_flush(void) {
+    if (g_cs_n > 0) { g_cs_buf[g_cs_n] = 0; dm_ohos_logv("%s", g_cs_buf); g_cs_n = 0; }
+}
+static int cs_write(const char *fmt, ...) {
+    va_list ap; va_start(ap, fmt);
+    int n = vsnprintf(g_cs_buf + g_cs_n, sizeof g_cs_buf - g_cs_n, fmt, ap);
+    va_end(ap);
+    if (n < 0) return 0;
+    if ((size_t)n >= sizeof g_cs_buf - g_cs_n) n = sizeof g_cs_buf - g_cs_n - 1;   // truncated
+    g_cs_n += n;
+    while (g_cs_n > 0) {   // emit every complete line; the tail stays buffered
+        char *nl = memchr(g_cs_buf, '\n', g_cs_n);
+        if (!nl) break;
+        *nl = 0; dm_ohos_logv("%s", g_cs_buf);
+        g_cs_n -= (nl - g_cs_buf) + 1;
+        memmove(g_cs_buf, nl + 1, g_cs_n);
+    }
+    return n;
+}
+#define fprintf(f, ...) cs_write(__VA_ARGS__)
+#define fputc(c, f) cs_write("%c", (char)(c))
+#define funlockfile(f) cs_flush()
+#define ftrylockfile(f) (0)
+#undef stderr
+#define stderr ((FILE*)0)
+#endif
 #include "dm_uc.h"   // DM_UC_SS / DM_UC_ESR: the signal context's registers, the same on Apple and OHOS
 #include <signal.h>
 #include <dlfcn.h>
@@ -160,6 +196,10 @@ static void crash_gate(int sig) {
 }
 __attribute__((weak)) void dm_gfx_addr_note(uint64_t a, char *note, size_t n) { (void)a; if (n) note[0] = 0; }   // nvn_mtl.m provides the strong definition
 __attribute__((weak)) void dm_vm_census(FILE *f) { (void)f; }   // memstat.m provides the strong definition (tests that link crash.c alone have none)
+#if defined(DM_OHOS)
+static void dm_vm_census_shim(FILE *f) { (void)f; }   // OHOS: memstat.m is not built (Apple-only); the census would have nowhere to go anyway
+#define dm_vm_census dm_vm_census_shim
+#endif
 static void on_crash(int sig, siginfo_t *si, void *uc_) {
     ucontext_t *uc = uc_;
     if (sig == SIGTRAP && g_trap_hook && g_trap_hook(uc)) return;

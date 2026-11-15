@@ -6,7 +6,7 @@
 # upstream/main ref (kept current by sync_upstream.py; no network, and never a shallow fetch, which would truncate the fork's
 # history; --upstream-dir overrides with an already-extracted dm/. Upstream drift (a shared file that differs from main with no
 # patch: an unsynced main or an accidental edit) is reported, not a failure. Exits non-zero if a patch is stale or broken.
-import argparse, os, shutil, subprocess, sys, tempfile
+import argparse, os, shutil, subprocess, sys, tarfile, tempfile
 OURS = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))          # dm/
 PATCHES = os.path.join(OURS, "ohos", "patches")
 ap = argparse.ArgumentParser()
@@ -20,6 +20,7 @@ def walk(root):
         for f in fn:
             p = os.path.join(dp, f); out[os.path.relpath(p, root).replace(os.sep, "/")] = p
     return out
+up_root = None
 if a.upstream_dir:
     up = os.path.abspath(a.upstream_dir)
 else:
@@ -28,11 +29,17 @@ else:
     repo = subprocess.run(["git", "-C", OURS, "rev-parse", "--show-toplevel"], capture_output=True, text=True, encoding="utf-8", errors="replace").stdout.strip()
     if subprocess.run(["git", "-C", repo, "rev-parse", "--verify", "--quiet", "upstream/main"], capture_output=True).returncode:
         sys.exit("test_ohos_patches.py: no upstream/main ref in the nested repo - run dm/tools/sync_upstream.py first, or pass --upstream-dir")
-    up = tempfile.mkdtemp(prefix="ohos_guard_")
-    with tempfile.TemporaryFile() as tar:
-        subprocess.run(["git", "-C", repo, "archive", "upstream/main", "dm/"], stdout=tar, check=True); tar.seek(0)
-        subprocess.run(["tar", "-x", "-C", up], stdin=tar, check=True)
-    up = os.path.join(up, "dm")
+    up_root = tempfile.mkdtemp(prefix="ohos_guard_")
+    # Python's tarfile, not bsdtar, and the temp dir is always cleaned up: leaked extractions (one full
+    # upstream tree per run) once filled C:, and bsdtar on a full disk reports every create as a
+    # misleading "No such file or directory" under its \\?\-prefixed temp path.
+    try:
+        with tempfile.TemporaryFile() as tar:
+            subprocess.run(["git", "-C", repo, "archive", "upstream/main", "dm/"], stdout=tar, check=True); tar.seek(0)
+            with tarfile.open(fileobj=tar, mode="r") as tf: tf.extractall(up_root, filter="fully_trusted")
+    except BaseException:
+        shutil.rmtree(up_root, ignore_errors=True); raise
+    up = os.path.join(up_root, "dm")
 u, o = walk(up), walk(OURS)
 fails = []
 patches = sorted(os.path.relpath(os.path.join(dp, f), PATCHES).replace(os.sep, "/")
@@ -56,4 +63,5 @@ print(f"guard: {len(patches)} patches checked, {len(fails)} failures, {len(drift
 for f in fails: print("  FAIL", f)
 for d in drift: print("  drift", d)
 shutil.rmtree(tmp, ignore_errors=True)
+if up_root: shutil.rmtree(up_root, ignore_errors=True)
 sys.exit(1 if fails else 0)

@@ -105,11 +105,13 @@ if a.data:
 
     def size(rel): return os.path.getsize(os.path.join(a.data, rel))
 
-    # entry keeps the small fixed files (env.txt, settings.txt, shaders.dmsv, mods/, the DLC index). The RomFS — the bulk — is split over feature
-    # modules: the signing tool reads a HAP as a plain zip and refuses one past 4 GB, so a pack this size cannot ride in a single HAP. Largest file
-    # first, so the parts come out about even.
-    fixed = [r for r in files if not r.startswith(('RomFS/', 'aoc/'))]
-    bulk = sorted([r for r in files if r.startswith(('RomFS/', 'aoc/'))], key=size, reverse=True)
+    # entry keeps the small fixed files (env.txt, settings.txt, mods/, the DLC index). shaders.dmsv rides with the bulk: it is
+    # per-game data (hundreds of MB), not runtime, and entry must stay small — a debug cycle replaces entry alone (bm install -p
+    # a single HAP, seconds), the bulk modules stay installed (the Android OBB / iOS Documents split). The RomFS — the rest of the
+    # bulk — is split over feature modules: the signing tool reads a HAP as a plain zip and refuses one past 4 GB, so a pack this
+    # size cannot ride in a single HAP. Largest file first, so the parts come out about even.
+    fixed = [r for r in files if not r.startswith(('RomFS/', 'aoc/')) and size(r) <= 8 * 2**20]
+    bulk = sorted([r for r in files if r.startswith(('RomFS/', 'aoc/')) or size(r) > 8 * 2**20], key=size, reverse=True)
     limit = a.split_mb * 2**20
     big = [r for r in bulk if size(r) > limit]
     if big:   # rawfile cannot split a file: this one needs a module of its own (and would still be too big)

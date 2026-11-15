@@ -1502,6 +1502,9 @@ void mtl_prepare(void) {
 static void sub_cut_begin(void); static void ts_sub_begin(void), ts_boundary(void); static int ts_on(void);
 static void gmem_commit_patch(void);   // the raw pool table words of the arguments encoded so far follow the pools (gmem_slot_note)
 static void treg_sparse_notes(void);
+static void pass_split_try(void);
+static uint64_t g_setrt_n;   // render target changes so far (pass_split_try: splits per NVN pass)
+static int g_split_resume;   // the pass was split at this draw: it opens again where the dispatch scan already looked (cs_hoist_try)
 void mtl_sub_begin(void) {
     mtl_init(); g_sub_serial++; g_seg = 0;
     treg_sparse_notes();   // the mappings made before this submission
@@ -6064,7 +6067,7 @@ static void shmap_read(void) {
     uint64_t cbs_seen; uint32_t cbs_runs;   // the command buffer that listed this shader last, and how many have (cbs_note)
     // The argument buffer encoded last time
     uint8_t ab_cbuf_only;   // 0 not decided, 1: its only bindings read through a uniform buffer are plain CBUF slots (args_cbuf_only), so a block can be patched when only those changed; 2 not
-    id<MTLBuffer> ab_buf; uint64_t ab_gpu; size_t ab_off; uint64_t ab_pass; uint32_t ab_binst; uint64_t ab_pgen;   // ab_pass: serial of the render pass that encoded this argument block - reused only within the same pass (the arena holding a block from another pass / another submission may already have been reclaimed and rewritten); ab_pgen: g_psnap_gen when it was encoded (pools, pool_gpu)
+    id<MTLBuffer> ab_buf; uint64_t ab_gpu; size_t ab_off; uint64_t ab_pass; uint32_t ab_binst; uint64_t ab_pgen, ab_gen, ab_ugen;   // ab_gen / ab_ugen: the stage's binding generations it was written at (g_args_gen); ab_pass: serial of the render pass that encoded this argument block - reused only within the same pass (the arena holding a block from another pass / another submission may already have been reclaimed and rewritten); ab_pgen: g_psnap_gen when it was encoded (pools, pool_gpu)
     id<MTLLibrary> bflib; int bflib_state; NSMutableArray *bffn;   // bflib: the readable-tile version <key>_bf (state as afn_state), bffn: its functions specialized by their numbers (NvBfFn, bf_fn)
     uint64_t mis[4];   // mis: texture slots 0-255 already reported for a type mismatch (tex_mis_note)
     NSString *ventry; id<MTLFunction> vfn; int vfn_state;
@@ -7474,15 +7477,22 @@ static uint64_t c2_handle(int stage, unsigned b) {
     if (b >= DMSH_C2_SAMP && b < DMSH_C2_SAMP + DMSH_C2_ROW * DMSH_C2_SEP_SLOTS && !((b - DMSH_C2_SAMP) % DMSH_C2_ROW)) return S.samp[stage][(b - DMSH_C2_SAMP) / DMSH_C2_ROW];
     return 0;
 }
+// Argument blocks are valid by generation, not by a flag per stage. Each change of a stage's bindings takes the next number of one sequence for every stage: g_args_gen for any binding,
+// g_args_ugen for what its uniform slots point at only (OP_BIND_UBO, ubd_dirty). A block keeps the numbers it was written at (NvShader ab_gen / ab_ugen) and is reused only while both still
+// hold, patched when only the uniform one moved (encode_args_). A flag cleared by whichever shader wrote the stage's block last told the next shader on that stage nothing: another shader
+// of the stage could write in between, clear it, and leave the first one's block from before the change looking current (PR #2249)
+static uint64_t g_args_seq = 6, g_args_gen[6] = {1, 2, 3, 4, 5, 6}, g_args_ugen[6];   // the starting numbers differ per stage: a block is never current on a stage it was not written for
+static uint64_t g_args_wrote[6];   // g_args_seq when the stage last wrote a block: a stage changed since then needs no new number (ubd_dirty)
+static inline void args_dirty(int st) { g_args_gen[st] = ++g_args_seq; }
+static inline void args_dirty_ubo(int st) { g_args_ugen[st] = ++g_args_seq; }
+static inline void args_dirty_all(void) { for (int st = 0; st < 6; st++) args_dirty(st); }
+static inline int args_changed(int st) { return g_args_gen[st] > g_args_wrote[st] || g_args_ugen[st] > g_args_wrote[st]; }   // a binding of the stage changed since it last wrote a block
 // A deferred inline update changes what the draws after it read through the uniform bindings it overlaps (they get a shadow): the argument blocks of those stages are written again.
 // Only those: marking every stage made each later draw encode all of its blocks again, which with the updates kept across passes cost about 1.5 ms a frame in Breath of the Wild.
-// Only the uniform slots change, so it marks them as a binding change does (g_args_ubo): a block whose shader reads its uniforms only as uniforms is patched (encode_args_)
-static uint8_t g_args_dirty[6];
-// Set by a change of what a stage's uniform slots point at only (OP_BIND_UBO, ubd_dirty); any other binding change sets g_args_dirty. Both cleared when the stage's block is written
-static uint8_t g_args_ubo[6];
+// Only the uniform slots change, so it marks them as a binding change does (args_dirty_ubo): a block whose shader reads its uniforms only as uniforms is patched (encode_args_)
 static void ubd_dirty(uint64_t lo, uint64_t hi) {
-    for (int st = 0; st < 6; st++) { if (g_args_dirty[st] || g_args_ubo[st]) continue;
-        for (int r = 0; r < 16; r++) { const p_bind_buf *u = &S.ubo[st][r]; if (u->addr && lo < u->addr + u->size && u->addr < hi) { g_args_ubo[st] = 1; break; } } }
+    for (int st = 0; st < 6; st++) { if (args_changed(st)) continue;
+        for (int r = 0; r < 16; r++) { const p_bind_buf *u = &S.ubo[st][r]; if (u->addr && lo < u->addr + u->size && u->addr < hi) { args_dirty_ubo(st); break; } } }
 }
 // NVN permits byte-aligned vertex streams; Metal drops the low two address bits. Keep an aligned copy in the submission arena.
 // A CPU copy is safe only without GPU writers (including earlier submissions and sparse aliases). Otherwise copy on the GPU before
@@ -7733,6 +7743,9 @@ static const prog_t *bind_stages(const prog_t *p, int stages) {
         if (hit) return &cp[i];
     }
     int i = ncp < NCMP ? ncp++ : next++ % NCMP;
+    // Never the slot S.prog names: OP_BIND_PROGRAM tells a change by the pointer (np != S.prog), so a new combination returned in the bound slot would keep the last draw's state as
+    // if nothing changed (stale argument blocks, PR #2249). It can when the bound combination is the next to be replaced: more than NCMP combinations, a hit on the oldest, then a miss
+    if (&cp[i] == S.prog) i = next++ % NCMP;
     if (cp[i].serial) serial_del(cp[i].serial);
     NvProg *o = [NvProg new];
     for (int st = 0; st < 5; st++) { ck[i][st] = S.bst[st]; cs[i][st] = S.bst[st] ? S.bst[st]->serial : 0; if (S.bst[st]) { __unsafe_unretained NvProg *src = prog_get(S.bst[st]); o->sh[st] = src ? src->sh[st] : nil; } }
@@ -11253,9 +11266,7 @@ static int fb_image_view(int tid, const nvn_rbind *b, id<MTLTexture> t) {
     return b->dtt == MTLTextureType2D && t.textureType == MTLTextureType2D && t.mipmapLevelCount == 1 &&
            (b->dpf == NVN_DPF_FLOAT || mtl_pf_dpf(registered.pixelFormat) == b->dpf);
 }
-static uint8_t g_args_dirty[6] = {1, 1, 1, 1, 1, 1};
 static uint64_t g_args_reg_seen, g_args_dirty_seen, g_args_ser_seen;
-static inline void args_dirty_all(void) { memset(g_args_dirty, 1, sizeof g_args_dirty); }
 // A reused block holds resource IDs: it is stale after a registration change, a guest write, or a serial's Metal object replaced (g_ser_gen: an upgraded or re-uploaded packaged texture,
 // an alias taken or evicted) with the same program and bindings (MacNativeGames e49aa55)
 static inline void args_sync_dirty(void) {
@@ -11768,8 +11779,8 @@ static int encode_args_(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, i
     if (nvn_stage == 1 && !metal_vertex && sh->has_logic && lop_on()) lo_bind(en);
     if (!sh->ae) return 1;
     args_sync_dirty();
-    int reusable = !passdump() && !g_args_dirty[nvn_stage] && sh->ab_buf && sh->ab_pass == g_pass.serial && nvn_stage != 5 && !(sh->rf.drv_read[0] && sh->ab_binst != g_draw_binst) && !((sh->rf.pool || sh->rf.htab) && sh->ab_pgen != g_psnap_gen);
-    if (reusable && !g_args_ubo[nvn_stage]) {
+    int reusable = !passdump() && sh->ab_gen == g_args_gen[nvn_stage] && sh->ab_buf && sh->ab_pass == g_pass.serial && nvn_stage != 5 && !(sh->rf.drv_read[0] && sh->ab_binst != g_draw_binst) && !((sh->rf.pool || sh->rf.htab) && sh->ab_pgen != g_psnap_gen);
+    if (reusable && sh->ab_ugen == g_args_ugen[nvn_stage]) {
         bind_args(en, nvn_stage, metal_vertex, sh->ab_buf, sh->ab_gpu, sh->ab_off, sh->rf.abi);
         g_stat_args_reuse++;
         return 1;
@@ -11783,7 +11794,7 @@ static int encode_args_(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, i
             if (b->kind == NVN_RB_CBUF) p[b->aid] = cbuf_slot(sh, nvn_stage, b, &use);
             else if (b->kind == NVN_RB_CBSIZE) p[b->aid] = cbsize_table(nvn_stage, &use); }
         bind_args(en, nvn_stage, metal_vertex, ab, g_cur_arena->gpu + off, off, sh->rf.abi);
-        sh->ab_buf = ab; sh->ab_gpu = g_cur_arena->gpu + off; sh->ab_off = off; g_args_ubo[nvn_stage] = 0;   // pass, base instance and pool generation are the ones the copied block was encoded for
+        sh->ab_buf = ab; sh->ab_gpu = g_cur_arena->gpu + off; sh->ab_off = off; sh->ab_ugen = g_args_ugen[nvn_stage]; g_args_wrote[nvn_stage] = g_args_seq;   // pass, base instance, pool and binding generations are the ones the copied block was encoded for
         g_stat_args_patch++;
         return 1;
     }
@@ -12097,7 +12108,7 @@ static int encode_args_(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, i
     memcpy(g_cur_arena->cpu + off, slots, arg_len);
     if (gmem_aid >= 0) gmem_slot_note((uint64_t *)(void *)(g_cur_arena->cpu + off) + gmem_aid, gml_taken ? (__bridge void *)g_gml_last : NULL);   // the arena arena_alloc took it from (no contents message: see ubo_read)
     bind_args(en, nvn_stage, metal_vertex, ab, g_cur_arena->gpu + off, off, sh->rf.abi);
-    sh->ab_buf = ab; sh->ab_gpu = g_cur_arena->gpu + off; sh->ab_off = off; sh->ab_pass = g_pass.serial; sh->ab_binst = g_draw_binst; sh->ab_pgen = g_psnap_gen; g_args_dirty[nvn_stage] = 0; g_args_ubo[nvn_stage] = 0;
+    sh->ab_buf = ab; sh->ab_gpu = g_cur_arena->gpu + off; sh->ab_off = off; sh->ab_pass = g_pass.serial; sh->ab_binst = g_draw_binst; sh->ab_pgen = g_psnap_gen; sh->ab_gen = g_args_gen[nvn_stage]; sh->ab_ugen = g_args_ugen[nvn_stage]; g_args_wrote[nvn_stage] = g_args_seq;
     g_stat_args_enc++;
     return 1;
 }
@@ -12237,11 +12248,12 @@ static int ds_scan(const uint8_t *p, ds_st *ds, int depth) {
 static const uint8_t *g_exec_cur;   // The op currently being replayed (inclusive)
 static void sd_need(sd_att *t, int why) { if (!t->state) { t->state = 1; t->why = (uint8_t)why; } }   // why: 1 a draw reads it as a texture 2 as an attachment, drawn before cleared 3 copy 4 texture clear 5 scanned to the end undecided 6 no start point / index unavailable
 static int sdx_decide(uint8_t st[SD_ATT_MAX]);   // Store lookahead decision (for the index see mtl_sub_index)
+static int g_split_store;   // the pass ends at a split (pass_split_try): the rest of it loads its attachments, so the lookahead is not asked
 static void sd_finish(void) {
     if (!g_nsd) return;
     uint8_t nst[SD_ATT_MAX];
     // Unchanged, loaded attachments already have their content in memory. Their proof depends only on writes in this pass, independently of future bindless readers or the optional lookahead.
-    if (tbdr_on() && sdx_decide(nst)) { for (int i = 0; i < g_nsd; i++) if (nst[i] == 2) g_sd[i].state = 2; else sd_need(&g_sd[i], nst[i] >> 2); }
+    if (tbdr_on() && !g_split_store && sdx_decide(nst)) { for (int i = 0; i < g_nsd; i++) if (nst[i] == 2) g_sd[i].state = 2; else sd_need(&g_sd[i], nst[i] >> 2); }
     else for (int i = 0; i < g_nsd; i++) sd_need(&g_sd[i], 6);   // Pass ended outside the list / index unavailable: always write back
     for (int i = 0; i < g_nsd; i++) {
         sd_att *t = &g_sd[i]; int udc_dead = udc_on() && t->load && !t->wrote;
@@ -12357,8 +12369,8 @@ static int state_op(uint32_t op, const void *a) {
         case OP_BIND_VATTR: { const p_bind_vattr *b = a; if (S.nattr != b->n || memcmp(S.attr, b->st, 4 * b->n)) { memcpy(S.attr, b->st, 4 * b->n); S.nattr = b->n; g_pso_dirty = 1; } break; }
         case OP_BIND_VSTREAM: { const p_bind_vstream *b = a; if (S.nstream != b->n || memcmp(S.stream, b->st, 8 * b->n)) { memcpy(S.stream, b->st, 8 * b->n); S.nstream = b->n; g_pso_dirty = 1; } break; }
         case OP_BIND_VBUF: case OP_BIND_VBUF1: { p_bind_vbuf tmp; const p_bind_vbuf *b = vbuf_rec(op, a, &tmp); memcpy(&S.vbuf[b->first], b->r, sizeof *b->r * b->n); break; }
-        case OP_BIND_UBO: case OP_BIND_UBO_SMALL: { p_bind_buf tmp; const p_bind_buf *b = bind_buf_rec(op, a, &tmp); if (b->stage < 6 && b->index < 16) { S.ubo_set[b->stage] |= (uint16_t)(1u << b->index); if (memcmp(&S.ubo[b->stage][b->index], b, sizeof *b)) { S.ubo[b->stage][b->index] = *b; g_args_ubo[b->stage] = 1; } } break; }   // see encode_args_: a block whose other slots still hold is patched
-        case OP_BIND_SSBO: { const p_bind_buf *b = a; if (b->stage < 6 && b->index < 16 && memcmp(&S.ssbo[b->stage][b->index], b, sizeof *b)) { S.ssbo[b->stage][b->index] = *b; g_args_dirty[b->stage] = 1; } break; }
+        case OP_BIND_UBO: case OP_BIND_UBO_SMALL: { p_bind_buf tmp; const p_bind_buf *b = bind_buf_rec(op, a, &tmp); if (b->stage < 6 && b->index < 16) { S.ubo_set[b->stage] |= (uint16_t)(1u << b->index); if (memcmp(&S.ubo[b->stage][b->index], b, sizeof *b)) { S.ubo[b->stage][b->index] = *b; args_dirty_ubo(b->stage); } } break; }   // see encode_args_: a block whose other slots still hold is patched
+        case OP_BIND_SSBO: { const p_bind_buf *b = a; if (b->stage < 6 && b->index < 16 && memcmp(&S.ssbo[b->stage][b->index], b, sizeof *b)) { S.ssbo[b->stage][b->index] = *b; args_dirty(b->stage); } break; }
         case OP_BIND_TEX: case OP_BIND_TEX1: { p_bind_handles t1; const p_bind_handles *b = bind_rec(op, a, &t1);
             if (b->n < 0 || b->n > 32) {   // the recorder never writes more than 32 (bind_handles): the record was overwritten after it was recorded
                 static int once; if (!once++) { const uint8_t *q = (const uint8_t *)a; char hx[3 * 96 + 1]; for (int k = 0; k < 96; k++) snprintf(hx + 3 * k, 4, "%02x ", q[k - 32]);
@@ -12367,9 +12379,9 @@ static int state_op(uint32_t op, const void *a) {
             bh_fresh(b);
             if (passdump()) for (int k = 0; k < b->n; k++) { int tid = (int)(b->h[k] & 0xfffff); if (tid) PD("T %llu bind st%d slot%d tid=%d sid=%d ser=%llu%s", g_stat_pass + 1, b->stage, b->first + k, tid, (int)(b->h[k] >> 20),
                 tid < g_ntreg ? g_treg[tid].t.serial : 0ull, b->defer ? " deferred" : ""); }
-            if (b->stage < 6 && b->first + b->n <= NTEX && memcmp(&S.tex[b->stage][b->first], b->h, 8 * b->n)) { memcpy(&S.tex[b->stage][b->first], b->h, 8 * b->n); g_args_dirty[b->stage] = 1; } break; }
-        case OP_BIND_SAMP: { const p_bind_handles *b = a; bh_fresh(b); if (b->stage < 6 && b->first + b->n <= 128 && memcmp(&S.samp[b->stage][b->first], b->h, 8 * b->n)) { memcpy(&S.samp[b->stage][b->first], b->h, 8 * b->n); g_args_dirty[b->stage] = 1; } break; }
-        case OP_BIND_IMG: { const p_bind_handles *b = a; bh_fresh(b); if (b->stage < 6 && b->first >= 0 && b->first + b->n <= 32) { if (memcmp(&S.img[b->stage][b->first], b->h, 8 * b->n)) { memcpy(&S.img[b->stage][b->first], b->h, 8 * b->n); g_args_dirty[b->stage] = 1; } } else RED_ONCE(31, "image slots out of range stage %d first %d count %d", b->stage, b->first, b->n); break; }
+            if (b->stage < 6 && b->first + b->n <= NTEX && memcmp(&S.tex[b->stage][b->first], b->h, 8 * b->n)) { memcpy(&S.tex[b->stage][b->first], b->h, 8 * b->n); args_dirty(b->stage); } break; }
+        case OP_BIND_SAMP: { const p_bind_handles *b = a; bh_fresh(b); if (b->stage < 6 && b->first + b->n <= 128 && memcmp(&S.samp[b->stage][b->first], b->h, 8 * b->n)) { memcpy(&S.samp[b->stage][b->first], b->h, 8 * b->n); args_dirty(b->stage); } break; }
+        case OP_BIND_IMG: { const p_bind_handles *b = a; bh_fresh(b); if (b->stage < 6 && b->first >= 0 && b->first + b->n <= 32) { if (memcmp(&S.img[b->stage][b->first], b->h, 8 * b->n)) { memcpy(&S.img[b->stage][b->first], b->h, 8 * b->n); args_dirty(b->stage); } } else RED_ONCE(31, "image slots out of range stage %d first %d count %d", b->stage, b->first, b->n); break; }
         case OP_STENCIL: {
             const p_stencil *b = a;
             if (b->which != 2) g_dss_dirty = 1;
@@ -12386,7 +12398,7 @@ static int state_op(uint32_t op, const void *a) {
         case OP_BLEND_COLOR: memcpy(S.blend_color, ((const p_blend_color *)a)->rgba, 16); break;
         case OP_ALPHA_REF: S.alpha_ref = ((const p_alpha_ref *)a)->ref; break;   // data for at_bind, not part of the pipeline
         case OP_PUSH_CONST: { const p_push_const *b = a; memcpy(S.push[b->compute ? 1 : 0] + b->offset, b->data, b->size);
-            for (int st = 0; st < 6; st++) if ((st == 5) == (b->compute != 0)) g_args_dirty[st] = 1; break; }
+            for (int st = 0; st < 6; st++) if ((st == 5) == (b->compute != 0)) args_dirty(st); break; }
         case OP_COPY_STRIDE: { const p_copy_stride *cs = a; if (cs->image) S.copy_img_stride = cs->stride; else S.copy_stride = cs->stride; break; }
         case OP_TF_BIND: { const p_tf_bind *b = a; if (b->index >= 0 && b->index < 4) S.tf[b->index] = *b; break; }
         case OP_TF_STATE: { const p_tf_state *b = a; S.tf_on = b->what == 0 || b->what == 3; break; }
@@ -14764,6 +14776,7 @@ static void draw_(const p_draw *dw, const p_draw_idx *di) {
     }
     if (!g_geo_mesh.on) geo_mesh_flush_draw();   // another draw (a geometry draw decides in geo_mesh_draw): a waiting run of mesh draws goes first
     if (g_enc && g_enc_geo_nocolor != g_geo_omit_colors) rp_end();
+    if (g_enc && !g_geo_program && !g_geo_mesh.on) pass_split_try();
     int mdx_on = (dw && dw->mdi_cnt) || (di && di->mdi_cnt) ? mdx_wanted(dw, di) : 0;   // an indirect-count multi-draw's record masked on the GPU (mdx_run), else read after a wait
     if (!mdx_on && ((di && di->mdi_cnt && !mdi_live(di->mdi_cnt, di->mdi_i)) || (dw && dw->mdi_cnt && !mdi_live(dw->mdi_cnt, dw->mdi_i)))) return;   // past the multi-draw's count
     if (mdx_on && mdx_next(dw, di)) return;   // the next draw of a masked multi-draw: only the draw is encoded
@@ -14835,7 +14848,8 @@ static void draw_(const p_draw *dw, const p_draw_idx *di) {
     // The deferral decision comes after hoist_try: hoisted pure-clear render passes are skipped in the lookahead, and only then can P's same-target continuation segment be recognized
     if (!g_enc && tbdr_on() && !g_geo_program && !defer_has_in_p() && !g_defer_replaying && !g_fz.active && !g_fz_checking && g_exec_next && !g_wl.on) { defer_try(dw, di); if (g_defer_cur->active && g_defer_cur->in_p) return; }
     if (!g_enc && tbdr_on() && !g_fz_checking && !g_geo_program) fuse_try();   // Readable tile render pass merge is on by default; when the structure / same-pixel proof does not hold it still falls back to a normal render pass, and it is not re-entered during the CHECK redraw
-    if (!g_enc && !tbdr_on() && !g_geo_program && cshoist_on()) cs_hoist_try(pr, dw, di);   // see DM_NVN_CS_HOIST
+    if (!g_enc && !tbdr_on() && !g_geo_program && cshoist_on() && !g_split_resume) cs_hoist_try(pr, dw, di);   // see DM_NVN_CS_HOIST
+    g_split_resume = 0;
     int need = g_enc || !tbdr_on() ? 3 : pass_ds_need(), mode = defer_q_draw ? 0 : need == 0 ? 2 : need == 2 ? 3 : need == 1 ? 4 : 0;   // 2 attach neither, 3 attach stencil only, 4 attach depth only
     int skip_d = mode != 0;
     if (!g_enc) { g_fd_dw = dw; g_fd_di = di; }
@@ -16080,10 +16094,13 @@ static void sub_cut_begin(void) { g_cut_draw0 = g_stat_draw; }
 // DM_FSTEP_PROBE_RAMP=1 (default) / 0 / ab: a frame-step probe's grace is renewed while its frames keep getting cheaper (nvn_fstep.h FSTEP_RAMP), the time macOS's GPU clock takes to rise for the shorter deadline
 static int probe_ramp_mode(void) { static int m = -1; if (m < 0) m = sw_mode("DM_FSTEP_PROBE_RAMP", 1); return m; }
 int mtl_probe_ramp_on(void) { return sw_on(probe_ramp_mode()); }
-static void sub_cut(void) {
+// Whether a segment may end here, the pass aside: pass_split_try ends a pass only when the commit after it will be made
+static int sub_cut_ready(void) {
     int n = cut_draws();
-    if (!g_cb || g_enc) return;
-    if ((!g_cut_copy && (n <= 0 || g_stat_draw - g_cut_draw0 < (uint64_t)n)) || g_hoist_n || g_defer_nact || g_defer_pend || g_fz.active || g_rt_merged) return;
+    return g_cb && (g_cut_copy || (n > 0 && g_stat_draw - g_cut_draw0 >= (uint64_t)n)) && !g_hoist_n && !g_defer_nact && !g_defer_pend && !g_fz.active && !g_rt_merged;
+}
+static void sub_cut(void) {
+    if (g_enc || !sub_cut_ready()) return;
     // The cut is there so that the GPU does not sit idle while the host encodes. With earlier work still running a commit gains nothing and queues one more command buffer: each is a call into the kernel on Metal's one submission queue, and with buffers queued behind running work
     // the GPU waited 5-40 ms with the next one already committed (docs/reference/frame-rate.md). So it stays a boundary for the game's timestamps (ts_boundary), with the commit left for when the GPU has run out. A copy still commits, as its data must land. DM_NVN_CUT_BUSY=0: every cut commits
     static int busy = -1; if (busy < 0) { const char *e = getenv("DM_NVN_CUT_BUSY"); busy = !e || atoi(e) != 0; }
@@ -16121,6 +16138,28 @@ static void sub_cut(void) {
     g_cut_draw0 = g_stat_draw;
     if (!g_cuts++) MLOG("segmented submission: first segment submitted at frame %llu pass %llu", (unsigned long long)f, (unsigned long long)g_stat_pass);
 }
+// A long render pass is one segment: Breath of the Wild draws 2,700 of its 4,100 draws a frame into the G-buffer, and the GPU, done with the shadow passes before it,
+// waited for the whole pass to be translated (about 2.5 ms of the 9 ms frame at 120 fps on the Mac). With no segment left on the GPU and DM_NVN_PASS_SPLIT draws (default 256,
+// 0 = off) encoded since the last cut, the pass is ended (its attachments stored), the segment committed, and the next draw opens the pass again, loading them. Each split
+// costs a store and a load of the attachments, so it is taken only while the GPU would otherwise wait
+// The split's pass end stores every attachment it holds (g_split_store, sd_finish): the store lookahead skips the rest of this pass's draws, as they set no target, and could find a later
+// clear and leave the attachment unstored while the reopened pass still loads it. A split is taken only when sub_cut will commit after it (sub_cut_ready): otherwise the pass would be
+// stored and loaded for nothing (DM_NVN_CUT=0, or above DM_NVN_PASS_SPLIT)
+static uint64_t g_pass_splits, g_split_pass; static int g_split_n;   // g_split_n: splits of the pass g_split_pass so far
+static int pass_split_draws(void) { static int v = -1; if (v < 0) { const char *e = getenv("DM_NVN_PASS_SPLIT"); v = e ? atoi(e) : 256; } return v; }
+static int pass_split_max(void) { static int v = -1; if (v < 0) { const char *e = getenv("DM_NVN_PASS_SPLIT_MAX"); v = e ? atoi(e) : 2; } return v; }   // per NVN pass: each split stores and loads its attachments
+static void pass_split_try(void) {
+    int n = pass_split_draws();
+    if (n <= 0 || !g_enc || g_stat_draw - g_cut_draw0 < (uint64_t)n || atomic_load_explicit(&g_seg_inflight, memory_order_relaxed) || !sub_cut_ready()) return;
+    if (g_rt_range_active || g_rt_range_pending || g_sm_pass || g_defer_replaying || g_fz_checking || g_lp.count) return;
+    if (g_split_pass != g_setrt_n) { g_split_pass = g_setrt_n; g_split_n = 0; }
+    if (pass_split_max() > 0 && g_split_n >= pass_split_max()) return;
+    g_split_n++;
+    g_split_store = 1; rp_end(); g_split_store = 0;
+    sub_cut(); g_split_resume = 1;
+    if (!g_pass_splits++) MLOG("pass split: a long render pass was ended and its segment committed while the GPU had nothing to do (DM_NVN_PASS_SPLIT=%d, frame %llu pass %llu)", n, (unsigned long long)atomic_load(&g_cur_frame), g_stat_pass);
+}
+uint64_t mtl_pass_splits(void) { return g_pass_splits; }
 uint64_t mtl_cut_count(void) { return g_cuts; }
 uint64_t mtl_copy_cut_count(void) { return g_copy_cuts; }
 
@@ -16341,7 +16380,7 @@ void mtl_exec(const uint8_t *p) {
                 PD("Y update_ub cmd=%p src=%#llx dst=%#llx bytes=%llu f=%g,%g,%g,%g", p, (unsigned long long)((const uint8_t *)a + 16), (unsigned long long)d, (unsigned long long)n,
                    n >= 4 ? ((const float *)((const uint8_t *)a + 16))[0] : 0.f, n >= 8 ? ((const float *)((const uint8_t *)a + 16))[1] : 0.f, n >= 12 ? ((const float *)((const uint8_t *)a + 16))[2] : 0.f, n >= 16 ? ((const float *)((const uint8_t *)a + 16))[3] : 0.f); mtl_sub_update((const uint8_t *)a + 16, d, n); break; }
             case OP_SET_RT: {
-                const p_set_rt *r = a;
+                const p_set_rt *r = a; g_setrt_n++; g_split_resume = 0;   // a split's resume is for its own pass only
                 if (defer_begin_q(p)) break;
                 int pend = R.clear_d || R.clear_s; for (int i = 0; i < 8; i++) pend |= R.clear_c[i];
                 if (g_enc && !pend && R.has_rt && tbdr_on() && rt_range_same(&R.rt,r)) {

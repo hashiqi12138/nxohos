@@ -15,3 +15,46 @@
      static ret h_##name(__VA_ARGS__)
  
  static int g_log;
+@@ -106,6 +106,14 @@
+         nvn_slot[i].fn = im[k].fn; hit++;
+     }
+     g_nsem = hit;
++    {   // TEMP DIAG: black-screen triage
++        LOG("[dbg] nvn_init_slots nim=%u hit=%u NFUNC=%u", nim, hit, (unsigned)NVN_NFUNC);
++        const char *want[] = {"nvnProgramInitialize", "nvnProgramSetShadersExt", "nvnProgramSetShaders", "nvnCommandBufferBindProgram"};
++        for (int w = 0; w < 4; w++) for (unsigned i = 0; i < NVN_NFUNC; i++) if (!strcmp(nvn_names[i], want[w])) {
++            LOG("[dbg] slot[%u] %s fn=%p %s", i, want[w], nvn_slot[i].fn, nvn_slot[i].fn == (void *)nvn_unimpl_entry ? "UNIMPL" : "real");
++            break;
++        }
++    }
+ }
+ 
+ static void *nvn_lookup(const char *name) {
+@@ -747,7 +755,9 @@
+ 
+ // ---------- Programs ----------
+ NVN(nvnProgramInitialize, NVNboolean, NVNprogram *p, NVNdevice *d) {
+-    (void)d; memset(p, 0, sizeof(prog_t)); ((prog_t *)p)->magic = MAGIC('P', 'R', 'O', 'G'); return 1;
++    (void)d; memset(p, 0, sizeof(prog_t)); ((prog_t *)p)->magic = MAGIC('P', 'R', 'O', 'G');
++    { static int dn; if (dn < 6) { dn++; LOG("[dbg] ProgramInitialize p=%p magic=%#x", (void *)p, ((prog_t *)p)->magic); } }   // TEMP DIAG
++    return 1;
+ }
+ NVN(nvnProgramFinalize, void, NVNprogram *p) {
+     pthread_mutex_lock(&g_sub_mu); mtl_prog_forget((const prog_t *)p); mtl_prog_release((prog_t *)p); pthread_mutex_unlock(&g_sub_mu);
+@@ -1455,6 +1465,8 @@
+ }
+ NVN(nvnCommandBufferSetDepthRange, void, NVNcommandBuffer *c, float n, float f) { *REC(c, OP_DEPTH_RANGE, p_depth_range) = (p_depth_range){n, f}; }
+ NVN(nvnCommandBufferBindProgram, void, NVNcommandBuffer *c, const NVNprogram *p, int stages) {
++    { static int dn; if (dn < 12) { dn++; const prog_t *pp = (const prog_t *)p;   // TEMP DIAG
++        LOG("[dbg] BindProgram REC c=%p p=%p stages=%#x magic=%#x nstage=%u serial=%llu", (void *)c, (void *)p, stages, pp ? pp->magic : 0, pp ? pp->nstage : 0, pp ? (unsigned long long)pp->serial : 0ull); } }
+     *REC(c, OP_BIND_PROGRAM, p_bind_program) = (p_bind_program){(const prog_t *)p, stages};
+ }
+ static void bind_state(NVNcommandBuffer *c, int kind, const void *st, size_t n) {
+@@ -3235,6 +3247,7 @@
+ // The host identifies stages by the control section and does not use the extension field: convert to plain NVNshaderData and hand it to SetShaders.
+ typedef struct { NVNbufferAddress data; const void *control; uint64_t ext; } shader_data_ext;
+ NVN_NOPROTO(nvnProgramSetShadersExt, NVNboolean, NVNprogram *p, int n, const shader_data_ext *sd) {
++    { static int dn; if (dn < 6) { dn++; LOG("[dbg] ProgramSetShadersExt p=%p n=%d ctl0=%p", (void *)p, n, n ? sd[0].control : 0); } }   // TEMP DIAG
+     if (n < 0 || n > 6) { LOG("[RED] ProgramSetShadersExt stage count %d", n); return 0; }
+     NVNshaderData plain[6];
+     for (int i = 0; i < n; i++) { plain[i].data = sd[i].data; plain[i].control = sd[i].control; if (sd[i].ext) ONCE_LOG("ProgramSetShadersExt extension field nonzero (%#llx): unused by the host", (unsigned long long)sd[i].ext); }

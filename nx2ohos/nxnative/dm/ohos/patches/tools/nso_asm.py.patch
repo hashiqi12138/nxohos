@@ -1,0 +1,10 @@
+--- a/tools/nso_asm.py
++++ b/tools/nso_asm.py
+@@ -17,6 +17,7 @@
+ def STRX(t, n, imm12=0): return 0xF9000000 | (imm12 << 10) | (n << 5) | t
+ def MOVX(dd, m): return 0xAA0003E0 | (m << 16) | dd   # mov xd, xm (orr xd, xzr, xm)
+ def MRS_TPIDRRO(t): return 0xD53BD060 | t
++def MRS_TPIDR(t): return 0xD53BD040 | t   # mrs xt, tpidr_el0 (OHOS guest-thread slots: patch_nso.py emit_tp reads them at tpidr_el0 + TPOFF)
+ def ADRP(dd, pc, target):
+     imm = ((target & ~0xFFF) - (pc & ~0xFFF)) >> 12; assert -(1 << 20) <= imm < (1 << 20)
+     return 0x90000000 | ((imm & 3) << 29) | (((imm >> 2) & 0x7FFFF) << 5) | dd

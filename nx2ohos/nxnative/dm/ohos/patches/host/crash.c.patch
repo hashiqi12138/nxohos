@@ -1,14 +1,58 @@
 --- a/host/crash.c
 +++ b/host/crash.c
-@@ -2,6 +2,7 @@
+@@ -2,6 +2,43 @@
  // Crash state: prints the faulting address, pc, lr (converted to module-relative offsets) and the registers; dispatches page fault hooks.
  // Only signal handling itself lives here: diagnostic features (probes / UI messages / sampling) are in diag.c, and this file does not depend on them (the graphics unit tests link only this file).
  #include "dm.h"
++#if defined(DM_OHOS)
++// The app's stderr is a black hole on OHOS: crash.c writes its report with fprintf/fputc, so the same calls go to a line
++// buffer that hilog emits line by line (ohos_log.c's LOG). Signal-handler context: vsnprintf and OH_LOG are async-safe
++// enough for the report (they never return into arbitrary code); the buffer is one per thread so nested handlers keep their own.
++#define CRASH_SHIM
++#include <stdarg.h>
++#include <stdio.h>
++extern void dm_ohos_logv(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
++static __thread char g_cs_buf[2048];
++static __thread int g_cs_n;
++static void cs_flush(void) {
++    if (g_cs_n > 0) { g_cs_buf[g_cs_n] = 0; dm_ohos_logv("%s", g_cs_buf); g_cs_n = 0; }
++}
++static int cs_write(const char *fmt, ...) {
++    va_list ap; va_start(ap, fmt);
++    int n = vsnprintf(g_cs_buf + g_cs_n, sizeof g_cs_buf - g_cs_n, fmt, ap);
++    va_end(ap);
++    if (n < 0) return 0;
++    if ((size_t)n >= sizeof g_cs_buf - g_cs_n) n = sizeof g_cs_buf - g_cs_n - 1;   // truncated
++    g_cs_n += n;
++    while (g_cs_n > 0) {   // emit every complete line; the tail stays buffered
++        char *nl = memchr(g_cs_buf, '\n', g_cs_n);
++        if (!nl) break;
++        *nl = 0; dm_ohos_logv("%s", g_cs_buf);
++        g_cs_n -= (nl - g_cs_buf) + 1;
++        memmove(g_cs_buf, nl + 1, g_cs_n);
++    }
++    return n;
++}
++#define fprintf(f, ...) cs_write(__VA_ARGS__)
++#define fputc(c, f) cs_write("%c", (char)(c))
++#define funlockfile(f) cs_flush()
++#define ftrylockfile(f) (0)
++#undef stderr
++#define stderr ((FILE*)0)
++#endif
 +#include "dm_uc.h"   // DM_UC_SS / DM_UC_ESR: the signal context's registers, the same on Apple and OHOS
  #include <signal.h>
  #include <dlfcn.h>
  #include <sys/ucontext.h>
-@@ -163,7 +164,7 @@
+@@ -159,11 +196,15 @@
+ }
+ __attribute__((weak)) void dm_gfx_addr_note(uint64_t a, char *note, size_t n) { (void)a; if (n) note[0] = 0; }   // nvn_mtl.m provides the strong definition
+ __attribute__((weak)) void dm_vm_census(FILE *f) { (void)f; }   // memstat.m provides the strong definition (tests that link crash.c alone have none)
++#if defined(DM_OHOS)
++static void dm_vm_census_shim(FILE *f) { (void)f; }   // OHOS: memstat.m is not built (Apple-only); the census would have nowhere to go anyway
++#define dm_vm_census dm_vm_census_shim
++#endif
+ static void on_crash(int sig, siginfo_t *si, void *uc_) {
      ucontext_t *uc = uc_;
      if (sig == SIGTRAP && g_trap_hook && g_trap_hook(uc)) return;
      if (sig == SIGSEGV || sig == SIGBUS) {
@@ -17,7 +61,7 @@
          for (int i = 0; i < g_nfault_hook; i++) if (g_fault_hook[i](si->si_addr, is_write, uc)) return;
      }
      crash_gate(sig);
-@@ -172,7 +173,7 @@
+@@ -172,7 +213,7 @@
      for (int i = 0; ftrylockfile(stderr); i++) {
          if (i < 100) { usleep(10000); continue; }
          char b[256]; int n = snprintf(b, sizeof b, "[dm] CRASH sig=%d (stderr held for 1 s, no dump)", sig);
@@ -26,7 +70,7 @@
          for (int k = 0; k < 2; k++) { module_t *m = module_of((void *)at[k]);
              n += m ? snprintf(b + n, sizeof b - n, " %s=%s+%#llx", k ? "lr" : "pc", m->name, at[k] - (uint64_t)m->base) : snprintf(b + n, sizeof b - n, " %s=%#llx", k ? "lr" : "pc", at[k]); }
          n += snprintf(b + n, sizeof b - n, "\n");
-@@ -181,13 +182,13 @@
+@@ -181,13 +222,13 @@
      }
      funlockfile(stderr);
      fprintf(stderr, "[dm] CRASH sig=%d", sig);
@@ -44,7 +88,7 @@
          if (a < 0x100000000ull || (a & 7) || vm_read_overwrite(mach_task_self(), (vm_address_t)a, sizeof w, (vm_address_t)w, &got) != KERN_SUCCESS || got != sizeof w) continue;
          fprintf(stderr, "[dm] *x%d:", i);
          for (int k = 0; k < 6; k++) off("", w[k]);
-@@ -196,7 +197,7 @@
+@@ -196,7 +237,7 @@
      // What the graphics layer knows of the addresses in the registers (dm_gfx_addr_note: the memory pool, a texture's storage, a GPU write the host recorded on the page). A game's own
      // data overwritten with float words (PRAGMATA's render command lists) asks whether the GPU or a host copy wrote there
      for (int i = 0; i < 29; i++) {
@@ -53,7 +97,7 @@
          if (a < 0x100000000ull) continue;
          dm_gfx_addr_note(a, note, sizeof note);
          if (note[0]) fprintf(stderr, "[dm] x%d %#llx:%s\n", i, (unsigned long long)a, note);
-@@ -207,8 +208,8 @@
+@@ -207,8 +248,8 @@
          char spec[512]; snprintf(spec, sizeof spec, "%s", getenv("DM_CRASH_PEEK"));
          for (char *tok = strtok(spec, ","); tok; tok = strtok(NULL, ",")) {
              uint64_t a = 0; char *p = tok;
@@ -64,7 +108,7 @@
              else continue;
              if (*p == '+' || *p == '-') { long long d = strtoll(p, &p, 0); a += (uint64_t)d; }
              if (*p == '*') { uint64_t v = 0; vm_size_t got = 0; if (vm_read_overwrite(mach_task_self(), (vm_address_t)a, 8, (vm_address_t)&v, &got) != KERN_SUCCESS || got != 8) { fprintf(stderr, "[dm] peek %s: %#llx unreadable\n", tok, (unsigned long long)a); continue; } a = v; }
-@@ -220,13 +221,13 @@
+@@ -220,13 +261,13 @@
              fputc('\n', stderr);
          }
      }

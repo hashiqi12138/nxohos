@@ -960,6 +960,13 @@ static void bind_program(const p_bind_program *bp) {
     uint32_t mask = bp->stages ? (uint32_t)bp->stages & 0x3f : 0x3f;
     for (int st = 0; st < 6; st++) if (mask >> st & 1) S.sh[st] = NULL;
     S.prog = bp->prog;
+    { static int dbg_n; if (dbg_n < 12) { dbg_n++; const prog_t *pp = bp->prog;   // TEMP DIAG: black-screen triage
+        if (!pp) VKLOG("[dbg] bind_program prog=NULL stages=%#x", bp->stages);
+        else { uint8_t k0[8]; int ok0 = prog_key(pp, 0, k0); uint64_t kk0 = ok0 ? key64(k0) : 0;
+            VKLOG("[dbg] bind_program prog=%p stages=%#x magic=%#x nstage=%u serial=%llu ctl0=%p data0=%#llx ok0=%d key0=%016llx stage0=%d",
+                (void *)pp, bp->stages, pp->magic, pp->nstage, (unsigned long long)pp->serial,
+                pp->sd[0].control, (unsigned long long)pp->sd[0].data, ok0, (unsigned long long)kk0, kk0 ? vk_shader_stage(kk0) : -2);
+        } } }
     if (S.prog) for (unsigned i = 0; i < 6; i++) {
         uint8_t k[8]; if (!prog_key(S.prog, i, k)) break;
         uint64_t kk = key64(k); int st = kk ? vk_shader_stage(kk) : -1;
@@ -2406,8 +2413,9 @@ static void exec_ops(const uint8_t *p) {
             break; }
         case OP_BIND_VATTR: { const p_bind_vattr *v = (const p_bind_vattr *)a; memset(S.vattr, 0, sizeof S.vattr); for (int i = 0; i < v->n && i < 16; i++) S.vattr[v->first + i] = v->st[i]; break; }
         case OP_BIND_VSTREAM: { const p_bind_vstream *v = (const p_bind_vstream *)a; for (int i = 0; i < v->n && v->first + i < 16; i++) S.vstream[v->first + i] = v->st[i]; break; }
-        case OP_BIND_VBUF: { const p_bind_vbuf *v = (const p_bind_vbuf *)a; for (int i = 0; i < v->n && v->first + i < 16; i++) S.vbuf[v->first + i] = v->r[i]; break; }
-        case OP_BIND_UBO: { const p_bind_buf *b = (const p_bind_buf *)a; if (b->stage >= 0 && b->stage < 6 && b->index >= 0 && b->index < 16 && memcmp(&S.ubo[b->stage][b->index], b, sizeof *b)) { S.ubo[b->stage][b->index] = *b; g_ubo_gen[b->stage]++; } break; }
+        // OHOS queue (nvn_queue.inc) emits the short record forms OP_BIND_VBUF1 / OP_BIND_UBO_SMALL: vbuf_rec / bind_buf_rec normalize their variant layouts
+        case OP_BIND_VBUF: case OP_BIND_VBUF1: { p_bind_vbuf tmp; const p_bind_vbuf *v = vbuf_rec(h.op, a, &tmp); for (int i = 0; i < v->n && v->first + i < 16; i++) S.vbuf[v->first + i] = v->r[i]; break; }
+        case OP_BIND_UBO: case OP_BIND_UBO_SMALL: { p_bind_buf tmp; const p_bind_buf *b = bind_buf_rec(h.op, a, &tmp); if (b->stage >= 0 && b->stage < 6 && b->index >= 0 && b->index < 16 && memcmp(&S.ubo[b->stage][b->index], b, sizeof *b)) { S.ubo[b->stage][b->index] = *b; g_ubo_gen[b->stage]++; } break; }
         case OP_BIND_SSBO: { const p_bind_buf *b = (const p_bind_buf *)a; if (b->stage >= 0 && b->stage < 6 && b->index >= 0 && b->index < 16 && memcmp(&S.ssbo[b->stage][b->index], b, sizeof *b)) { S.ssbo[b->stage][b->index] = *b; g_bind_gen[b->stage]++; } break; }
         case OP_BIND_TEX: case OP_BIND_SAMP: case OP_BIND_IMG: case OP_BIND_TEX1: bind_handles_rec(h.op, a); break;
         case OP_STENCIL: { const p_stencil *s = (const p_stencil *)a;
