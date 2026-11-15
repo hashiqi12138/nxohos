@@ -10,7 +10,7 @@
  */
 
 import dmhost from 'libdmhost.so';
-import { Bg, Text as TextToken, Semantic, Space, Font, Radius, Motion, Size } from '../theme/Tokens';
+import { Bg, Text as TextToken, Semantic, CoverPalette, Space, Font, Radius, Motion, Size } from '../theme/Tokens';
 import { GameEntry, gamesDir, listGames, deleteGame, humanSize, writeMeta } from './GameLibrary';
 import { GameCard, CardState } from '../components/GameCard';
 import { AddGameCard } from '../components/AddGameCard';
@@ -87,21 +87,21 @@ struct LibraryPage {
     this.columns = cols;
 
     const side: number = Space.s6;                  // the content's left and right padding
-    const gap: number = Space.s5;                   // the gap between cards
+    const gap: number = 28;                         // the breathing room a rounded cover needs
     const barHeight: number = this.landscape ? Size.topBar : 56;
     const usableW: number = w - side * 2;
     const usableH: number = h - barHeight - Space.s5 - Space.s4;   // below the bar, above the gesture area
     // the caption block's height, reserved before the cover takes its share
-    const caption: number = 52;
+    const caption: number = 56;
     // rows that fit, at least one
-    const rows: number = Math.max(1, Math.floor((usableH + gap) / (180 + caption + gap)));
+    const rows: number = Math.max(1, Math.floor((usableH + gap) / (150 + caption + gap)));
     const fromWidth: number = cols === 1
       ? Math.min(usableW, 720)
       : (usableW - gap * (cols - 1)) / cols;
     const fromHeight: number = (usableH - gap * (rows - 1)) / rows - caption;
     const raw: number = Math.min(fromWidth, fromHeight);
     // never smaller than a legible tile, never larger than the width allows
-    this.coverSize = Math.floor(Math.max(96, Math.min(raw, fromWidth)));
+    this.coverSize = Math.floor(Math.max(80, Math.min(raw, fromWidth)));
     console.info(`library: w=${w} h=${h} cols=${cols} rows=${rows} usable=${usableW}x${usableH} cover=${this.coverSize}`);
   }
 
@@ -202,13 +202,35 @@ struct LibraryPage {
     return CardState.Idle;
   }
 
+  /** The focused game's palette hue, or a neutral slate when the focus is on the add tile. */
+  private ambientHue(): string {
+    const cells: Cell[] = this.cells();
+    const i: number = Math.min(this.focusIndex, cells.length - 1);
+    const cell: Cell = cells[i];
+    if (cell.isAdd || cell.game === null) return '#334155';
+    return CoverPalette.forTitle(cell.game.titleId);
+  }
+
   build() {
-    Column() {
-      TopBar({
-        showAdd: !this.loading,
-        barHeight: this.landscape ? Size.topBar : 56,
-        onAdd: () => this.pickPack()
-      })
+    Stack() {
+      // ---- ambient light: the focused game tints the room (Apple TV's backdrop) ----
+      Column()
+        .width('100%')
+        .height('100%')
+        .linearGradient({
+          angle: 160,
+          colors: [[CoverPalette.rgba(this.ambientHue(), 0.16), 0.0],
+            [CoverPalette.rgba(this.ambientHue(), 0.05), 0.5],
+            [CoverPalette.rgba(this.ambientHue(), 0.0), 1.0]]
+        })
+        .animation({ duration: Motion.duration(400), curve: Motion.curve })
+
+      Column() {
+        TopBar({
+          showAdd: !this.loading,
+          barHeight: this.landscape ? Size.topBar : 56,
+          onAdd: () => this.pickPack()
+        })
 
       if (this.loading) {
         // a skeleton, not a spinner: the shape of what is coming reads as faster than an empty screen
@@ -248,6 +270,9 @@ struct LibraryPage {
           .padding({ left: Space.s4, right: Space.s4, top: Space.s3, bottom: Space.s3 })
           .margin({ bottom: Space.s6 })
       }
+      }
+      .width('100%')
+      .height('100%')
     }
     .width('100%')
     .height('100%')
@@ -302,8 +327,8 @@ struct LibraryPage {
     // Grid sizes its cells; a wrapping Flex measured the cover taller than its own height, which squeezed the
     // caption to nothing (measured: the initial rendered 296 vp tall inside a 260 vp cover).
     .columnsTemplate(this.columnsTemplate())
-    .columnsGap(Space.s5)
-    .rowsGap(Space.s5)
+    .columnsGap(28)
+    .rowsGap(28)
     .width('100%')
     .layoutWeight(1)
     .padding({ left: Space.s6, right: Space.s6, top: Space.s5 })

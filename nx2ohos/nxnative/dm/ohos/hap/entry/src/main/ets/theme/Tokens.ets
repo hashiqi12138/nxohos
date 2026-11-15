@@ -80,10 +80,27 @@ export class CoverPalette {
     return CoverPalette.colors[sum % CoverPalette.colors.length];
   }
 
-  /** The first character of the display name, for the placeholder's centre. */
+  /** The first character of the display name, for the placeholder's watermark. */
   static initialOf(name: string): string {
     const trimmed: string = name.trim();
     return trimmed.length ? trimmed.substring(0, 1).toUpperCase() : '?';
+  }
+
+  /** '#RRGGBB' -> 'rgba(r,g,b,a)': the gradient base, the glow and the ambient wash all share one hue per game. */
+  static rgba(hex: string, a: number): string {
+    const r: number = parseInt(hex.substring(1, 3), 16);
+    const g: number = parseInt(hex.substring(3, 5), 16);
+    const b: number = parseInt(hex.substring(5, 7), 16);
+    return `rgba(${r},${g},${b},${a})`;
+  }
+
+  /** '#RRGGBB' scaled by f (< 1 darkens): the placeholder gradient's lower stop, kept in the same hue. */
+  static darken(hex: string, f: number): string {
+    const r: number = Math.round(parseInt(hex.substring(1, 3), 16) * f);
+    const g: number = Math.round(parseInt(hex.substring(3, 5), 16) * f);
+    const b: number = Math.round(parseInt(hex.substring(5, 7), 16) * f);
+    const to2: (n: number) => string = (n: number): string => n.toString(16).padStart(2, '0');
+    return `#${to2(r)}${to2(g)}${to2(b)}`;
   }
 }
 

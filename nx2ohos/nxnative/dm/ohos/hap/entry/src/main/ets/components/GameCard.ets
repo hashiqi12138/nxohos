@@ -1,13 +1,12 @@
 /*
  * GameCard.ets - one game in the library grid.
  *
- * The card carries six states (default, focus, press, incomplete, launching, verifying). It is the element a
- * player's eye lands on first, so its cover is the largest thing on screen and its focus treatment is the most
- * emphatic: a 2 dp accent ring, an 8 dp glow and a 1.06 scale, all of which read at arm's length on a TV-sized
- * display.
+ * The card is the cover: a rounded square that carries only art, with the name and state centred beneath it
+ * (the console home-screen language). A pack with no icon gets a diagonal gradient in its own palette hue with
+ * the initial as a large, faint watermark in the corner - a texture, not a placeholder poster.
  *
- * A pack with no icon gets a placeholder: the title ID picks one of six muted hues, so a game keeps its colour
- * across restarts and two games never look alike.
+ * Focus reads at arm's length: a white 2 dp ring, a glow in the focused game's own palette colour and a 1.08
+ * scale. Every game brings its own ambience; nothing about the treatment is shared pink.
  */
 
 import { Bg, Text as TextToken, Semantic, CoverPalette, Space, Font, Radius, Motion, Size } from '../theme/Tokens';
@@ -32,7 +31,7 @@ export enum CardState {
 export struct GameCard {
   /** The display name. */
   @Prop name: string = '';
-  /** The title ID: the placeholder colour and the initial come from it. */
+  /** The title ID: the placeholder colour and the watermark come from it. */
   @Prop titleId: string = '';
   /** A human size such as "14.7 GB". */
   @Prop sizeLabel: string = '';
@@ -47,21 +46,25 @@ export struct GameCard {
   /** Called on a long press (600 ms) or the gamepad's menu key. */
   onDetails: () => void = () => {};
 
-  /** The placeholder cover: a hue from the title ID with the name's first character centred. */
+  /** The placeholder: a diagonal gradient in the game's hue with the initial as a corner watermark. */
   @Builder
   placeholderCover() {
-    Stack({ alignContent: Alignment.Center }) {
+    Stack({ alignContent: Alignment.BottomEnd }) {
       Column()
         .width('100%')
         .height('100%')
-        .backgroundColor(CoverPalette.forTitle(this.titleId))
-      // The initial gets an explicit line height: inside a Stack a Text otherwise stretches to the container,
-      // which measured 296 vp tall for an 83 vp glyph and left the card with no room for its caption.
+        .linearGradient({
+          angle: 160,
+          colors: [[CoverPalette.forTitle(this.titleId), 0.0],
+            [CoverPalette.darken(CoverPalette.forTitle(this.titleId), 0.55), 1.0]]
+        })
+      // The initial at 12% white: a texture in the corner, not a title in the centre.
       Text(CoverPalette.initialOf(this.name))
-        .fontSize(Math.round(this.coverSize * 0.28))
-        .lineHeight(Math.round(this.coverSize * 0.34))
-        .fontColor('rgba(255,255,255,0.22)')
-        .textAlign(TextAlign.Center)
+        .fontSize(Math.round(this.coverSize * 0.62))
+        .fontWeight(FontWeight.Bold)
+        .fontColor('rgba(255,255,255,0.12)')
+        .lineHeight(Math.round(this.coverSize * 0.62) * 1.1)
+        .margin({ right: this.coverSize * 0.02, bottom: -this.coverSize * 0.08 })
     }
     .width('100%')
     .height('100%')
@@ -114,8 +117,10 @@ export struct GameCard {
   }
 
   build() {
-    Column() {
-      // ---- cover ----
+    // The card is a cover plus a centred caption beneath it; both live in one column so the grid's cells stay
+    // one rectangle (the Grid measures the cell before the children, and a caption outside the card's own bounds
+    // was the layout that lost the caption on the first pass).
+    Column({ space: Space.s2 }) {
       Stack() {
         if (this.iconPath.length > 0) {
           this.realCover()
@@ -130,24 +135,20 @@ export struct GameCard {
       }
       .width(this.coverSize)
       .height(this.coverSize)
-      .flexShrink(0)   // the cover keeps its square: without this it grew to fill the card and left no room
-      .borderRadius({ topLeft: Radius.lg, topRight: Radius.lg })
+      .flexShrink(0)
+      .borderRadius(Radius.lg)
       .clip(true)
       // an incomplete pack reads as dimmed: the cover still shows what the game is, the state line says why
       .opacity(this.state === CardState.Incomplete ? 0.4 : 1)
 
-      // ---- caption ----
-      // Kept to two plain Texts with fixed heights: a Row with layoutWeight inside a wrapping Flex measured to
-      // zero height on the device, so the name and size never appeared while the cover did.
+      // ---- caption, centred under the cover ----
       Text(this.name.length > 0 ? this.name : this.titleId)
         .fontSize(Font.body)
         .fontColor(this.state === CardState.Incomplete ? TextToken.tertiary : TextToken.primary)
         .maxLines(1)
         .textOverflow({ overflow: TextOverflow.Ellipsis })
         .width(this.coverSize)
-        .height(28)
-        .padding({ left: Space.s3, right: Space.s3 })
-        .textAlign(TextAlign.Start)
+        .textAlign(TextAlign.Center)
       Text(this.state === CardState.Incomplete
         ? `${this.sizeLabel} · 数据不完整`
         : `${this.sizeLabel} · 可运行`)
@@ -156,29 +157,24 @@ export struct GameCard {
         .maxLines(1)
         .textOverflow({ overflow: TextOverflow.Ellipsis })
         .width(this.coverSize)
-        .height(22)
-        .padding({ left: Space.s3, right: Space.s3 })
-        .textAlign(TextAlign.Start)
+        .textAlign(TextAlign.Center)
     }
     .width(this.coverSize)
-    .height(this.coverSize + 52)
-    .justifyContent(FlexAlign.Start)
-    .alignItems(HorizontalAlign.Start)
-    .backgroundColor(Bg.card)
-    .borderRadius(Radius.lg)
-    // the focus ring sits on the card's edge; a border of 0 keeps the layout identical when unfocused
+    .height(this.coverSize + 56)
+    .alignItems(HorizontalAlign.Center)
+    // A white ring stays out of every game's way; the glow carries the game's own hue, so focus changes the
+    // room's light rather than painting the same pink over every title.
     .border({
-      width: this.state === CardState.Focus ? Size.focusRing
-        : (this.state === CardState.Verifying ? Size.focusRing : 0),
-      color: this.state === CardState.Verifying ? Semantic.warning : Semantic.borderFocus,
+      width: this.state === CardState.Focus || this.state === CardState.Verifying ? Size.focusRing : 0,
+      color: this.state === CardState.Verifying ? Semantic.warning : TextToken.primary,
       radius: Radius.lg
     })
     .scale({
-      x: this.state === CardState.Focus ? Motion.scaleFocus : (this.state === CardState.Press ? Motion.scalePress : 1),
-      y: this.state === CardState.Focus ? Motion.scaleFocus : (this.state === CardState.Press ? Motion.scalePress : 1)
+      x: this.state === CardState.Focus ? 1.08 : (this.state === CardState.Press ? Motion.scalePress : 1),
+      y: this.state === CardState.Focus ? 1.08 : (this.state === CardState.Press ? Motion.scalePress : 1)
     })
     .shadow(this.state === CardState.Focus
-      ? { radius: Size.focusGlow, color: Semantic.accentGlow, offsetX: 0, offsetY: 0 }
+      ? { radius: 32, color: CoverPalette.rgba(CoverPalette.forTitle(this.titleId), 0.45), offsetX: 0, offsetY: 0 }
       : { radius: 0, color: 'rgba(0,0,0,0)', offsetX: 0, offsetY: 0 })
     .animation({ duration: Motion.duration(Motion.base), curve: Motion.curve })
     .onClick(() => {

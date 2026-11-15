@@ -52,7 +52,6 @@ export struct TopBar {
     .width('100%')
     .height(this.barHeight)
     .padding({ left: Space.s6, right: Space.s6 })
-    .backgroundColor(Bg.base)
-    .border({ width: { bottom: 1 }, color: Semantic.borderSubtle })
+    .backgroundColor('rgba(0,0,0,0)')   // transparent: the ambient light runs through the bar
   }
 }

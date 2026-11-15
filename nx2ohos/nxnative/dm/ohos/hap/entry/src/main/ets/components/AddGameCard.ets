@@ -20,48 +20,47 @@ export struct AddGameCard {
     Column({ space: Space.s2 }) {
       Column() {
         Text('+')
-          .fontSize(Math.round(this.coverSize * 0.18))
+          .fontSize(Math.round(this.coverSize * 0.2))
           .fontColor(TextToken.tertiary)
           .fontWeight(FontWeight.Lighter)
+          .lineHeight(Math.round(this.coverSize * 0.2) * 1.2)
       }
       .width(this.coverSize)
       .height(this.coverSize)
+      .flexShrink(0)
       .justifyContent(FlexAlign.Center)
       .alignItems(HorizontalAlign.Center)
 
-      Column() {
-        Text('添加游戏')
-          .fontSize(Font.body)
-          .fontColor(TextToken.secondary)
-          .width('100%')
-          .textAlign(TextAlign.Start)
-        Text('选择一个 .nxpk 游戏包')
-          .fontSize(Font.label)
-          .fontColor(TextToken.tertiary)
-          .maxLines(1)
-          .textOverflow({ overflow: TextOverflow.Ellipsis })
-          .width('100%')
-          .textAlign(TextAlign.Start)
-      }
-      .alignItems(HorizontalAlign.Start)
-      .width('100%')
-      .padding(Space.s3)
+      Text('添加游戏')
+        .fontSize(Font.body)
+        .fontColor(TextToken.secondary)
+        .maxLines(1)
+        .textOverflow({ overflow: TextOverflow.Ellipsis })
+        .width(this.coverSize)
+        .textAlign(TextAlign.Center)
+      Text('选择一个 .nxpk 游戏包')
+        .fontSize(Font.label)
+        .fontColor(TextToken.tertiary)
+        .maxLines(1)
+        .textOverflow({ overflow: TextOverflow.Ellipsis })
+        .width(this.coverSize)
+        .textAlign(TextAlign.Center)
     }
     .width(this.coverSize)
-    .height(this.coverSize + 72)
-    .backgroundColor(Bg.card)
+    .height(this.coverSize + 56)
+    .alignItems(HorizontalAlign.Center)
     .borderRadius(Radius.lg)
     // dashed: unmistakably not a game, without reading as an error
     .border({
       width: this.focused ? Size.focusRing : 1,
-      color: this.focused ? Semantic.borderFocus : Semantic.borderSubtle,
+      color: this.focused ? TextToken.primary : Semantic.borderSubtle,
       radius: Radius.lg,
       style: BorderStyle.Dashed
     })
-    .scale({ x: this.focused ? Motion.scaleFocus : (this.pressed ? Motion.scalePress : 1),
-             y: this.focused ? Motion.scaleFocus : (this.pressed ? Motion.scalePress : 1) })
+    .scale({ x: this.focused ? 1.08 : (this.pressed ? Motion.scalePress : 1),
+             y: this.focused ? 1.08 : (this.pressed ? Motion.scalePress : 1) })
     .shadow(this.focused
-      ? { radius: Size.focusGlow, color: Semantic.accentGlow, offsetX: 0, offsetY: 0 }
+      ? { radius: 32, color: 'rgba(148,163,184,0.35)', offsetX: 0, offsetY: 0 }
       : { radius: 0, color: 'rgba(0,0,0,0)', offsetX: 0, offsetY: 0 })
     .animation({ duration: Motion.duration(Motion.base), curve: Motion.curve })
     .onClick(() => this.onActivate())
