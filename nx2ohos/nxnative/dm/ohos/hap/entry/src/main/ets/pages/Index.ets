@@ -19,9 +19,11 @@ import { util } from '@kit.ArkTS';
 import { display } from '@kit.ArkUI';
 import { resourceManager } from '@kit.LocalizationKit';
 import { preferences } from '@kit.ArkData';
+import { ConfirmDialog } from '../components/ConfirmDialog';
 import { http } from '@kit.NetworkKit';
 import { picker } from '@kit.CoreFileKit';
 import { router } from '@kit.ArkUI';
+import { common } from '@kit.AbilityKit';
 import { importPack, readPackHeader, readStamp, writeStamp, removeTree, PackInfo, ImportProgress } from './PackImport';
 import { GameEntry, gamesDir, listGames, deleteGame, humanSize } from './GameLibrary';
 
@@ -127,6 +129,8 @@ struct Index {
   private padOpacity: number = 1.0;        // user opacity multiplier for the drawn guide (0.3..1)
   private padScale: number = 1.0;          // user size multiplier for every zone radius
   @State editMode: boolean = false;         // layout editing on: touches move zones instead of pressing them
+  /** The "leave the game?" question is up: the guest keeps running behind it until the answer is yes. */
+  @State confirmExit: boolean = false;
   // ---- P2.1 import surface: the launcher shows when the sandbox holds no pack, and the import runs here ----
   @State showLauncher: boolean = false;     // the "no game yet" panel with the Add Game button
   @State importing: boolean = false;        // an import is running (the panel shows the progress)
@@ -152,6 +156,29 @@ struct Index {
     return first.length ? first : base + '/01007EF00011E000';
   }
 
+  /**
+   * Read and clear the title the library asked for.
+   *
+   * Clearing it matters: the guest runs once per process, so a stale value would make a later visit to this page
+   * try to start a second guest, which startGame ignores anyway but which would also skip the self-test fallback.
+   */
+  private async takeLaunchTarget(): Promise<string> {
+    try {
+      const ctx = this.getUIContext().getHostContext();
+      if (!ctx) return '';
+      const p = await preferences.getPreferences(ctx, 'library');
+      const v = p.getSync('launchTitle', '') as string;
+      if (v.length > 0) {
+        p.deleteSync('launchTitle');
+        await p.flush();
+        dmhost.log(`startOnce: the library asked for ${v}`);
+      }
+      return v;
+    } catch (e) {
+      return '';
+    }
+  }
+
   /** Re-read the library (after an import or a delete). */
   private refreshLibrary(filesDir: string): void {
     this.games = listGames(filesDir);
@@ -169,11 +196,42 @@ struct Index {
    * panel draws over the surface and Play resumes whichever entry is chosen next time the app starts. A user who
    * wants to switch games restarts the app (the library is what startOnce reads).
    */
+  /**
+   * Ask to leave the game and return to the library.
+   *
+   * The guest owns the native thread for the life of the process (dm_main runs nnMain, which never returns), so
+   * the library cannot be reached by unwinding: the app ends itself and the next launch opens on the library.
+   * The kernel reclaims the GPU context, the threads and the descriptors on the way out, which is why this is
+   * safer than cancelling a detached thread inside the guest.
+   */
   private openLibrary(): void {
+    if (this.isGame) {
+      this.confirmExit = true;
+      this.pushPad();
+      dmhost.log('library: exit confirm shown');
+      return;
+    }
+    // not running a game (the self-test scene): the panel can simply draw over it
     const ctx = this.getUIContext().getHostContext();
     this.refreshLibrary(ctx?.filesDir ?? '');
     this.showLauncher = true;
-    dmhost.log('library: opened over the running game');
+    dmhost.log('library: opened over the self-test scene');
+  }
+
+  /** End the process so the next launch starts on the library. */
+  private exitToLibrary(): void {
+    this.confirmExit = false;
+    dmhost.log('library: terminating to return to the library');
+    try {
+      const ctx = this.getUIContext().getHostContext();
+      const abilityCtx = ctx as common.UIAbilityContext;
+      abilityCtx.terminateSelf().catch((e: Error) => {
+        dmhost.log(`library: terminateSelf failed: ${e.message}`);
+      });
+    } catch (e) {
+      const why: string = e instanceof Error ? e.message : JSON.stringify(e);
+      dmhost.log(`library: terminateSelf threw: ${why}`);
+    }
   }
 
   /** Launch one library entry. */
@@ -1146,8 +1204,11 @@ struct Index {
     const cache: string = ctx?.cacheDir ?? '';
     this.migrateLegacySandbox(files);
     this.refreshLibrary(files);
-    const root: string = this.activeRoot(files);
-    dmhost.log(`startOnce: root=${root} starting=${this.starting} started=${this.started} isGame=${this.isGame}`);
+    // The library hands the chosen title over through preferences and pushes this page: its surface is up by the
+    // time onLoad runs, so this is the one place startGame can be called with a window.
+    const wanted: string = await this.takeLaunchTarget();
+    const root: string = wanted.length > 0 ? gamesDir(files) + '/' + wanted : this.activeRoot(files);
+    dmhost.log(`startOnce: root=${root} wanted=${wanted} starting=${this.starting} started=${this.started} isGame=${this.isGame}`);
     // P2.1: the sandbox is the source of truth. A pack imported through the picker (or a loopback round) leaves
     // its stamp in .stamp, and the game starts straight from it - no HAP staging, no per-file copy, no import.
     const staged: string = await this.stageData(root);
@@ -1305,6 +1366,17 @@ struct Index {
         .borderRadius(10)
         .backgroundColor('rgba(20,20,28,0.72)')
       }
+      // ---- S5: leaving the game ends the process, so ask first and say what it costs ----
+      ConfirmDialog({
+        visible: this.confirmExit,
+        title: '退出游戏？',
+        body: '将关闭游戏并返回游戏库。未保存的进度会丢失。',
+        confirmLabel: '退出',
+        cancelLabel: '继续游戏',
+        destructive: true,
+        onConfirm: () => this.exitToLibrary(),
+        onCancel: () => { this.confirmExit = false; }
+      })
     }
     .width('100%')
     .height('100%')

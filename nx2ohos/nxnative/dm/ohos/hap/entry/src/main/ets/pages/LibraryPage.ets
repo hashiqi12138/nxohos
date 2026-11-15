@@ -11,6 +11,8 @@
 
 import dmhost from 'libdmhost.so';
 import { picker } from '@kit.CoreFileKit';
+import { router } from '@kit.ArkUI';
+import { preferences } from '@kit.ArkData';
 import { Bg, Text as TextToken, Semantic, CoverPalette, Space, Font, Radius, Motion, Size } from '../theme/Tokens';
 import { GameEntry, gamesDir, listGames, deleteGame, humanSize, writeMeta, ImportStatus, verifyGame, gameVersion, VerifyResult } from './GameLibrary';
 import { readPackHeader, importPack, readStamp, writeStamp, PackInfo, ImportProgress } from './PackImport';
@@ -190,25 +192,37 @@ struct LibraryPage {
   }
 
   /**
-   * Start a game. The native layer takes the directory and owns the thread for the life of the process, so this
-   * hands over and never returns; a failure surfaces within a few seconds if the guest never starts.
+   * Start a game.
+   *
+   * The library has no surface: only Index owns the XComponent the guest presents to. So the launch is a handoff -
+   * the chosen title is written to preferences, Index is pushed, and its onLoad reads the title and calls
+   * startGame once its surface is up. Calling startGame from here would start the guest headless (measured: "no
+   * window after 12 s").
    */
   private launch(g: GameEntry): void {
     if (this.launchingTitle.length > 0) return;
-    const ctx = this.getUIContext().getHostContext();
-    const files: string = ctx?.filesDir ?? '';
-    const cache: string = ctx?.cacheDir ?? '';
     this.launchingTitle = g.titleId;
-    console.info(`library: launching ${g.titleId} from ${g.root}`);
-    dmhost.startGame(g.root, files + '/save', cache);
-    // If the guest never reaches nnosInitialize the card would sit on its overlay for good: clear it after a
-    // generous window so the player can try again.
-    setTimeout(() => {
-      if (this.launchingTitle === g.titleId) {
+    console.info(`library: handing off ${g.titleId} to the game page`);
+    this.saveLaunchTarget(g.titleId).then((_v: void) => {
+      router.pushUrl({ url: 'pages/Index' }).catch((e: Error) => {
         this.launchingTitle = '';
-        this.showToast('启动失败，请检查游戏数据');
-      }
-    }, 20000);
+        this.showToast('无法启动游戏页面');
+        console.error(`library: pushUrl failed: ${e.message}`);
+      });
+    });
+  }
+
+  /** Record which title the game page should start, so it survives the page change. */
+  private async saveLaunchTarget(titleId: string): Promise<void> {
+    try {
+      const ctx = this.getUIContext().getHostContext();
+      if (!ctx) return;
+      const p = await preferences.getPreferences(ctx, 'library');
+      p.putSync('launchTitle', titleId);
+      await p.flush();
+    } catch (e) {
+      console.error(`library: could not record the launch target: ${e}`);
+    }
   }
 
   /**
