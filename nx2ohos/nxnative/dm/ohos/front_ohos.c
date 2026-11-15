@@ -1,4 +1,4 @@
-﻿// HarmonyOS front end (the counterpart of dm/android/front_android.c and dm/ios/front_ios.m), implementing the host's front.h.
+// HarmonyOS front end (the counterpart of dm/android/front_android.c and dm/ios/front_ios.m), implementing the host's front.h.
 // It is much smaller than Android's because the window is not created here: the ArkTS page owns an XComponent and hands its surface
 // id to napi_bridge.c, which calls dm_ohos_front_set_surface(). What is left is the win32-sized part the host actually needs:
 //   - the window handle and its size (the Vulkan backend's dm_front_window()),
@@ -55,7 +55,7 @@ void front_save_failed(int err) { LOG("[ERR] front: a save was not written (errn
 
 // ---- startup: paths, environment, the game thread ---------------------------------------------------------------------------------
 static void mkdirs(const char *p) { char b[1024]; snprintf(b, sizeof b, "%s", p); for (char *s = b + 1; *s; s++) if (*s == '/') { *s = 0; mkdir(b, 0700); *s = '/'; } mkdir(b, 0700); }
-static char g_buf[4][1024];
+static char g_buf[5][1024];
 static void env_file(const char *path) {   // KEY=VALUE per line (# comments), as front_android.c: the pack's switches without a rebuild
     FILE *f = fopen(path, "r"); char line[1024];
     if (!f) { LOG("front: no %s", path); return; }
@@ -85,7 +85,18 @@ void dm_ohos_game_start(const char *root, const char *save, const char *temp) {
     mkdirs(root);
     setenv("DM_ROOT", root, 1);
     snprintf(g_buf[0], sizeof g_buf[0], "%s/RomFS", root);  setenv("DM_ROMFS", g_buf[0], 1);
-    mkdirs(save); setenv("DM_SAVE", save, 1);
+    // The save belongs to the game, not to the app: DM_SAVE is <save>/<title id>, taken from the root's last
+    // path component (files/games/<title>). With one shared directory a second game's save would overwrite the
+    // first's - the guest mounts whatever DM_SAVE names and knows nothing of titles.
+    {
+        const char *slash = strrchr(root, '/');
+        const char *title = slash ? slash + 1 : root;
+        if (title && *title) snprintf(g_buf[4], sizeof g_buf[4], "%s/%s", save, title);
+        else snprintf(g_buf[4], sizeof g_buf[4], "%s/default", save);
+        mkdirs(g_buf[4]);
+        setenv("DM_SAVE", g_buf[4], 1);
+        LOG("front: save %s (per title)", g_buf[4]);
+    }
     mkdirs(temp); setenv("DM_TEMP", temp, 1);
     snprintf(g_buf[1], sizeof g_buf[1], "%s/shaders.dmsv", root); setenv("DM_VK_SHADERS", g_buf[1], 1);
     snprintf(g_buf[2], sizeof g_buf[2], "%s/env.txt", root); env_file(g_buf[2]);
