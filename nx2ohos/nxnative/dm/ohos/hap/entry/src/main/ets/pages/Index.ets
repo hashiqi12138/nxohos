@@ -20,6 +20,7 @@ import { display } from '@kit.ArkUI';
 import { resourceManager } from '@kit.LocalizationKit';
 import { preferences } from '@kit.ArkData';
 import { ConfirmDialog } from '../components/ConfirmDialog';
+import { padBitFor } from './ControllerProbe';
 import { Bg, Text as TextToken, Semantic, Space, Font, Radius, Size } from '../theme/Tokens';
 import { http } from '@kit.NetworkKit';
 import { picker } from '@kit.CoreFileKit';
@@ -537,23 +538,37 @@ struct Index {
     return 0;
   }
 
-  private updateStickFromFinger(t: TouchObject): void {
-    if (t.id === this.lsOwner) {
-      this.lx = this.stickDelta(t.x, t.y, LS_CX, LS_CY, LS_R, this.overlayW, this.overlayH);
-      this.ly = -this.stickDelta(t.x, t.y, LS_CX, LS_CY, LS_R, this.overlayW, this.overlayH);
-    } else if (t.id === this.rsOwner) {
-      this.rx = this.stickDelta(t.x, t.y, RS_CX, RS_CY, RS_R, this.overlayW, this.overlayH);
-      this.ry = -this.stickDelta(t.x, t.y, RS_CX, RS_CY, RS_R, this.overlayW, this.overlayH);
-    }
+  /**
+   * Both axes of one stick, from the finger's offset from its centre.
+   *
+   * The first version returned a single number that used only nx in its result (ny went into the magnitude and
+   * was then discarded), and the caller assigned that same number to x and to y - so the stick could only move
+   * along one diagonal. This returns the two components separately, with the vector clamped to the unit circle so
+   * a finger outside the ring does not exceed full deflection.
+   */
+  private stickAxes(x: number, y: number, cx: number, cy: number, r: number, w: number, h: number): number[] {
+    const px: number = cx * w;
+    const py: number = cy * h;
+    const pr: number = r * w;      // the radius is normalized to the width, so both arms use the same pixel radius
+    const nx: number = (x - px) / pr;
+    const ny: number = (y - py) / pr;
+    const n: number = Math.sqrt(nx * nx + ny * ny);
+    if (n < 0.05) return [0, 0];   // dead zone: a resting thumb must not drift
+    // Clamp to the unit circle: direction is kept, magnitude saturates at full deflection.
+    const k: number = (n > 1.0 ? 1.0 / n : 1.0) * DM_STICK_MAX;
+    return [Math.round(nx * k), Math.round(ny * k)];
   }
 
-  private stickDelta(x: number, y: number, cx: number, cy: number, r: number, w: number, h: number): number {
-    const nx: number = (x - cx * w) / (r * w);
-    const ny: number = (y - cy * h) / (r * w);   // the stick's radius is normalized to the width, so the y arm uses the same pixel radius
-    const n: number = Math.sqrt(nx * nx + ny * ny);
-    if (n < 0.05) return 0;
-    const mag: number = Math.min(n, 1.0);
-    return Math.round((nx / n) * mag * DM_STICK_MAX);
+  private updateStickFromFinger(t: TouchObject): void {
+    if (t.id === this.lsOwner) {
+      const a: number[] = this.stickAxes(t.x, t.y, LS_CX, LS_CY, LS_R, this.overlayW, this.overlayH);
+      this.lx = a[0];
+      this.ly = -a[1];   // the pad's y is up-positive; the screen's is down-positive
+    } else if (t.id === this.rsOwner) {
+      const a: number[] = this.stickAxes(t.x, t.y, RS_CX, RS_CY, RS_R, this.overlayW, this.overlayH);
+      this.rx = a[0];
+      this.ry = -a[1];
+    }
   }
 
   /**
@@ -680,6 +695,21 @@ struct Index {
     if (bit !== undefined) {
       this.keyBits = down ? (this.keyBits | bit) : (this.keyBits & ~bit);
       this.pushPad();
+      return;
+    }
+    // P2.4: a physical gamepad arrives as ordinary key codes, so it feeds the same pad state the virtual one
+    // does. OHOS puts its buttons at 2301..2315 and the d-pad at 2012..2015 (measured on the device: Select and
+    // Start logged 2311 and 2312); padBitFor maps them to the Switch bits dm_input.h expects.
+    const padBit: number = padBitFor(key);
+    if (padBit !== 0) {
+      this.keyBits = down ? (this.keyBits | padBit) : (this.keyBits & ~padBit);
+      this.pushPad();
+      if (down) dmhost.log(`pad key: code=${key} bit=${padBit}`);
+      return;
+    }
+    if (down) {
+      // Anything else: log it once so an unmapped button can be identified from the device rather than guessed.
+      dmhost.log(`key probe: code=${key} down=1`);
     }
   }
 

@@ -16,6 +16,7 @@ import { Bg, Text as TextToken, Semantic, Space, Font, Radius, Size, Motion } fr
 import { humanSize, gamesSize, cacheSize, clearCache, listGames } from './GameLibrary';
 import { listSaves, restoreBackup, SaveEntry } from './SaveData';
 import { runSaveSelfTest, SelfTestResult } from './SaveSelfTest';
+import { listInputDevices, DeviceRow, PAD_KEY_CANDIDATES, PadKeyMap } from './ControllerProbe';
 import { preferences } from '@kit.ArkData';
 import { router } from '@kit.ArkUI';
 import { fileIo as fs } from '@kit.CoreFileKit';
@@ -46,9 +47,11 @@ export struct SettingsPage {
   @State savesLoaded: boolean = false;
   /** The title whose backup a confirm would restore, or ''. */
   @State pendingRestore: string = '';
-  /** Taps on the version row; five run the save container's self test. */
+  /** Taps on the version row: five run the save self test, three list the input devices. */
   private versionTaps: number = 0;
   @State selfTestLines: string[] = [];
+  /** The controller probe's lines, shown after three taps on the version row. */
+  @State padLines: string[] = [];
   /** Which group the nav has selected; the page shows all of them on a narrow screen. */
   @State group: number = 0;
   @State landscape: boolean = true;
@@ -141,6 +144,12 @@ export struct SettingsPage {
    */
   private onVersionTap(): void {
     this.versionTaps++;
+    // Three taps list the input devices (P2.4: does a paired gamepad appear as 'joystick'?); five run the save
+    // self test. The count resets at either, so the two probes cannot be confused.
+    if (this.versionTaps === 3) {
+      this.listDevices();
+      return;
+    }
     if (this.versionTaps < 5) return;
     this.versionTaps = 0;
     const ctx = this.getUIContext().getHostContext();
@@ -156,6 +165,40 @@ export struct SettingsPage {
       for (const l of r.lines) console.info('save self test: ' + l);
       this.showToast(r.ok ? '存档自检通过（见日志）' : '存档自检失败（见日志）');
     }, 40);
+  }
+
+  /**
+   * List the attached input devices (P2.4).
+   *
+   * The product's controller support depends on one unknown: whether a paired gamepad reaches this app as a
+   * 'joystick' device whose buttons arrive as key codes. This prints what the platform actually reports.
+   */
+  private listDevices(): void {
+    this.versionTaps = 0;
+    listInputDevices().then((rows: DeviceRow[]) => {
+      const lines: string[] = [];
+      if (rows.length === 0) {
+        lines.push('没有检测到输入设备（或缺少读取权限）');
+      } else {
+        for (const r of rows) {
+          const tag: string = r.isPad ? '  <- 手柄' : '';
+          lines.push('#' + r.id + ' ' + r.name + ' [' + r.sources + ']' + tag);
+        }
+      }
+      let pads: number = 0;
+      for (const r of rows) {
+        if (r.isPad) pads++;
+      }
+      if (rows.length > 0) {
+        lines.push('共 ' + rows.length + ' 个设备，其中 ' + pads + ' 个手柄');
+      }
+      this.padLines = lines;
+      for (const l of lines) console.info('pad probe: ' + l);
+      this.showToast(pads > 0 ? '检测到手柄（见下方）' : '未检测到手柄');
+    }).catch((e: Error) => {
+      this.padLines = ['读取输入设备失败: ' + e.message];
+      console.info('pad probe: failed ' + e.message);
+    });
   }
 
   /** Put a game's save back from the backup an earlier import left. */
@@ -471,6 +514,20 @@ export struct SettingsPage {
           }.width('100%').padding({ top: Space.s2, bottom: Space.s2 })
             .onClick(() => this.onVersionTap())
           // The self test's lines, shown only after it has run: five taps on the version row.
+          // The controller probe's answer (three taps on the version row).
+          if (this.padLines.length > 0) {
+            Column({ space: 2 }) {
+              ForEach(this.padLines, (l: string) => {
+                Text(l)
+                  .fontSize(Font.caption)
+                  .fontColor(l.indexOf('手柄') >= 0 ? Semantic.success : TextToken.tertiary)
+                  .width('100%')
+                  .textAlign(TextAlign.Start)
+              }, (l: string, i: number) => 'p' + i)
+            }
+            .width('100%')
+            .padding({ left: Space.s2, right: Space.s2, top: Space.s2, bottom: Space.s2 })
+          }
           if (this.selfTestLines.length > 0) {
             Column({ space: 2 }) {
               ForEach(this.selfTestLines, (l: string) => {
