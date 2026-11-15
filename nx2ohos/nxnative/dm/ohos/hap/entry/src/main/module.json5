@@ -12,6 +12,13 @@
     "deliveryWithInstall": true,
     "installationFree": false,
     "pages": "$profile:main_pages",
+    // The dev data import (P2.1): the app pulls the game pack over a loopback channel (hdc fport forwards the
+    // device's 127.0.0.1:PORT to the PC, so the pack never rides in a HAP). INTERNET covers loopback http.
+    "requestPermissions": [
+      {
+        "name": "ohos.permission.INTERNET"
+      }
+    ],
     "abilities": [
       {
         "name": "EntryAbility",

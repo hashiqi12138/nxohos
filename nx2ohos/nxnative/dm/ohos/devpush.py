@@ -20,6 +20,11 @@ ap.add_argument('--no-build', action='store_true', help='do not build the lib fi
 ap.add_argument('--no-start', action='store_true')
 ap.add_argument('--keep', action='store_true', help='keep the ASCII build dir (debug the hvigor project)')
 ap.add_argument('--version-code', type=int, default=0, help='override the auto versionCode (seconds)')
+ap.add_argument('--data-dir', dest='data_dir',
+                help='serve this porter data pack over a loopback http channel (hdc fport) so the app imports it '
+                     'into its sandbox itself: one import, then the stamp matches and rounds ship the entry alone')
+ap.add_argument('--import-wait', dest='import_wait', type=int, default=3600,
+                help='seconds to keep the pack server up and watch the import (default: %(default)s)')
 a = ap.parse_args()
 
 def find_deveco():
@@ -54,6 +59,65 @@ if not os.path.isfile(lib): sys.exit('devpush: %s is missing' % lib)
 build = os.path.join('F:', os.sep, 'ohos_build_dmhost_' + a.game)
 if not os.path.isdir(build): sys.exit('devpush: %s not found - do a full mkhap.py --data install once first' % build)
 
+# 2b. --data-dir: serve the pack over loopback for the app's own import (P2.1). Neither the shell domain nor the
+# app can cross the SELinux boundary (tmp is data_local_tmp, the sandbox is debug_hap_data_file), so the pack
+# travels over http: this process serves it, `hdc fport tcp:PORT tcp:PORT` forwards the device's loopback to it,
+# and the app pulls what it does not have into its sandbox. Once the stamp matches, nothing is pulled again.
+IMPORT_PORT = 18899
+def start_pack_server(pack, manifest):
+    import http.server, socketserver, threading
+    class Handler(http.server.SimpleHTTPRequestHandler):
+        def __init__(self, *a, **kw):
+            super().__init__(*a, directory=pack, **kw)
+        def do_GET(self):
+            if self.path == '/ping':
+                body = b'PONG'
+                self.send_response(200); self.send_header('Content-Length', str(len(body))); self.end_headers()
+                self.wfile.write(body); return
+            if self.path == '/dm.files.tsv':
+                with open(manifest, 'rb') as f: body = f.read()
+                self.send_response(200); self.send_header('Content-Length', str(len(body))); self.end_headers()
+                self.wfile.write(body); return
+            super().do_GET()
+        def log_message(self, *a): pass
+    srv = socketserver.ThreadingTCPServer(('127.0.0.1', IMPORT_PORT), Handler)
+    srv.daemon_threads = True
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    return srv
+
+if a.data_dir:
+    rc, out = hdc('list', 'targets', timeout=60)
+    if rc or 'Empty' in out: sys.exit('devpush: no device on hdc')
+    pack = os.path.abspath(a.data_dir)
+    if not os.path.isfile(os.path.join(pack, 'nx2a-data.json')):
+        sys.exit('devpush: %s has no nx2a-data.json - point --data-dir at the porter data pack folder' % pack)
+    # The manifest is mkhap's product (a stamp over rel/size/mtime of the pack). The build tree's copy may be
+    # gone (a slim entry carries none), so take it from wherever it survives - the build tree first, then a
+    # previously staged dmdata dir - and otherwise generate it here from the pack itself.
+    man = os.path.join(build, 'entry', 'src', 'main', 'resources', 'rawfile', 'dm.files.tsv')
+    if not os.path.isfile(man):
+        man = os.path.join(build, 'dm.files.tsv')
+    if not os.path.isfile(man):
+        import hashlib
+        files = sorted(os.path.relpath(os.path.join(d, f), pack).replace('\\', '/')
+                       for d, _, fs_ in os.walk(pack) for f in fs_ if f != 'dm.files.tsv')
+        h = hashlib.sha1()
+        for rel in files:
+            st = os.stat(os.path.join(pack, rel))
+            h.update(('%s\t%d\t%d\n' % (rel, st.st_size, st.st_mtime_ns)).encode())
+        man = os.path.join(build, 'dm.files.tsv')
+        with open(man, 'w', encoding='utf-8', newline='\n') as f:
+            f.write('# DM_DATA %s\n' % h.hexdigest())
+            for rel in files:
+                f.write('%s\t%d\tentry\n' % (rel, os.path.getsize(os.path.join(pack, rel))))
+        print('manifest generated from the pack: %d files' % len(files))
+    srv = start_pack_server(pack, man)
+    print('pack server on 127.0.0.1:%d (the app pulls from it on start)' % IMPORT_PORT)
+    rc, out = hdc('fport', 'rm', 'tcp:%d' % IMPORT_PORT, 'tcp:%d' % IMPORT_PORT, timeout=60)
+    rc, out = hdc('fport', 'tcp:%d' % IMPORT_PORT, 'tcp:%d' % IMPORT_PORT, timeout=60)
+    print('fport:', out.strip()[:120])
+    globals()['_pack_server'] = srv   # kept alive until the process ends
+
 # 3. refresh lib and (optionally) mods in the tree
 libdir = os.path.join(build, 'entry', 'libs', 'arm64-v8a')
 os.makedirs(libdir, exist_ok=True)
@@ -78,10 +142,24 @@ if a.mods:
     open(man, 'w', encoding='utf-8', newline='\n').write('\n'.join(out) + '\n')
     print('mods refreshed: %d files' % len(mods_rels))
 
-# 4. versionCode: auto (seconds since the epoch, always above any installed build)
+# 4. versionCode: above whatever the device already holds (bm dump), and above any clock guess - the bundle's
+# history includes 2,000,000,002 (the imposter-app war), which a time-based code can never beat
+def run(cmd, **kw):
+    r = subprocess.run(cmd, capture_output=True, text=True, errors='replace', **kw)
+    return r.returncode, (r.stdout or '') + (r.stderr or '')
+
+def hdc(*args, timeout=600):
+    return run([HDC, *args], timeout=timeout)
+
 app_json = os.path.join(build, 'AppScope', 'app.json5')
 import re
 vc = a.version_code or int(time.time())
+try:
+    rc, out = hdc('shell', 'bm', 'dump', '-n', BUNDLE, timeout=60)
+    codes = [int(x) for x in re.findall(r'"versionCode"\s*:\s*(\d+)', out)]
+    if codes and max(codes) >= vc: vc = max(codes) + 1   # the appQuickFix block carries its own versionCode fields; the top-level code is the max
+except Exception:
+    pass   # offline or not installed: the clock value stands
 txt = open(app_json, encoding='utf-8').read()
 open(app_json, 'w', encoding='utf-8').write(re.sub(r'"versionCode"\s*:\s*\d+', '"versionCode": %d' % vc, txt, count=1))
 print('versionCode: %d' % vc)
@@ -100,10 +178,26 @@ print('entry packed in %.0f s' % (time.time() - t0))
 signed = os.path.join(build, 'entry', 'build', 'default', 'outputs', 'default', 'entry-default-signed.hap')
 print('entry: %.1f MB' % (os.path.getsize(signed) / 2**20))
 
-# 6. push and install entry alone
+# 6. push and install: entry alone. A slim entry carries no data and does not read the data modules - the app
+# imports the pack from /data/local/tmp/dmdata/<title>/ instead (P2.1). With the old data-carrying entry the
+# install set had to hold all six modules (bm drops those missing from the folder, and the next staging's
+# createModuleContext('dataN') then fails with "Invalid input parameter"); that constraint is gone here.
 rc, out = hdc('list', 'targets', timeout=60)
 if rc or 'Empty' in out: sys.exit('devpush: no device on hdc')
-rc, out = hdc('shell', 'rm -rf %s/nx2a-entry; mkdir -p %s/nx2a-entry' % (REMOTE_DIR, REMOTE_DIR), timeout=120)
+# the app must find its pack somewhere: the tmp import dir, or the rawfile modules of a data-carrying entry
+rc, out = hdc('shell', 'ls /data/local/tmp/dmdata/%s/dm.files.tsv 2>/dev/null && echo HAVE_IMPORT' % a.game, timeout=60)
+have_import = 'HAVE_IMPORT' in out
+rc, out = hdc('shell', 'ls %s/nx2a-install/data5-default-signed.hap 2>/dev/null && echo HAVE_MODULES' % REMOTE_DIR, timeout=60)
+have_modules = 'HAVE_MODULES' in out
+if not have_import and not have_modules:
+    sys.exit('devpush: no data on the device - push a pack (--data-dir) or run a full mkhap --data install once')
+hdc('shell', 'rm -rf %s/nx2a-entry; mkdir -p %s/nx2a-entry' % (REMOTE_DIR, REMOTE_DIR), timeout=120)
+if have_modules and not have_import:
+    # the old shape: the entry's manifest names data1..N, so the whole set must go up together
+    hdc('shell', 'for f in %s/nx2a-install/data*-default-signed.hap; do cp $f %s/nx2a-entry/ 2>/dev/null; done' % (REMOTE_DIR, REMOTE_DIR), timeout=300)
+    print('install set: entry + the six modules (rawfile pack)')
+else:
+    print('install set: entry alone (the pack imports over the loopback channel)')
 t0 = time.time()
 rc, out = hdc('file', 'send', signed, '%s/nx2a-entry/entry-default-signed.hap' % REMOTE_DIR, timeout=1800)
 if rc or 'finish' not in out.lower(): sys.exit('devpush: send failed: ' + out.strip()[:200])
@@ -112,14 +206,25 @@ rc, out = hdc('shell', 'bm', 'install', '-p', '%s/nx2a-entry' % REMOTE_DIR, '-r'
 print('install:', out.strip()[:160])
 if 'successfully' not in out.lower(): sys.exit('devpush: install failed')
 
-# 7. start and tail
+# 7. start and tail. The pack server must outlive the app's import: keep it serving and watch the staging
+# progress until the import ends (or --import-wait runs out). A first 14 GB import takes a while; a later round
+# sees the stamp match and starts the game in seconds.
 if not a.no_start:
     hdc('shell', 'hilog', '-r', timeout=60)
     rc, out = hdc('shell', 'aa', 'start', '-b', BUNDLE, '-a', ABILITY, timeout=120)
     print('start:', out.strip())
-    time.sleep(25)
+    t0 = time.time(); last_n = -1
+    while time.time() - t0 < a.import_wait:
+        time.sleep(15)
+        rc, out = hdc('shell', 'hilog', '-x', '-T', 'dmhost', timeout=120)
+        staged = [int(x) for x in re.findall(r'staged (\d+) files', out)]
+        cur = max(staged) if staged else 0
+        if cur != last_n:
+            print('  staged %d files (%.0f s)' % (cur, time.time() - t0)); last_n = cur
+        if 'starting the game' in out: print('  game started'); break
+        if 'staging failed' in out or 'carries no data pack' in out: print('  staging did not import'); break
     rc, out = hdc('shell', 'hilog', '-x', '-T', 'dmhost', timeout=120)
-    print(out[-4000:])
+    print(out[-3000:])
 
 # 8. keep or clean the remote staging dir
 if not a.keep:

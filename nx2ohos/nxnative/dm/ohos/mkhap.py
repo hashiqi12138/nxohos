@@ -157,6 +157,21 @@ if a.data:
             json.dump(cfg, f, indent=2); f.write('\n')
 
 env = dict(os.environ); env['DEVECO_SDK_HOME'] = os.path.join(deveco, 'sdk'); env['PATH'] = NODE + os.pathsep + env.get('PATH', '')
+# The per-game pad default (P1.4): the profile's pad_layout / op_mode keys translated into a small json the app
+# reads as its on-screen pad's starting layout (Index.ets); the user's own edits live in the app's preferences.
+game_tsv = os.path.join(DM, 'games', a.game, 'game.tsv')
+pad_layout, op_mode = 'full', ''
+if os.path.isfile(game_tsv):
+    for ln in open(game_tsv, encoding='utf-8', errors='replace'):
+        parts = ln.split('\t')
+        if len(parts) >= 2 and not parts[0].startswith('#'):
+            if parts[0] == 'pad_layout': pad_layout = parts[1].strip()
+            if parts[0] == 'op_mode': op_mode = parts[1].strip()
+pad_default = {'layout': pad_layout, 'handheld': 'handheld' in op_mode}
+with open(os.path.join(build, 'entry', 'src', 'main', 'resources', 'rawfile', 'pad_default.json'), 'w',
+          encoding='utf-8', newline='\n') as f:
+    json.dump(pad_default, f)
+print('pad_default.json: layout %s%s' % (pad_layout, ' (handheld)' if pad_default['handheld'] else ''))
 jbr = os.path.join(deveco, 'jbr')
 if os.path.isdir(jbr):   # HmacPBESHA256 signing needs JBR 21: the system's Java 11 cannot sign
     env['JAVA_HOME'] = jbr; env['PATH'] = os.path.join(jbr, 'bin') + os.pathsep + env['PATH']
