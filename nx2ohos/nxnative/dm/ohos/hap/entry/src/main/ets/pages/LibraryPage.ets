@@ -10,12 +10,17 @@
  */
 
 import dmhost from 'libdmhost.so';
+import { picker } from '@kit.CoreFileKit';
 import { Bg, Text as TextToken, Semantic, CoverPalette, Space, Font, Radius, Motion, Size } from '../theme/Tokens';
-import { GameEntry, gamesDir, listGames, deleteGame, humanSize, writeMeta } from './GameLibrary';
+import { GameEntry, gamesDir, listGames, deleteGame, humanSize, writeMeta, ImportStatus } from './GameLibrary';
+import { readPackHeader, importPack, readStamp, writeStamp, PackInfo, ImportProgress } from './PackImport';
 import { GameCard, CardState } from '../components/GameCard';
 import { AddGameCard } from '../components/AddGameCard';
 import { EmptyState } from '../components/EmptyState';
 import { TopBar } from '../components/TopBar';
+import { ImportBanner } from '../components/ImportBanner';
+import { ImportPanel } from '../components/ImportPanel';
+import { ConfirmDialog } from '../components/ConfirmDialog';
 
 /** A grid cell: either a game or the add tile. */
 interface Cell {
@@ -43,6 +48,23 @@ struct LibraryPage {
   @State toast: string = '';
   private toastTimer: number = -1;
   private loaded: boolean = false;
+
+  // ---- S3: the import surface ----
+  @State importPct: number = 0;
+  @State importName: string = '';
+  @State importDone: number = 0;
+  @State importTotal: number = 0;
+  @State importRemaining: string = '';
+  @State importFile: string = '';
+  @State showPanel: boolean = false;
+  /** The confirm dialog: '', 'cancelImport', 'replaceData'. */
+  @State confirmKind: string = '';
+  /** The pack a confirm is pending on. */
+  private pendingUri: string = '';
+  private pendingInfo: PackInfo | null = null;
+  private importTimer: number = -1;
+  /** Whether the running import wants cancelling; the loop checks between phases. */
+  @State importCancelled: boolean = false;
 
   aboutToAppear(): void {
     this.reload();
@@ -178,11 +200,164 @@ struct LibraryPage {
     }, 20000);
   }
 
-  /** Open the document picker and import a pack. */
+  /**
+   * Pick a pack and import it (S3).
+   *
+   * Three endings, cheapest first: a stamp match returns without touching a byte; a different pack for an
+   * installed title asks before replacing; otherwise the import runs under ImportStatus while the banner and
+   * the panel show what it is doing, and the library refreshes when it lands.
+   */
   private pickPack(): void {
+    this.doPick().then((_ok: void) => {});
+  }
+
+  private async doPick(): Promise<void> {
     const ctx = this.getUIContext().getHostContext();
-    this.showToast('导入功能在 S3 中实现');
-    console.info('library: add game pressed (import lands in S3)');
+    const files: string = ctx?.filesDir ?? '';
+    // ---- the picker ----
+    let uri: string = '';
+    try {
+      if (!ctx) return;
+      const opt = new picker.DocumentSelectOptions();
+      opt.maxSelectNumber = 1;
+      opt.fileSuffixFilters = ['Game pack|.nxpk'];
+      const p = new picker.DocumentViewPicker(ctx);
+      const uris: string[] = await p.select(opt);
+      if (!uris || uris.length === 0) return;   // cancelled
+      uri = uris[0];
+    } catch (e) {
+      this.showToast('选择文件失败，请重试');
+      return;
+    }
+    // ---- the header: reject non-packs before any work ----
+    let info: PackInfo;
+    try {
+      info = readPackHeader(uri);
+    } catch (e) {
+      this.showToast('这不是游戏包，请选择 .nxpk 文件');
+      return;
+    }
+    const dst: string = gamesDir(files) + '/' + info.title;
+    const cur: string = readStamp(dst);
+    if (cur.length > 0 && cur === info.stamp) {
+      this.showToast('该游戏已是最新版本');
+      this.refreshAfterImport(files, info.title);
+      return;
+    }
+    // ---- a different pack for an installed title: ask before replacing ----
+    const installed: GameEntry | undefined = this.games.find((g: GameEntry): boolean => g.titleId === info.title);
+    if (installed !== undefined && installed.stamp.length > 0) {
+      this.pendingUri = uri;
+      this.pendingInfo = info;
+      this.confirmKind = 'replaceData';
+      return;   // the dialog's confirm calls back into this.runImport
+    }
+    await this.runImport(files, uri, info);
+  }
+
+  /** The import itself, with the shared progress state feeding the banner and the panel. */
+  private async runImport(files: string, uri: string, info: PackInfo): Promise<void> {
+    const dst: string = gamesDir(files) + '/' + info.title;
+    ImportStatus.begin(info.title, info.title, 80 + info.tarSize);
+    this.importPct = 0;
+    this.importName = info.title;
+    this.importDone = 0;
+    this.importTotal = 80 + info.tarSize;
+    this.importRemaining = '';
+    this.importFile = '';
+    this.showPanel = true;
+    this.importCancelled = false;
+    this.startImportTimer();
+    try {
+      const n: number = await importPack(uri, dst, info, (p: ImportProgress) => {
+        ImportStatus.tick(p.bytes, 'unpack', p.currentName);
+        this.importFile = p.currentName;
+      });
+      writeStamp(dst, info.stamp);
+      writeMeta(dst, info.stamp, info.title, ImportStatus.doneBytes, true, '');
+      ImportStatus.finish();
+      this.stopImportTimer();
+      this.importPct = 100;
+      this.showPanel = false;
+      this.showToast(`已导入 ${info.title}（${n} 个文件）`);
+      this.refreshAfterImport(files, info.title);
+    } catch (e) {
+      const raw: string = e instanceof Error ? e.message : JSON.stringify(e);
+      ImportStatus.fail(this.humanError(raw));
+      this.stopImportTimer();
+      this.showPanel = false;
+      if (this.importCancelled) {
+        this.showToast('已取消导入，下次会从断点继续');
+      } else {
+        this.showToast(this.humanError(raw));
+      }
+    }
+  }
+
+  /** Refresh the list and put the focus on the game that just landed. */
+  private refreshAfterImport(files: string, titleId: string): void {
+    this.reload();
+    const idx: number = this.games.findIndex((g: GameEntry): boolean => g.titleId === titleId);
+    if (idx >= 0) this.focusIndex = idx;
+  }
+
+  /** Poll ImportStatus into the panel's props; a cancelled flag stops the import between phases. */
+  private startImportTimer(): void {
+    if (this.importTimer !== -1) clearInterval(this.importTimer);
+    this.importTimer = setInterval(() => {
+      this.importPct = ImportStatus.percent();
+      this.importDone = ImportStatus.doneBytes;
+      this.importTotal = ImportStatus.totalBytes;
+      this.importRemaining = ImportStatus.remaining();
+      if (this.importCancelled) ImportStatus.error = 'cancelled';
+    }, 2000);
+  }
+
+  private stopImportTimer(): void {
+    if (this.importTimer !== -1) {
+      clearInterval(this.importTimer);
+      this.importTimer = -1;
+    }
+  }
+
+  /** The user-facing form of a technical failure (the design's §6 table). */
+  private humanError(raw: string): string {
+    if (raw.includes('2300023') || raw.toLowerCase().includes('enospc')) return '存储空间不足，清理后重试';
+    if (raw.includes('2300028')) return '传输超时，下次会从断点继续';
+    if (raw.includes('2300018')) return '网络中断，下次会从断点继续';
+    if (raw.includes('NXPK')) return '这不是游戏包，请选择 .nxpk 文件';
+    return `导入失败：${raw.substring(0, 60)}`;
+  }
+
+  /** The confirm dialog's one entry point: which question it asked decides what confirm does. */
+  private onConfirm(): void {
+    const kind: string = this.confirmKind;
+    this.confirmKind = '';
+    if (kind === 'replaceData') {
+      const ctx = this.getUIContext().getHostContext();
+      const files: string = ctx?.filesDir ?? '';
+      const uri: string = this.pendingUri;
+      const info: PackInfo = this.pendingInfo as PackInfo;
+      this.pendingUri = '';
+      this.pendingInfo = null;
+      if (uri.length > 0 && info !== null) {
+        this.runImport(files, uri, info).then((_v: void) => {});
+      }
+    }
+    // 'cancelImport' never confirms here: cancelling an import is the cancel button's job
+  }
+
+  private onCancelConfirm(): void {
+    this.confirmKind = '';
+    this.pendingUri = '';
+    this.pendingInfo = null;
+  }
+
+  /** The display name of the pack awaiting a replace confirm, for the dialog's body. */
+  private pendingTitle(): string {
+    const installed: GameEntry | undefined =
+      this.games.find((g: GameEntry): boolean => this.pendingInfo !== null && g.titleId === this.pendingInfo.title);
+    return installed !== undefined ? installed.name : (this.pendingInfo !== null ? this.pendingInfo.title : '');
   }
 
   private showToast(msg: string): void {
@@ -232,6 +407,14 @@ struct LibraryPage {
           onAdd: () => this.pickPack()
         })
 
+        // ---- the import heartbeat: a strip under the bar while work runs, non-modal ----
+        if (this.importPct > 0 && this.importPct < 100 && this.importName.length > 0) {
+          ImportBanner({
+            percent: this.importPct,
+            gameName: this.importName
+          })
+        }
+
       if (this.loading) {
         // a skeleton, not a spinner: the shape of what is coming reads as faster than an empty screen
         Row({ space: Space.s5 }) {
@@ -273,6 +456,44 @@ struct LibraryPage {
       }
       .width('100%')
       .height('100%')
+
+      // ---- the import detail sheet: sits at the bottom while the import runs ----
+      if (this.showPanel && this.importName.length > 0) {
+        Column() {
+          Blank()
+          ImportPanel({
+            percent: this.importPct,
+            doneBytes: this.importDone,
+            totalBytes: this.importTotal,
+            remaining: this.importRemaining,
+            currentFile: this.importFile,
+            gameName: this.importName,
+            onBackground: () => { this.showPanel = false; },
+            onCancel: () => { this.confirmKind = 'cancelImport'; }
+          })
+        }
+        .width('100%')
+        .height('100%')
+      }
+
+      // ---- the confirm dialog: replace-data (destructive) or cancel-import (soft) ----
+      ConfirmDialog({
+        visible: this.confirmKind.length > 0,
+        title: this.confirmKind === 'replaceData' ? '更新游戏数据？' : '取消导入？',
+        body: this.confirmKind === 'replaceData'
+          ? `${this.pendingTitle()} 已安装。新数据包将替换旧数据。存档不受影响。`
+          : '已下载的部分将保留，下次导入从断点继续。',
+        confirmLabel: this.confirmKind === 'replaceData' ? '替换' : '取消导入',
+        cancelLabel: this.confirmKind === 'replaceData' ? '取消' : '继续导入',
+        destructive: this.confirmKind === 'replaceData',
+        onConfirm: () => this.onConfirm(),
+        onCancel: () => {
+          if (this.confirmKind === 'cancelImport') {
+            this.importCancelled = true;
+          }
+          this.onCancelConfirm();
+        }
+      })
     }
     .width('100%')
     .height('100%')

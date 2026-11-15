@@ -40,6 +40,102 @@ interface GameMeta {
 
 const META_FILE: string = '/.meta.json';
 
+// ---- S3: the shared import state, so the picker path and the loopback (debug) path feed one progress UI ----
+
+/** What one import is doing, for the banner and the panel. */
+export class ImportStatus {
+  /** The game's display name. */
+  static gameName: string = '';
+  /** The title ID being imported. */
+  static titleId: string = '';
+  /** Bytes of work done: the download's bytes plus the unpack's bytes, over the same total. */
+  static doneBytes: number = 0;
+  /** The total the work is measured against: 80 + tarSize of the container. */
+  static totalBytes: number = 0;
+  /** Which phase the import is in, for the caption. */
+  static phase: string = '';   // '' = idle, 'download' | 'unpack'
+  /** The file being written, single line, for the panel. */
+  static currentFile: string = '';
+  /** An error message, set when the import failed; the banner clears on read. */
+  static error: string = '';
+  /** Whether an import is running at all. */
+  static active: boolean = false;
+  /** Sliding samples for the rate estimate: {t: ms since start, bytes: done}. */
+  private static samples: ImportSample[] = [];
+  private static startedAt: number = 0;
+
+  static begin(gameName: string, titleId: string, totalBytes: number): void {
+    ImportStatus.gameName = gameName;
+    ImportStatus.titleId = titleId;
+    ImportStatus.totalBytes = totalBytes > 0 ? totalBytes : 1;
+    ImportStatus.doneBytes = 0;
+    ImportStatus.phase = 'download';
+    ImportStatus.currentFile = '';
+    ImportStatus.error = '';
+    ImportStatus.active = true;
+    ImportStatus.samples = [];
+    ImportStatus.startedAt = Date.now();
+  }
+
+  /** Record progress. Call at most every 2 s (a sample denser than that only jitters the estimate). */
+  static tick(doneBytes: number, phase: string, currentFile: string): void {
+    ImportStatus.doneBytes = doneBytes;
+    ImportStatus.phase = phase;
+    ImportStatus.currentFile = currentFile;
+    if (ImportStatus.samples.length === 0 ||
+      Date.now() - ImportStatus.startedAt - ImportStatus.samples[ImportStatus.samples.length - 1].t >= 2000) {
+      ImportStatus.samples.push({ t: Date.now() - ImportStatus.startedAt, bytes: doneBytes });
+      if (ImportStatus.samples.length > 6) ImportStatus.shift();
+    }
+  }
+
+  private static shift(): void {
+    ImportStatus.samples.splice(0, ImportStatus.samples.length - 6);
+  }
+
+  /** 0..100, floor. */
+  static percent(): number {
+    if (ImportStatus.totalBytes <= 0) return 0;
+    return Math.min(100, Math.floor(ImportStatus.doneBytes * 100 / ImportStatus.totalBytes));
+  }
+
+  /**
+   * The remaining-time estimate from the last ~10 s of samples.
+   *
+   * Returns '' for the first 15 s (the number jumps before the window fills) and after a stall (the estimate
+   * climbs to minutes when the rate falls to zero, which is worse than no number).
+   */
+  static remaining(): string {
+    if (ImportStatus.samples.length < 3) return '';
+    const first: ImportSample = ImportStatus.samples[0];
+    const last: ImportSample = ImportStatus.samples[ImportStatus.samples.length - 1];
+    const dt: number = last.t - first.t;
+    if (dt < 5000) return '';
+    const db: number = last.bytes - first.bytes;
+    if (db <= 0) return '';   // stalled: no estimate is better than a climbing one
+    const rate: number = db / dt;   // bytes per ms
+    const seconds: number = Math.round((ImportStatus.totalBytes - ImportStatus.doneBytes) / rate / 1000);
+    if (seconds < 60) return `约 ${seconds} 秒`;
+    if (seconds < 3600) return `约 ${Math.round(seconds / 60)} 分钟`;
+    return `约 ${(seconds / 3600).toFixed(1)} 小时`;
+  }
+
+  static fail(message: string): void {
+    ImportStatus.error = message;
+    ImportStatus.active = false;
+  }
+
+  static finish(): void {
+    ImportStatus.active = false;
+    ImportStatus.phase = '';
+  }
+}
+
+interface ImportSample {
+  t: number;
+  bytes: number;
+}
+
 /** Read the cached metadata, or null when it is absent or unreadable. */
 function readMeta(root: string): GameMeta | null {
   try {
