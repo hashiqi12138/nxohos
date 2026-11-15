@@ -122,3 +122,14 @@ rule). Related: [DEVICE.md](DEVICE.md), [BUILDING.md](BUILDING.md), [REPOS.md](R
   (signature → cause → fix or status), before the next sync lands.
 * TEMP diagnostic logs die with the fix that made them obsolete.
 * Any new Windows-host quirk goes here (f), not into folklore.
+
+## (h) [RED] unknown record op 59 (Breath of the Wild, 2026-11-15)
+
+**Signature**: [dm] [RED] [vk] unknown record op 59
+**Source**: dm/gfx/vk/gfx_vk_exec.c, the replay switch's default (VKRED_ONCE 82).
+**Triage**: op 59 is OP_PATCH_SIZE (the OP_ table in dm/gfx/nvn/nvn_obj.h; recorded by 
+vnCommandBufferSetPatchSize).
+BOTW sets the tessellation patch size once at boot. The Vulkan replay stage has no tessellation (the Metal side skips
+tessellated draws too), so the op is recorded and ignored: a case OP_PATCH_SIZE: break; in the switch keeps it out of
+the unknown-op default. No draw content is affected while the game draws no tessellated geometry.
+**Fix**: the no-op case, marked with an OHOS comment (the patch exporter claims the file through it). Status: fixed.

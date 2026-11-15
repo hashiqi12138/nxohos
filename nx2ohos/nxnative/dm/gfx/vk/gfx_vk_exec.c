@@ -2442,6 +2442,10 @@ static void exec_ops(const uint8_t *p) {
         case OP_TF_BIND: { const p_tf_bind *b = (const p_tf_bind *)a; if (b->index >= 0 && b->index < 4) g_tf[b->index] = *b; break; }
         case OP_TF_STATE: if (!V.has_xfb) VKRED_ONCE(80, "transform feedback: the device has none, its draws write nothing"); tf_state((const p_tf_state *)a); break;
         case OP_VP_SWIZZLE: { const p_vp_swizzle *b = (const p_vp_swizzle *)a; memcpy(S.vp_sw[b->first], b->sw, 4 * (size_t)b->n); break; }
+        // OHOS: OP_PATCH_SIZE (nvnCommandBufferSetPatchSize) has no Vulkan counterpart here - tessellation is not
+        // a replay stage on this backend (the Metal side skips tessellated draws too, nvn_mtl.m's draw gate);
+        // BOTW sets it once at boot. Recorded and ignored, so the op does not fall into the unknown-op default.
+        case OP_PATCH_SIZE: break;
         default: VKRED_ONCE(82, "unknown record op %u", h.op); break;
         }
         p += h.size;
