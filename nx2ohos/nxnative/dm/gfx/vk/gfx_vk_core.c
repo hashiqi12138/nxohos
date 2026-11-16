@@ -439,9 +439,14 @@ enum { GW_SUB = 64 };
 static vksub_t g_slot[NSLOT]; static int g_cur = -1; uint64_t g_cmd_gen;   // g_cmd_gen: main command buffers begun (gfx_vk_exec.c bind cache)
 static void pools_copy_back(const struct vksub *s) {
     if (!s->ngw) return;   // the submission wrote nothing the GPU could have changed: the guest's pages already hold the truth (the sync before it copied them out)
-    { static int n; if (n < 3) { n++; char b[400]; int o = 0; uint64_t tot = 0;
-        for (int k = 0; k < s->ngw; k++) { tot += s->gw[k].hi - s->gw[k].lo; if (o < 300) o += snprintf(b + o, sizeof b - (size_t)o, " %#llx+%llu", (unsigned long long)s->gw[k].lo, (unsigned long long)(s->gw[k].hi - s->gw[k].lo)); }
-        VKLOG("copy-back: %d GPU write ranges, %.1f MB total:%s", s->ngw, tot / 1048576.0, b); } }
+    { static int n; uint64_t tot0 = 0;
+        for (int k = 0; k < s->ngw; k++) tot0 += s->gw[k].hi - s->gw[k].lo;
+        // The first three copy-backs and any big one: a whole-pool copy-back (a pool the CPU cached - the ranges
+        // gate did not take) shows here as megabytes in one range, and that is the number that decides whether a
+        // scene is playable. The small ones stay silent after the third.
+        if (n < 3 || tot0 >= (16u << 20)) { n++; char b[400]; int o = 0;
+        for (int k = 0; k < s->ngw; k++) { if (o < 300) o += snprintf(b + o, sizeof b - (size_t)o, " %#llx+%llu", (unsigned long long)s->gw[k].lo, (unsigned long long)(s->gw[k].hi - s->gw[k].lo)); }
+        VKLOG("copy-back: %d GPU write ranges, %.1f MB total:%s", s->ngw, tot0 / 1048576.0, b); } }
     pthread_rwlock_rdlock(&g_pool_mu);
     for (int i = 0; i < g_npool; i++) { vkpool_t *p = &g_pool[i]; if (!p->shadow || !p->synced) continue;
         int touched = 0;

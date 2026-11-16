@@ -280,6 +280,14 @@ NVN(nvnMemoryPoolInitialize, NVNboolean, NVNmemoryPool *p, const NVNmemoryPoolBu
     o->magic = MAGIC('P', 'O', 'O', 'L'); o->flags = s->flags; o->mem = s->mem; o->size = s->size; o->vp = NULL; o->vmode = 0;
     if (!o->mem && (o->flags & 0x200)) { uint8_t *vr = vpool_reserve(o); if (vr) o->mem = vr; }   // a virtual pool's own address range until its first mapping decides (see MapVirtual)
     else if (o->mem) { mtl_pool_add(o->mem, o->size); nvn_dirty_add_range(o->mem, o->size); }
+    // The pool's NVN flags reach the backend: a CPU-uncached pool (CPU_UNCACHED) is one the game writes and the GPU
+    // reads, and the game reads GPU results from cached memory - on a backend with its own GPU copy (Vulkan without
+    // zero-copy: every pool a copied pool) that is the pool whose copy-back is by the ranges the GPU wrote instead of
+    // the whole pool. Without this no pool ever carried its flags, and Breath of the Wild's 115 MB fog pool was
+    // memcpy'd back whole after every submission: 350 ms a frame, 3 fps (measured 2026-11-16). Weak: the Metal backend
+    // (nvn_mtl.m) defines nothing - its buffers share the memory, no copy-back exists - so the call is skipped there.
+    if (o->mem) { extern void vk_pool_set_flags(const void *, int) __attribute__((weak));
+        if (vk_pool_set_flags) vk_pool_set_flags(o->mem, o->flags); }
     if (o->mem && !(o->flags & 0x200)) dm_device_share(o->mem, o->size, 1);   // the GPU maps the storage: the host refuses to unmap it until Finalize, as Horizon does (hle_svc.c)
     if (!o->mem && !(o->flags & 0x200)) LOG("[RED] MemoryPoolInitialize: non-virtual pool has no storage flags=%#x size=%#llx", o->flags, o->size);
     if (getenv("DM_NVN_VLOG")) { LOG("[nvn] MemoryPool %p mem=%p size=%#llx flags=%#x", (void *)p, (void *)o->mem, (unsigned long long)o->size, o->flags); void dm_backtrace(uint64_t fp); dm_backtrace((uint64_t)__builtin_frame_address(0)); }
