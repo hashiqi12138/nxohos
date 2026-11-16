@@ -152,10 +152,13 @@ hash          24.6 ms / 720 帧 = 0.03 ms/帧
 
 | 开关 | 作用 |
 |---|---|
-| 默认 | 每秒 `fps: N frames/s, avg X ms, max Y ms, N slow` |
+| 默认 | 每秒 `fps: N frames/s, avg X ms, N slow`；角标实时显示 |
 | `DM_FPS_TARGET=30` | 把 frame step 锁在 30fps，不再在 20/30 之间震荡 |
 | `DM_VK_PROF_SLOW=1` | 打开 replay 内部分解 |
 | `DM_VK_PROF_MS=8` | 降低分解输出阈值（默认 40ms，本机 replay 只有 8.5ms 达不到） |
+| `DM_VK_PASS_TIMES=1` | 每 600 帧打各 pass 的 GPU 时间排行 |
+| `DM_VK_CB_DRAWS=32` | **每 32 draws 切一次 command buffer，让 GPU 与录制重叠**（见 §7） |
+| `DM_VK_SETSPLIT=1` | 只重绑变化的 descriptor set（本机测无差别，Maleoon 的 bind 不是大头） |
 | `DM_LONGFRAME=0` | 关掉单帧慢日志 |
 
 这些开关写在游戏目录的 `env.txt`：
@@ -163,9 +166,41 @@ hash          24.6 ms / 720 帧 = 0.03 ms/帧
 ```
 DM_LANG=en-US
 DM_FPS_TARGET=30
-DM_VK_PROF_SLOW=1
-DM_VK_PROF_MS=8
+DM_PRESENT_INTERVAL=display
+DM_VK_CB_DRAWS=32
 ```
+
+---
+
+## 7. 突破：command buffer 切片让 GPU 与 CPU 重叠（2026-11-16 晚）
+
+### 发现过程
+
+帧功 p50 40ms 的分解是 `replay CPU 18ms + GPU 15.5ms + 等待 6.5ms`。**两者相加刚好超过 33.3ms 预算**——它们是串行的。
+
+`DM_VK_CB_DRAWS`（默认 128）决定每多少 draws 切一次 command buffer 把已录制的部分提交给 GPU。**BOTW 每帧只有 87 draws**，意味着一整帧录完 GPU 才开始跑：CPU 录制时 GPU 空闲，GPU 跑时 CPU 空闲。
+
+### 测量（同场景 300 帧 p50）
+
+| CB_DRAWS | 帧功 p50 | fps 中位 | >=30fps 占比 |
+|---|---|---|---|
+| 128（默认） | 40.05 ms | 26 | ~30% |
+| **32** | **33.32 ms** | **31** | **96%** |
+| 16 | 33.31 ms | 31 | 96%（GPU 涨到 17.3，切太细） |
+
+**32 是甜点**：87 draws 的帧切 2-3 次，CPU 录后半段时 GPU 跑前半段。100 秒长跑：中位 30、均值 30.1、87% 的秒达到 30fps（min 21 是加载段）。
+
+### 安全性
+
+- 切片只发生在 **pass 边界**（`begin_pass` 里 `pass_open == 0` 时），有深度缓冲的 pass 有额外的 LRZ 保护规则
+- 60 秒 + 100 秒两轮游戏实测，画面截屏对照无误，无渲染 RED 日志
+- 上游注释：Xenoblade（2000 draws/帧）在 128 下平衡——**所以不改全局默认，留在 env.txt per-game 配置**
+
+### 剩余瓶颈（p95 41.7ms 的慢帧）
+
+- 转镜头/移动时 submit+present 升到 22-39ms（场景复杂度上升，draw 数涨）
+- GPU p95 20.9ms：1920x1080 深度 pass（9 draws，4.4ms）+ 单 draw 高度场 pass（1.3ms）占 6ms
+- replay CPU 18ms 里的 vkCmd 调用本身（87 draws × 动态状态）是下一个目标
 
 ---
 
