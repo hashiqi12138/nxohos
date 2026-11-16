@@ -25,10 +25,15 @@ def test_du_and_dd_keep_the_deletion(daily_sync):
 
 
 def test_docs_and_github_conflicts_go_to_upstream(daily_sync):
-    """docs/ and .github/ are carried as the upstream's copy: a conflict inside them takes upstream's side."""
-    keep, upstream, human = daily_sync.classify(['DU docs/a.md', 'DD .github/workflows/tests.yml', 'UU docs/b.md'])
+    """docs/, .github/ and scripts/ are carried as the upstream's copy: a conflict inside them takes upstream's side.
+
+    scripts/ joined them because the porter imports that script's siblings (pack_dump, pack_nup) at run time:
+    dropping them broke every `porter inspect` and `porter port` with ModuleNotFoundError."""
+    keep, upstream, human = daily_sync.classify(['DU docs/a.md', 'DD .github/workflows/tests.yml', 'UU docs/b.md',
+                                                 'DU scripts/pack_dump.py', 'UU scripts/build_ipa_from_nsp.py'])
     assert keep == []
-    assert [p for _, p in upstream] == ['docs/a.md', '.github/workflows/tests.yml', 'docs/b.md']
+    assert [p for _, p in upstream] == ['docs/a.md', '.github/workflows/tests.yml', 'docs/b.md',
+                                        'scripts/pack_dump.py', 'scripts/build_ipa_from_nsp.py']
     assert human == []
 
 

@@ -40,17 +40,18 @@ def log(msg):
 def classify(status_lines):
     """git status --porcelain conflict codes: DU/DD keep the deletion, everything else needs a human.
 
-    docs/ and .github/ are the exception: the fork carries them as the upstream's copy (AGENTS.md "kept, as
-    reference"), so a conflict inside them resolves to the upstream side - they are checked out from upstream/main
-    and staged, not deleted, and not a human's problem either. Only a file this fork deleted outside those trees
-    keeps its deletion.
+    docs/, .github/ and scripts/ are the exception: the fork carries them as the upstream's copy (AGENTS.md "kept as
+    the upstream's"), so a conflict inside them resolves to the upstream side - they are checked out from upstream/main
+    and staged, not deleted, and not a human's problem either. scripts/ joined them because the porter imports its
+    NSP script's siblings (pack_dump, pack_nup) at run time: dropping them broke every `porter inspect` and
+    `porter port` with ModuleNotFoundError. Only a file this fork deleted outside those trees keeps its deletion.
     """
     keep_del, human, upstream = [], [], []
     for ln in status_lines:
         ln = ln.rstrip('\n')
         if len(ln) < 4: continue
         code, path = ln[:2], ln[3:].strip()
-        ref = path.startswith('docs/') or path.startswith('.github/')
+        ref = path.startswith(('docs/', '.github/', 'scripts/'))
         if ref: upstream.append((code, path))
         elif code in ('DU', 'DD'): keep_del.append(path)
         else: human.append((code, path))
@@ -78,9 +79,11 @@ def self_test():
     assert hit and '8d89c3cdaabbccddeeff00112233445566778899' in moved and '(short 8d89c3cd)' in moved
     assert 'c365e59f' not in moved.split('(short')[0] or True   # the old short only inside the replaced comment
     keep, ups, hum = classify(['DU docs/reference/rendering.md', 'UU dm/host/hle_time.c', 'DD docs/old.md',
-                               'DU .github/workflows/tests.yml', 'UU docs/agents/04-graphics.md'])
+                               'DU .github/workflows/tests.yml', 'UU docs/agents/04-graphics.md',
+                               'DU scripts/pack_dump.py', 'UU scripts/build_ipa_from_nsp.py'])
     assert keep == [] and hum == [('UU', 'dm/host/hle_time.c')]
-    assert [p for _, p in ups] == ['docs/reference/rendering.md', 'docs/old.md', '.github/workflows/tests.yml', 'docs/agents/04-graphics.md']
+    assert [p for _, p in ups] == ['docs/reference/rendering.md', 'docs/old.md', '.github/workflows/tests.yml',
+                                   'docs/agents/04-graphics.md', 'scripts/pack_dump.py', 'scripts/build_ipa_from_nsp.py']
     keep, ups, hum = classify(['DU dm/games/01006F8002326000/README.md'])
     assert keep == ['dm/games/01006F8002326000/README.md'] and ups == [] and hum == []
     print('daily_sync self-test: ok')

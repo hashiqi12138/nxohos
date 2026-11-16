@@ -17,10 +17,19 @@
 - iOS builds are unsigned IPAs that the user sideloads and tests; diagnostics come back as the app's `Documents/log.txt`. Do not sign or install builds on the user's devices.
 - Commit only when asked, with `git -c user.name=seedds -c user.email=seedds@gmail.com commit`.
 
-## The upstream's docs/ and .github/ are kept, as reference
+## The upstream's docs/, .github/ and scripts/ are kept
 
 This fork carries the upstream's `docs/` and `.github/` trees. They describe the **upstream Mac/iOS port**, and nothing in this OHOS port's build reads them - the compile (`dm/ohos/build_ohos.py`) includes no doc, and GitHub only executes workflows from the **outer repository's** `.github/workflows` (this nested repo's `tests.yml`, `lint-*.yml` etc. sit inert). Treat them as a reference shelf:
 
 - `docs/agents/*.md`, `docs/development.md`, `docs/reference/*` - the upstream's bring-up and debugging lore (Metal, Mac devices, Mac-hosted shaders). Paths, tools and verdicts inside describe that port; an OHOS answer to the same problem may differ (see our `nx2ohos/docs/ohos/` for this port's own design notes).
 - `.github/workflows/*.yml` - the upstream's CI. **Not executed here.** This port's gates live in the outer repo: `ci-ohos.yml` (the patch queue against the pinned upstream SHA), `ohos-unit-tests.yml` (the 90% coverage gate over dm/tools and dm/ohos) and `unit-tests.yml` (the ohos-port T0 suite). Nothing in this tree needs a change for those to keep running.
-- The daily sync bot no longer keep-deletes these trees on a merge (they were first kept on 2026-11-16); a merge conflict inside `docs/` resolves to the **upstream** side, since we do not edit upstream docs from this fork.
+- `scripts/` is kept for a different reason: the porter imports `build_ipa_from_nsp.py` as a library, and that
+  script imports its siblings at run time - `pack_dump`, `pack_nup`, `tree_tar`, `romfs`, `nso`, `shader_lib`,
+  `shader_cache`, `vol_space`, `proc_group`, `run_saves`. Cutting the folder to the one file broke every
+  `porter inspect` and `porter port` with `ModuleNotFoundError: No module named 'pack_dump'` (measured
+  2026-11-16). The upstream's other scripts there (`bench.py`, `bug_report.py`, `regress.py`, ...) come along;
+  they are small and are the upstream's own.
+- The daily sync bot no longer keep-deletes these trees on a merge (they were first kept on 2026-11-16, and
+  `scripts/` joined them the same day); a merge conflict inside any of them resolves to the **upstream** side,
+  since we do not edit the upstream's own copies from this fork. This port's edits to a shared file live in
+  `dm/ohos/patches/` instead, and must carry an `OHOS` marker for the export to queue them.
