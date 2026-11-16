@@ -105,32 +105,7 @@
  
  static void build_symhash(module_t *m);
  static void parse_dynamic(module_t *m) {
-@@ -224,24 +306,12 @@
-             if (!g_fidx[j]) { g_fidx[j] = i + 1; break; }
-             if (!strcmp(g_force[g_fidx[j] - 1].name, g_force[i].name)) die("duplicate entry in the forced takeover list: %s", g_force[i].name);
-         }
--    for (unsigned i = 0; i < g_nforce; i++)   // an alias binds to the guest's definition: a target the host takes over would bypass that take-over
--        if (g_force[i].to)
--            for (unsigned j = sym_hash(g_force[i].to) & g_fmask; g_fidx[j]; j = (j + 1) & g_fmask)
--                if (!strcmp(g_force[g_fidx[j] - 1].name, g_force[i].to)) die("forced alias %s: its target %s is itself taken over", g_force[i].name, g_force[i].to);
- }
- static void *force_lookup(const char *name) {
-     if (!g_fmask) return NULL;
-     for (unsigned j = sym_hash(name) & g_fmask; g_fidx[j]; j = (j + 1) & g_fmask) {
-         unsigned i = g_fidx[j] - 1;
-         if (!strcmp(g_force[i].name, name)) {
--            if (g_force[i].to) {   // a guest alias (hle.h HLE_FORCE_ALIAS); the caller holds g_modules_mu or is relocating at startup, as for resolve_sym
--                void *p = loaded_sym(g_force[i].to);
--                if (!g_force_hits[i]++) {
--                    if (!p) LOG("[RED] forced alias %s: no loaded module defines %s; bound without the alias", name, g_force[i].to);
--                    else if (g_flag.imports) LOG("force %s -> %s  (%s)", name, g_force[i].to, g_force[i].why);
--                }
--                void *hlecount_wrap(const char *, const char *, void *); return p ? hlecount_wrap("ALIAS", name, p) : NULL;
--            }
-             if (!g_force_hits[i]++ && g_flag.imports) LOG("force %s  (%s)", name, g_force[i].why);
-             void *hlecount_wrap(const char *, const char *, void *); return hlecount_wrap("FORCE", name, g_force[i].fn);   // A counting stub when DM_HLECOUNT is set
-         }
-@@ -262,9 +332,15 @@
+@@ -262,9 +344,15 @@
      char path[1024]; snprintf(path, sizeof path, "%s/%s.fixups.tsv", dir, m->name);
      FILE *f = fopen(path, "r");
      if (!f) die("open %s", path);
@@ -147,7 +122,7 @@
          if (sscanf(line, "# %47s %lx", key, &v) != 2) die("%s: the output comes from an old rewriter; rewrite the modules again with dm/tools/patch_nso.py", path);
          if (!strcmp(key, "PATCH_OFF")) m->patch_off = strtoll(line + 2 + strlen(key), NULL, 16);   // may be negative (patch area before the base)
          else if (!strcmp(key, "IMAGE_SIZE")) m->image_size = v;
-@@ -307,6 +383,9 @@
+@@ -307,6 +395,9 @@
          }
      }
      fclose(f);
@@ -157,7 +132,7 @@
      if (!m->patch_off || m->key_page_off % 0x4000 || m->key_page_size != 0x4000 || seen != (1u << KEY_N) - 1)
          die("%s: the output comes from an old rewriter; rewrite the modules again with dm/tools/patch_nso.py", path);
      if (m->patch_off < 0 && (!m->image_size || !m->file_image_len || m->file_image_len % 0x4000 || m->patch_off % 0x4000 || m->key_page_off + m->key_page_size > m->image_size))
-@@ -390,6 +469,9 @@
+@@ -390,6 +481,9 @@
      uint64_t *page = (uint64_t *)(m->base + m->key_page_off);
      memset(page, 0, m->key_page_size);
      for (unsigned i = 0; i < KEY_N; i++) page[m->key_idx[i]] = (uint64_t)key_value(i) * 8;

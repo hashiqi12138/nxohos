@@ -1,8 +1,8 @@
-# ci-ohos.yml — P1.2 CI compile gate (ROADMAP.md P1.2). Runs on every PR to main and every push to
+﻿# ci-ohos.yml 鈥?P1.2 CI compile gate (ROADMAP.md P1.2). Runs on every PR to main and every push to
 # main, on windows-latest (the host tooling is Windows-oriented: DevEco, cp936 consoles, the serial
 # rewriter). Core gate = patch-queue guard + Python syntax check, well under 10 minutes.
 #
-# ── UPSTREAM_REF pin ─────────────────────────────────────────────────────────────────────────
+# 鈹€鈹€ UPSTREAM_REF pin 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 # The guard (nx2ohos/nxnative/dm/tools/test_ohos_patches.py) checks that the OHOS patch queue
 # (dm/ohos/patches, 16 patches) applies cleanly to upstream seedds/nxnative main and reproduces the
 # committed working files. The nested repo's .git is NOT tracked in this outer repo (nx2ohos/nxnative
@@ -11,8 +11,8 @@
 # via --upstream-dir, the script's supported offline mode ("an already-extracted upstream dm/").
 #
 # UPSTREAM_REF must be the FULL 40-char SHA: GitHub serves fetch-by-object only for full SHAs
-# (`git fetch origin c365e59f` → "couldn't find remote ref"; the full SHA fetches fine — verified).
-# The committed default, aa9e0ff71d9315b5ada964ab3d8e0ecb6f9b9481 (short aa9e0ff7), is the last
+# (`git fetch origin c365e59f` 鈫?"couldn't find remote ref"; the full SHA fetches fine 鈥?verified).
+# The committed default, 83a74d7dd01ad40fb4b8cc533d453eb720a7f1ab (short aa9e0ff7), is the last
 # upstream point the nested fork merged (ROADMAP: "Nested main = 60f89e84 (upstream c365e59f
 # merged)"); the committed queue was re-exported against exactly this tree and is green.
 #   - The daily sync bot (P1.1) moves the pin forward in its sync PR, after re-running
@@ -22,42 +22,42 @@
 #   - A pin that upstream no longer serves makes the fetch step fail loudly (never a silent pass);
 #     move the pin to the newest merged point.
 #
-# ── drift vs failure (guard exit semantics, read from the script) ────────────────────────────
+# 鈹€鈹€ drift vs failure (guard exit semantics, read from the script) 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 # The guard exits 1 ONLY for patch-queue failures: a patch that no longer applies to upstream, or
 # one that applies but does not reproduce the committed working file (stale queue / accidental
-# edit). Upstream DRIFT — shared files upstream evolved that our fork has not synced yet — is
+# edit). Upstream DRIFT 鈥?shared files upstream evolved that our fork has not synced yet 鈥?is
 # printed ("N upstream-drift files pending sync") and is exit 0: informational, the sync bot's
 # business, not the gate's. A red gate therefore means "this PR broke the port surface", never
 # "upstream moved". Verified against both heads:
-#   pinned  c365e59f… → "16 patches checked, 0 failures, 0 drift"  exit 0
-#   current upstream main → "16 checked, 5 failures, 114 drift"     exit 1 (too fresh for the queue)
+#   pinned  c365e59f鈥?鈫?"16 patches checked, 0 failures, 0 drift"  exit 0
+#   current upstream main 鈫?"16 checked, 5 failures, 114 drift"     exit 1 (too fresh for the queue)
 #
-# ── patch.exe on windows-latest ──────────────────────────────────────────────────────────────
+# 鈹€鈹€ patch.exe on windows-latest 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 # The guard shells out to `patch -p1 -f -s`. We use Git for Windows' bundled GNU patch
-# (C:\Program Files\Git\usr\bin\patch.exe, GNU patch 2.7.6 — the same binary family the dev
+# (C:\Program Files\Git\usr\bin\patch.exe, GNU patch 2.7.6 鈥?the same binary family the dev
 # machines run) instead of `choco install patch` or MSYS2: it is already on the runner image (no
 # extra install minute) while choco's standalone `patch` is a different, less-maintained port.
 # That directory is not on the runner's default PATH (only Git\cmd is), so the guard step prepends
 # it step-locally (not via GITHUB_PATH, so MSYS tools cannot shadow Windows ones in later steps);
 # if the Git layout ever moves, the step falls back to `choco install -y patch`.
 # The upstream temp repo sets core.autocrlf=false so the fetched upstream files stay LF, matching
-# the nested tree (nx2ohos/.gitattributes: "* text=auto eol=lf") — GNU patch is line-ending strict.
+# the nested tree (nx2ohos/.gitattributes: "* text=auto eol=lf") 鈥?GNU patch is line-ending strict.
 #
-# ── capstone ─────────────────────────────────────────────────────────────────────────────────
+# 鈹€鈹€ capstone 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 # The guard itself is stdlib-only. capstone is installed for parity with the rewriter
-# (dm/tools/patch_nso.py hard-rejects capstone 6 — it needs the 5.x API names — so the pin is the
+# (dm/tools/patch_nso.py hard-rejects capstone 6 鈥?it needs the 5.x API names 鈥?so the pin is the
 # newest 5.x on PyPI, the same major the dev machines run).
 #
-# ── the optional host build (manual-for-now) ─────────────────────────────────────────────────
-# The full build (build_ohos.py --lib → libdmhost.so) needs an OHOS SDK (aarch64-linux-ohos clang
+# 鈹€鈹€ the optional host build (manual-for-now) 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+# The full build (build_ohos.py --lib 鈫?libdmhost.so) needs an OHOS SDK (aarch64-linux-ohos clang
 # under native/llvm/bin) plus glslc. build_ohos.py discovers SDKs only from local paths and env
-# vars (its find_sdk: --sdk / OHOS_SDK / DEVECO_SDK_HOME / DevEco install dirs) — this repo holds
+# vars (its find_sdk: --sdk / OHOS_SDK / DEVECO_SDK_HOME / DevEco install dirs) 鈥?this repo holds
 # no public SDK URL, and none is verifiable: Huawei distributes the OHOS SDK from its signed-in
-# developer portal (probed public mirrors → 404/403), and glslc ships no official standalone
+# developer portal (probed public mirrors 鈫?404/403), and glslc ships no official standalone
 # binary. Rather than hardcode a guess, the build job stays SKIPPED (grey, never a fake green)
 # until repository variables are set:
-#   vars.OHOS_SDK_URL — a zip whose tree contains native/llvm/bin/clang.exe (any nesting)
-#   vars.GLSLC_URL     — a zip containing glslc.exe
+#   vars.OHOS_SDK_URL 鈥?a zip whose tree contains native/llvm/bin/clang.exe (any nesting)
+#   vars.GLSLC_URL     鈥?a zip containing glslc.exe
 # With a stable mirror in place the job flips on with no file edit. Until then the honest full
 # build is the documented manual step on a DevEco machine (P1.3).
 
@@ -77,7 +77,7 @@ env:
   UPSTREAM_REPO: https://github.com/seedds/nxnative.git
   # Full 40-char SHA required (see header); committed default = last merged upstream point.
   # The `UPSTREAM_REF` repo variable overrides it without a file edit.
-  UPSTREAM_REF: ${{ vars.UPSTREAM_REF || 'aa9e0ff71d9315b5ada964ab3d8e0ecb6f9b9481' }}
+  UPSTREAM_REF: ${{ vars.UPSTREAM_REF || '83a74d7dd01ad40fb4b8cc533d453eb720a7f1ab' }}
 
 jobs:
   gate:
@@ -134,7 +134,7 @@ jobs:
           $rc = $LASTEXITCODE
           Get-Content $log
           # Red = a patch fails to apply / no longer reproduces the committed file.
-          # Upstream drift alone exits 0 (informational — the daily sync bot owns it).
+          # Upstream drift alone exits 0 (informational 鈥?the daily sync bot owns it).
           exit $rc
 
       - name: Syntax-check the Python tools
@@ -161,7 +161,7 @@ jobs:
           if-no-files-found: warn
 
   host-build:
-    name: Host build libdmhost.so (manual-for-now — skipped without SDK vars)
+    name: Host build libdmhost.so (manual-for-now 鈥?skipped without SDK vars)
     needs: gate
     runs-on: windows-latest
     timeout-minutes: 45
@@ -194,7 +194,7 @@ jobs:
           $clang = Get-ChildItem -Recurse -Filter clang.exe $dst |
             Where-Object { $_.FullName -match 'native\\llvm\\bin' } | Select-Object -First 1
           if (-not $clang) { Write-Host 'no native/llvm/bin/clang.exe under the extracted SDK zip'; exit 1 }
-          # clang.exe lives at <root>/native/llvm/bin/clang.exe → walk up 3 dirs (bin→llvm→native→root)
+          # clang.exe lives at <root>/native/llvm/bin/clang.exe 鈫?walk up 3 dirs (bin鈫抣lvm鈫抧ative鈫抮oot)
           $sdk = $clang.Directory.Parent.Parent.Parent.FullName
           if (-not (Test-Path (Join-Path $sdk 'native/llvm/bin/clang.exe'))) {
             Write-Host "walked up to '$sdk' but native/llvm/bin/clang.exe is not there"; exit 1

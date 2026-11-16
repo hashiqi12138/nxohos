@@ -436,15 +436,18 @@ static void concurrent_bases(int fail) {
         }
     });
     EXPECT("concurrent: first compiler entered", 0, dispatch_semaphore_wait(gate->entered, dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC)));
-    // An unrelated key must complete while the first remains blocked.
+    // An unrelated key must complete while the first remains blocked. It has the held compile's stage functions, so it is not captured beside it (fn_claim, Metal crashes on
+    // that): after the wait the plain compiler builds it
+    int plain0 = g_fn_plain; g_fn_wait_ms = 200;
     MTLRenderPipelineDescriptor *other = [ds[0] copy]; other.vertexDescriptor = [other.vertexDescriptor copy]; other.vertexDescriptor.layouts[16].stride = 1024;
     dispatch_group_t separate = dispatch_group_create();
     dispatch_group_async(separate, dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{ @autoreleasepool { pso_build(other, 0, NULL); } });
     EXPECT("concurrent: unrelated base progresses", 0, dispatch_group_wait(separate, dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC)));
+    EXPECT("concurrent: the unrelated base built without the archive", 1, g_fn_plain - plain0); g_fn_wait_ms = FN_WAIT_MS;
     dispatch_semaphore_signal(gate->release);
     dispatch_group_wait(group, DISPATCH_TIME_FOREVER); dispatch_group_wait(separate, DISPATCH_TIME_FOREVER);
     EXPECT("concurrent: all callers receive result", 8, good);
-    if (!fail) EXPECT("concurrent: one compile per base", 2, gate->calls);
+    if (!fail) EXPECT("concurrent: one compile per base, the unrelated one by the plain compiler", 1, gate->calls);
     EXPECT("concurrent: no unfinished builds", 0, g_pbase_pending.n);
     ep->comp = gate->compiler;
     if (!fail) return;
@@ -656,6 +659,34 @@ int main(int argc, char **argv) { @autoreleasepool {
         EXPECT("cold restart: compiled in the cold start, from the archive in the next", expect_archived, (int)(g_pb_archived - arch0));
         EXPECT("cold restart: compiled where not in the archive", PSO_ARCH_COMPACT + 1 - expect_archived, (int)(g_pb_built - built0));
         EXPECT("cold restart: the index asks one file for each base found and none for a miss", expect_archived, (int)(g_arch_asks - asks0));
+        [NSFileManager.defaultManager removeItemAtPath:@(dir) error:nil];
+        printf("t_pso_archive %s: %d checks, %d failed\n", argv[1], checks, failed);
+        return failed != 0;
+    }
+    if (argc == 3 && !strncmp(argv[1], "--sweep-", 8)) {   // across fresh processes: two files of four bases; the next start takes the first file's alone, so once the prewarm and the
+        // pairs were asked for (arch_sweep's two conditions), the second leaves the archive (DM_OBSOLETE: into its folder), with its index
+        g_arch_period_max = 4; int seed = !strcmp(argv[1], "--sweep-seed");
+        pso4_init();
+        NSUInteger (^files)(void) = ^NSUInteger { return [[NSFileManager.defaultManager contentsOfDirectoryAtPath:@(argv[2]) error:nil] filteredArrayUsingPredicate:[NSPredicate predicateWithFormat:@"self ENDSWITH '.mtl4a'"]].count; };
+        for (int f = 0; f < (seed ? 2 : 1); f++) {
+            for (int i = 0; i < 4; i++) {
+                MTLRenderPipelineDescriptor *cd = desc(MTLPixelFormatRGBA8Unorm, 0, MTLPixelFormatRGBA8Unorm, MTLColorWriteMaskAll, 1);
+                cd.vertexDescriptor.layouts[16].stride = 16 * (i + 200 + 10 * f);
+                EXPECT("sweep: pipeline", 1, pso_build(cd, 0, &err) != nil);
+            }
+            dispatch_sync(g_arch_q, ^{ arch_flush(); }); arch_flush_wait();
+        }
+        if (seed) EXPECT("sweep: two files written", 2, (int)files());
+        else {
+            EXPECT("sweep: two files opened", 2, (int)g_arch_use.count);
+            EXPECT("sweep: every base from the archive", 4, (int)g_pb_archived);
+            atomic_store(&g_sweep_warm, 1); arch_sweep();
+            EXPECT("sweep: nothing goes before the pairs were asked for", 2, (int)files());
+            atomic_store(&g_sweep_pairs, 1); arch_sweep();
+            EXPECT("sweep: the file no base was taken from left the archive", 1, (int)files());
+            arch_sweep();
+            EXPECT("sweep: once", 1, (int)files());
+        }
         [NSFileManager.defaultManager removeItemAtPath:@(dir) error:nil];
         printf("t_pso_archive %s: %d checks, %d failed\n", argv[1], checks, failed);
         return failed != 0;
