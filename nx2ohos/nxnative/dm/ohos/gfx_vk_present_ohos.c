@@ -413,6 +413,7 @@ uint64_t mtl_present(const tex_t *t, double period, const int crop[4], uint64_t 
             (fp.optimalTilingFeatures & (VK_FORMAT_FEATURE_BLIT_SRC_BIT | VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT)) == (VK_FORMAT_FEATURE_BLIT_SRC_BIT | VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT)) { im = sim; crop = NULL; } } }
     if (n % 600 == 0 && im) {   // on the replay/present caller, not the asynchronous window thread: g_vkst is plain replay-thread state
         extern struct { uint64_t draws, skip_prog, skip_rt, skip_pipe, passes, folded, dispatches, pipes_built, rt_kept, ns_exec, ns_desc, ns_pipe, max_pass_draws; } g_vkst;
+        void vk_pass_report(void); vk_pass_report();   // the per-pass GPU times, same cadence as the replay counters (nothing called it on this port)
         VkFormatProperties wfp; vkGetPhysicalDeviceFormatProperties(V.pd, im->fmt, &wfp);
         VKLOG("replay up to present %llu: draws %llu, skipped (no program %llu, no target %llu, no pipeline %llu), passes %llu, dispatches %llu; window texture %ux%u fmt %d layout %d pool %#llx+%#llx image %p features %#x",
               (unsigned long long)n, (unsigned long long)g_vkst.draws, (unsigned long long)g_vkst.skip_prog, (unsigned long long)g_vkst.skip_rt, (unsigned long long)g_vkst.skip_pipe,

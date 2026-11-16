@@ -155,6 +155,7 @@ struct Index {
   @State fpsAvg10: number = 0;             // the 10-second mean rate
   @State fpsVisible: boolean = true;        // the badge; tapping it toggles it (on by default: the readout is the point)
   private fpsTimer: number = -1;           // the poll's id, cleared on disappear
+  private keyProbeSeen: Set<string> = new Set<string>();   // P2.4: each key code logged once, for the gamepad probe
 
   /** The directory the game runs from: the selected title's folder, or the first installed one. */
   private activeRoot(filesDir: string): string {
@@ -721,6 +722,16 @@ struct Index {
   private onKey(event: KeyEvent): void {
     const key: number = event.keyCode;
     const down: boolean = event.type === KeyType.Down;
+    // P2.4 probe: a paired gamepad's axes reach the app some way this page does not handle yet (the user reports
+    // the sticks do nothing while the buttons work). Log every key event's code once, so one push of each control
+    // shows what the platform reports for it; the axis fields (if any) are named by KeyEvent's own declaration.
+    {
+      const seen: string = `${key}`;
+      if (!this.keyProbeSeen.has(seen)) {
+        this.keyProbeSeen.add(seen);
+        dmhost.log(`key probe: code=${key} type=${event.type} deviceId=${event.deviceId}`);
+      }
+    }
     // In edit mode keys belong to the editor: Esc (or Enter) saves and leaves; nothing reaches the game (P1.4).
     if (this.editMode) {
       if (down && (key === 1 || key === 2054)) this.exitEditMode(true);   // Esc, Enter

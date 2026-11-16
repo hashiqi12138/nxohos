@@ -582,10 +582,11 @@ void vk_prof_end(void) {
     extern uint64_t g_pkg_ns, g_pkg_n; uint64_t tot = tick() - g_prof_t0; g_prof_t0 = 0;
     { const char *th = getenv("DM_VK_PROF_MS"); uint64_t t = th ? (uint64_t)atoi(th) * 1000000ull : 40000000ull; if (tot < t) return; }
     double ms = 1e-6; uint64_t known = g_prof_ns[0] + g_prof_ns[1] + g_prof_ns[2] + g_prof_ns[3] + g_prof_ns[4] + g_prof_ns[5] + g_prof_ns[6] + g_prof_ns[7];
-    { extern uint64_t g_set_hits, g_set_new, g_ns_set_build, g_ns_set_hash, g_ns_set_new;
+    { extern uint64_t g_set_hits, g_set_new, g_ns_set_build, g_ns_set_hash, g_ns_set_new, g_set_memo, g_set_memo_bad;
       VKLOG("sets (present %llu): %llu reused, %llu new; hash %.1f ms, collect %.1f ms, alloc+write %.1f ms",
           (unsigned long long)g_tex_frame, (unsigned long long)g_set_hits, (unsigned long long)g_set_new,
-          g_ns_set_hash * 1e-6, g_ns_set_build * 1e-6, g_ns_set_new * 1e-6); }
+          g_ns_set_hash * 1e-6, g_ns_set_build * 1e-6, g_ns_set_new * 1e-6);
+      extern uint64_t g_set_memo, g_set_memo_bad; VKLOG("  set memo: %llu hits (%llu differences in verify mode)", (unsigned long long)g_set_memo, (unsigned long long)g_set_memo_bad); }
     VKLOG("slow replay (present %llu): %.1f ms; pipelines built here %llu in %.1f ms, textures %.1f ms (%llu packaged uploads, %.1f ms of it), pools sync %.1f ms, shader modules %.1f ms, pipeline binds %.1f ms, descriptor sets %.1f ms, cuts %.1f ms, compute pipelines %.1f ms, other %.1f ms",
           (unsigned long long)g_tex_frame, tot * ms, (unsigned long long)(g_vkst.pipes_built - g_prof_pipes0), g_prof_ns[0] * ms, g_prof_ns[1] * ms, (unsigned long long)(g_pkg_n - g_prof_npkg0),
           (g_pkg_ns - g_prof_pkg0) * ms, g_prof_ns[2] * ms, g_prof_ns[3] * ms, g_prof_ns[4] * ms, g_prof_ns[5] * ms, g_prof_ns[6] * ms, g_prof_ns[7] * ms, (tot > known ? tot - known : 0) * ms);
@@ -1368,7 +1369,15 @@ static void cbuf_desc(int st, const vkshader_t *s, const dmsv_bind *b, VkDescrip
 // DM_VK_X_NOSETMEMO=1 (live): always collected. DM_VK_X_SETVERIFY=1 (live): one hit in 64 is collected anyway and compared, [RED] on a difference
 enum { MEMO_CB = 16 };
 typedef struct { vkshader_t *s; uint64_t epoch, bind, ubo, ubd, tex, samp, h, um, im; uint32_t pool, binst, dofs[96]; int ncb; uint8_t ci[MEMO_CB], cpos[MEMO_CB]; VkDescriptorBufferInfo cd[MEMO_CB]; VkDescriptorSet set; } set_memo_t;
-static set_memo_t g_smemo[3]; static uint64_t g_bind_gen[6], g_ubo_gen[6];   // a stage's handles or storage buffers changed (bind_handles_rec, OP_BIND_SSBO), its uniform buffers (OP_BIND_UBO)
+// One memo slot per stage held only the last draw's set: a frame that alternates between two shaders on one stage
+// (Breath of the Wild alternates several) missed every time, and on this device 134 of 146 stage_set calls a frame
+// went to the full collect. Eight slots a stage, LRU by a tick counter, keep the single-slot rule (the epoch, the
+// stage's bindings, the texture/sampler/pool generations and the base instance must all match) while catching the
+// alternation. Measured before the change (2026-11-16, BOTW): memo 12 hits a frame of 146 calls; collect 1.6 ms
+// of a 38 ms frame.
+enum { MEMO_WAYS = 8 };
+static set_memo_t g_smemo[3][MEMO_WAYS]; static uint8_t g_smemo_tick[3];   // tick: LRU clock, a way is picked by (tick + i) % WAYS
+static uint64_t g_bind_gen[6], g_ubo_gen[6];   // a stage's handles or storage buffers changed (bind_handles_rec, OP_BIND_SSBO), its uniform buffers (OP_BIND_UBO)
 uint64_t g_set_memo, g_set_memo_bad;   // memo hits, and differences the verify mode found
 extern uint64_t g_ubd_gen; uint32_t vk_pool_gen(void);
 static int set_memo_ok(vkshader_t *s) {
@@ -1378,22 +1387,29 @@ static int set_memo_ok(vkshader_t *s) {
         s->setmemo = ok && ncb <= MEMO_CB ? 1 : 2; }
     return s->setmemo == 1;
 }
-static int set_memo_get(int st, vkshader_t *s, uint32_t *dofs) {
-    set_memo_t *m = &g_smemo[st];
-    if (m->s != s || m->epoch != g_set_epoch || m->bind != g_bind_gen[st] || m->tex != g_tex_gen || m->samp != __atomic_load_n(&g_samp_gen, __ATOMIC_ACQUIRE) || m->pool != vk_pool_gen() || m->binst != g_draw_binst) return 0;
+static set_memo_t *set_memo_get(int st, vkshader_t *s, uint32_t *dofs) {
+    set_memo_t *best = NULL;
+    for (int i = 0; i < MEMO_WAYS; i++) { set_memo_t *m = &g_smemo[st][i];
+        if (m->s != s || m->epoch != g_set_epoch || m->bind != g_bind_gen[st] || m->tex != g_tex_gen || m->samp != __atomic_load_n(&g_samp_gen, __ATOMIC_ACQUIRE) || m->pool != vk_pool_gen() || m->binst != g_draw_binst) continue;
+        best = m;   // keep the last matching way (the freshest of them is not tracked; a match is a match)
+        if (m->ubo == g_ubo_gen[st] && m->ubd == g_ubd_gen) break;   // the constant buffers are the same too: nothing to recheck
+    }
+    if (!best) return NULL;
+    set_memo_t *m = best;
     if (m->ubo != g_ubo_gen[st] || m->ubd != g_ubd_gen) {   // the constant buffers again: most draws move only their offsets
         for (int c = 0; c < m->ncb; c++) { VkDescriptorBufferInfo d; cbuf_desc(st, s, &s->b[m->ci[c]], &d);
-            if (d.buffer != m->cd[c].buffer || d.range != m->cd[c].range || (m->cpos[c] == 0xff && d.offset != m->cd[c].offset)) return 0;
+            if (d.buffer != m->cd[c].buffer || d.range != m->cd[c].range || (m->cpos[c] == 0xff && d.offset != m->cd[c].offset)) return NULL;
             if (m->cpos[c] != 0xff) m->dofs[m->cpos[c]] = (uint32_t)d.offset; }
         m->ubo = g_ubo_gen[st]; m->ubd = g_ubd_gen; }
     memcpy(dofs, m->dofs, sizeof *dofs * (size_t)s->ndyn); g_num_um = m->um; g_num_im = m->im;
-    return 1;
+    return m;
 }
-// dofs (at least s->ndyn entries): the dynamic offsets of the set's dynamic uniform buffers, in binding order as vkCmdBindDescriptorSets takes them
+    // dofs (at least s->ndyn entries): the dynamic offsets of the set's dynamic uniform buffers, in binding order as vkCmdBindDescriptorSets takes them
 static VkDescriptorSet stage_set(int st, vkshader_t *s, uint32_t *dofs) {
     int memo = st < 3 && !g_x_nosetmemo && !g_tracing && !g_var_now && !g_x_nosetc && !g_x_nodrvc && !g_ubolog_key && g_td_off < 0 && set_memo_ok(s), verify = 0;
     uint32_t vd[96]; uint64_t vum = 0, vim = 0;   // verify: what the memo gave
-    if (memo && set_memo_get(st, s, dofs)) { static unsigned nv; if (!g_x_setverify || ++nv % 64) { g_set_memo++; return g_smemo[st].set; }
+    set_memo_t *hit = memo ? set_memo_get(st, s, dofs) : NULL;
+    if (hit) { static unsigned nv; if (!g_x_setverify || ++nv % 64) { g_set_memo++; return hit->set; }
         verify = 1; memcpy(vd, dofs, sizeof *dofs * (size_t)s->ndyn); vum = g_num_um; vim = g_num_im; }
     uint64_t gtex = g_tex_gen, gsamp = __atomic_load_n(&g_samp_gen, __ATOMIC_ACQUIRE); uint32_t gpool = vk_pool_gen();   // before collecting: a change racing it (game thread) leaves the memo outdated
     VkDescriptorSet set = VK_NULL_HANDLE; struct { uint32_t b, o; int i; } dp[96]; int nd = 0; uint64_t tb0 = tick();
@@ -1491,10 +1507,17 @@ static VkDescriptorSet stage_set(int st, vkshader_t *s, uint32_t *dofs) {
         g_setc[k].h = h; g_setc[k].epoch = g_set_epoch; g_setc[k].l = s->dsl; g_setc[k].set = set; g_ns_set_new += tick() - tb2; }
     // verify: the same content (hash), integer-texel bindings and dynamic offsets as the memo gave. A lone difference in dofs alone can be a driver segment
     // copied again after its g_drvc entry was taken by another (the memo's copy is as good); anything repeated is a dependency the memo misses
-    if (verify && (h != g_smemo[st].h || g_num_um != vum || g_num_im != vim || memcmp(vd, dofs, sizeof *dofs * (size_t)s->ndyn))) { g_set_memo_bad++; static int n;
+    if (verify && (h != hit->h || g_num_um != vum || g_num_im != vim || memcmp(vd, dofs, sizeof *dofs * (size_t)s->ndyn))) { g_set_memo_bad++; static int n;
         if (n++ < 20) VKLOG("[RED] descriptor set memo: stage %d shader %016llx: a fresh set differs from the memo's (hash %016llx / %016llx, um %#llx / %#llx, im %#llx / %#llx, dynamic offsets %s)", st, (unsigned long long)s->key,
-                            (unsigned long long)h, (unsigned long long)g_smemo[st].h, (unsigned long long)g_num_um, (unsigned long long)vum, (unsigned long long)g_num_im, (unsigned long long)vim, memcmp(vd, dofs, sizeof *dofs * (size_t)s->ndyn) ? "differ" : "same"); }
-    if (memo) { set_memo_t *m = &g_smemo[st];   // (set_memo_ok: at most MEMO_CB constant buffers)
+                            (unsigned long long)h, (unsigned long long)hit->h, (unsigned long long)g_num_um, (unsigned long long)vum, (unsigned long long)g_num_im, (unsigned long long)vim, memcmp(vd, dofs, sizeof *dofs * (size_t)s->ndyn) ? "differ" : "same"); }
+    if (memo) {
+        // The way to fill: the one this shader last used (its bindings may differ only in the constant buffers' offsets,
+        // which the memo's dofs path handles), else the round-robin slot. A hit's way is reused so a shader keeps its own
+        // slot while other shaders take the others; a miss walks the tick, so eight shaders alternating on one stage each
+        // keep their sets instead of evicting one another.
+        set_memo_t *m = NULL;
+        for (int i = 0; i < MEMO_WAYS; i++) if (g_smemo[st][i].s == s && g_smemo[st][i].epoch == g_set_epoch) { m = &g_smemo[st][i]; break; }
+        if (!m) { m = &g_smemo[st][g_smemo_tick[st]++ % MEMO_WAYS]; }
         m->s = s; m->epoch = g_set_epoch; m->bind = g_bind_gen[st]; m->ubo = g_ubo_gen[st]; m->ubd = g_ubd_gen; m->tex = gtex; m->samp = gsamp; m->pool = gpool; m->binst = g_draw_binst;
         m->h = h; m->um = g_num_um; m->im = g_num_im; m->set = set; memcpy(m->dofs, dofs, sizeof *dofs * (size_t)s->ndyn); m->ncb = ncb; memcpy(m->ci, mci, (size_t)ncb); memcpy(m->cd, mcd, sizeof *mcd * (size_t)ncb);
         for (int c = 0; c < ncb; c++) { m->cpos[c] = 0xff; for (int j = 0; j < nd; j++) if (dp[j].i == mci[c]) m->cpos[c] = (uint8_t)j; } }
