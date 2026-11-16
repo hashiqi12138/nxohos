@@ -18,36 +18,46 @@ import pytest
 # ---- classify: the conflict codes ----
 
 def test_du_and_dd_keep_the_deletion(daily_sync):
-    keep, human = daily_sync.classify(['DU docs/a.md', 'DD docs/b.md'])
-    assert keep == ['docs/a.md', 'docs/b.md']
+    """Outside docs/ and .github/ (upstream's copy), a deleted file keeps its deletion."""
+    keep, upstream, human = daily_sync.classify(['DU dm/games/x/README.md', 'DD dm/old.txt'])
+    assert keep == ['dm/games/x/README.md', 'dm/old.txt']
+    assert upstream == [] and human == []
+
+
+def test_docs_and_github_conflicts_go_to_upstream(daily_sync):
+    """docs/ and .github/ are carried as the upstream's copy: a conflict inside them takes upstream's side."""
+    keep, upstream, human = daily_sync.classify(['DU docs/a.md', 'DD .github/workflows/tests.yml', 'UU docs/b.md'])
+    assert keep == []
+    assert [p for _, p in upstream] == ['docs/a.md', '.github/workflows/tests.yml', 'docs/b.md']
     assert human == []
 
 
 def test_a_content_conflict_needs_a_human(daily_sync):
-    keep, human = daily_sync.classify(['UU dm/host/hle.c'])
-    assert keep == []
+    keep, upstream, human = daily_sync.classify(['UU dm/host/hle.c'])
+    assert keep == [] and upstream == []
     assert human == [('UU', 'dm/host/hle.c')]
 
 
 def test_a_mixed_status_splits_by_code(daily_sync):
-    keep, human = daily_sync.classify([
+    keep, upstream, human = daily_sync.classify([
         'DU docs/x.md',
         'UU dm/host/y.c',
         'AA dm/new.c',
-        'DD docs/z.md',
+        'DD dm/gone/z.md',
     ])
-    assert keep == ['docs/x.md', 'docs/z.md']
+    assert keep == ['dm/gone/z.md']
+    assert [p for _, p in upstream] == ['docs/x.md']
     assert human == [('UU', 'dm/host/y.c'), ('AA', 'dm/new.c')]
 
 
 def test_short_lines_are_skipped(daily_sync):
-    keep, human = daily_sync.classify(['', 'U', 'DU'])
-    assert keep == [] and human == []
+    keep, upstream, human = daily_sync.classify(['', 'U', 'DU'])
+    assert keep == [] and upstream == [] and human == []
 
 
 def test_the_path_is_stripped_of_the_code_prefix(daily_sync):
-    keep, _h = daily_sync.classify(['DU   docs/spaced.md'])
-    assert keep == ['docs/spaced.md']
+    keep, _ups, _h = daily_sync.classify(['DU   dm/spaced.txt'])
+    assert keep == ['dm/spaced.txt']
 
 
 # ---- extract_pin ----

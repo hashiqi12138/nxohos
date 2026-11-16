@@ -139,14 +139,15 @@ def test_a_docs_conflict_keeps_the_deletion(env, monkeypatch):
 
 
 def test_unmerged_files_left_behind_abort(env, monkeypatch):
+    """A keep-deletion pass that leaves a file unmerged aborts the run (the tree stays half-merged otherwise)."""
     ds, script, _n, _o, _w = env
     preflight_clean(script)
     script.queue += [
         (1, ''), (0, ''),
         (1, 'conflict'),
-        (0, 'DU docs/a.md\n'),
-        (0, ''),                       # git rm
-        (0, 'docs/a.md\n'),            # diff --diff-filter=U still lists it
+        (0, 'DU dm/games/x/README.md\n'),
+        (0, ''),                                # git rm
+        (0, 'dm/games/x/README.md\n'),           # diff --diff-filter=U still lists it
         (0, ''), (0, ''), (0, ''),     # cleanup
     ]
     rc, log = run(env, monkeypatch, [])

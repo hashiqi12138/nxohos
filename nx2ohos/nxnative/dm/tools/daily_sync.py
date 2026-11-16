@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 # Daily upstream sync bot (ROADMAP P1.1; the "daily" locked decision). One run, unattended:
 #   fetch upstream -> nothing new: done -> else merge upstream/main into sync/daily-<date> (sync_upstream.py)
-#   -> delete/modify conflicts keep the deletion (the port snapshot carries no docs/, so every DU file goes)
+#   -> delete/modify conflicts keep the deletion, except inside docs/ and .github/ (carried as upstream's copy,
+#      resolved to the upstream side - AGENTS.md "kept, as reference")
 #   -> any content conflict aborts the run and the log names it (a human resolves it the manual way)
 #   -> re-export the patch queue (export_ohos_patches.py) -> guard (test_ohos_patches.py)
 #   -> host build (build_ohos.py --lib) -> fast-forward nested main
@@ -37,14 +38,23 @@ def log(msg):
 
 
 def classify(status_lines):
-    """git status --porcelain conflict codes: DU/DD keep the deletion, everything else needs a human."""
-    keep_del, human = [], []
+    """git status --porcelain conflict codes: DU/DD keep the deletion, everything else needs a human.
+
+    docs/ and .github/ are the exception: the fork carries them as the upstream's copy (AGENTS.md "kept, as
+    reference"), so a conflict inside them resolves to the upstream side - they are checked out from upstream/main
+    and staged, not deleted, and not a human's problem either. Only a file this fork deleted outside those trees
+    keeps its deletion.
+    """
+    keep_del, human, upstream = [], [], []
     for ln in status_lines:
         ln = ln.rstrip('\n')
         if len(ln) < 4: continue
         code, path = ln[:2], ln[3:].strip()
-        (keep_del if code in ('DU', 'DD') else human).append(path if code in ('DU', 'DD') else (code, path))
-    return keep_del, human
+        ref = path.startswith('docs/') or path.startswith('.github/')
+        if ref: upstream.append((code, path))
+        elif code in ('DU', 'DD'): keep_del.append(path)
+        else: human.append((code, path))
+    return keep_del, upstream, human
 
 
 def move_pin(text, old_full, new_full):
@@ -67,8 +77,12 @@ def self_test():
     moved, hit = move_pin(wf, 'c365e59f61e6df41c916cdf5664afb037980fc46', '8d89c3cdaabbccddeeff00112233445566778899')
     assert hit and '8d89c3cdaabbccddeeff00112233445566778899' in moved and '(short 8d89c3cd)' in moved
     assert 'c365e59f' not in moved.split('(short')[0] or True   # the old short only inside the replaced comment
-    keep, hum = classify(['DU docs/reference/rendering.md', 'UU dm/host/hle_time.c', 'DD docs/old.md'])
-    assert keep == ['docs/reference/rendering.md', 'docs/old.md'] and hum == [('UU', 'dm/host/hle_time.c')]
+    keep, ups, hum = classify(['DU docs/reference/rendering.md', 'UU dm/host/hle_time.c', 'DD docs/old.md',
+                               'DU .github/workflows/tests.yml', 'UU docs/agents/04-graphics.md'])
+    assert keep == [] and hum == [('UU', 'dm/host/hle_time.c')]
+    assert [p for _, p in ups] == ['docs/reference/rendering.md', 'docs/old.md', '.github/workflows/tests.yml', 'docs/agents/04-graphics.md']
+    keep, ups, hum = classify(['DU dm/games/01006F8002326000/README.md'])
+    assert keep == ['dm/games/01006F8002326000/README.md'] and ups == [] and hum == []
     print('daily_sync self-test: ok')
     return 0
 
@@ -128,21 +142,24 @@ def main():
         # git diff --name-status --diff-filter=U shows a single 'U' and cannot tell keep-deletion from content.
         rc2, st = git('status', '--porcelain')
         conf = [l for l in st.splitlines() if len(l) >= 4 and l[:2] in ('DU', 'DD', 'UD', 'UU', 'AA', 'AU', 'UA')]
-        # keep-deletion: anything the port deleted (DU/DD) and any UU inside docs/ - the port snapshot carries no
-        # docs/, so even an upstream-added docs file (UU after our deletion) keeps the deletion. UU elsewhere is real.
-        keep_del = [l[3:].strip() for l in conf if l[:2] in ('DU', 'DD') or (l[:2] == 'UU' and l[3:].strip().startswith('docs/'))]
-        human = [l[3:].strip() for l in conf if l[3:].strip() not in keep_del]
+        keep_del, upstream, human = classify(conf)
+        # keep-deletion: a file this fork deleted outside docs/ and .github/ (which the fork carries as the
+        # upstream's copy now - see AGENTS.md). A conflict inside those trees resolves to the upstream side.
+        for code, p in upstream:
+            r, o = git('checkout', 'upstream/main', '--', p)
+            if r: log('ABORT: cannot take upstream %s (%s): %s' % (p, code, o.strip()[:120])); cleanup(); return 1
+            git('add', '--', p)
         if human:
-            log('ABORT: content conflict(s) need a human: %s' % '; '.join(human[:8]))
+            log('ABORT: content conflict(s) need a human: %s' % '; '.join('%s %s' % h for h in human[:8]))
             cleanup(); return 1
         if not conf:
             log('ABORT: sync_upstream failed with no conflicts: %s' % out.strip()[-300:]); cleanup(); return 1
         for p in keep_del: git('rm', '-q', '--', p)
         rc3, st2 = git('diff', '--name-only', '--diff-filter=U')
-        if rc3 or st2.strip(): log('ABORT: unmerged files remain after the keep-deletion pass'); cleanup(); return 1
+        if rc3 or st2.strip(): log('ABORT: unmerged files remain after the resolution pass'); cleanup(); return 1
         rc3, out3 = git('commit', '-m', 'Merge upstream main (%s) into the OHOS port' % up_sha[:8])
         if rc3: log('ABORT: merge commit failed: %s' % out3.strip()[:200]); cleanup(); return 1
-        log('merged %s: %d keep-deletion conflict(s) auto-resolved' % (up_sha[:8], len(keep_del)))
+        log('merged %s: %d keep-deletion conflict(s) auto-resolved, %d file(s) taken from upstream' % (up_sha[:8], len(keep_del), len(upstream)))
     else:
         log('merged %s: clean' % up_sha[:8])
 
