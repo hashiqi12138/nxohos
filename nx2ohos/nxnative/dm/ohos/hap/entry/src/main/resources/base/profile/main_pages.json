@@ -1,8 +1,0 @@
-{
-  "src": [
-    "pages/LibraryPage",
-    "pages/Index",
-    "pages/SettingsPage",
-    "pages/GalleryPage"
-  ]
-}

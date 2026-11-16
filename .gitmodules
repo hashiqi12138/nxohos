@@ -1,0 +1,3 @@
+[submodule "nx2ohos/nxnative"]
+	path = nx2ohos/nxnative
+	url = https://github.com/hashiqi12138/nxnative.git
