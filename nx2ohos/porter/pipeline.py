@@ -99,10 +99,23 @@ def lost_patches(builds, exefs, mods, table=None):
     return out
 
 
+def scan_packages(folder, keys, env=None):
+    """The game a folder holds: (title ID, family) from its packages' content metas.
+
+    nsp.scan_nsps takes a contents reader, not a list of extensions: reading a package's content metas means running
+    nx_extract over it under prod.keys (the metas are NCAs), which is what nsp.package_reader supplies. Passing
+    dumps.EXTS here - the signature this call had before upstream changed it - made scan_nsps try to call a tuple
+    and stop with "'tuple' object is not callable" on every inspect and every port.
+    """
+    env = dict(os.environ, PYTHONIOENCODING='utf-8', PYTHONUTF8='1') if env is None else env
+    with nsp.package_reader(NXNATIVE, keys, env) as packages:   # the repo the reader resolves nx_extract from: nxnative, not the monorepo above it
+        return nsp.scan_nsps(Path(folder), packages.contents, None)
+
+
 def inspect(folder, keys=None):
     """What a game folder holds, without extracting anything: `porter inspect`. keys: prod.keys (default: the configured one), which reads the title ID
     of a dump with neither a ticket nor a [title ID] tag (an untagged cartridge dump) from its NCA headers"""
-    app, fam = nsp.scan_nsps(Path(folder), dumps.EXTS, keys or config.load().get('keys'))
+    app, fam = scan_packages(folder, keys or config.load().get('keys'))
     g, ap = profiles.by_title(app)
     files = [fam['base'], *(p for _, p in fam['updates']), *(p for _, _, p in fam['dlc'])]
     info = dict(title_id=f'{app:016X}', base=fam['base'].name, updates=[{'version': f'v{v}' if v is not None else None, 'file': p.name} for v, p in fam['updates']],
@@ -113,7 +126,7 @@ def inspect(folder, keys=None):
         info['reason'] = f'no game profile for {app:016X}: this game is not supported yet (an experimental port surveys it and guesses a profile; it may not start)'
         return info
     builds = g.builds()
-    have = nsp.nsp_versions(fam, builds)
+    have = nsp.nsp_versions(fam)
     pack = max(have, key=nsp.vnum)
     info.update(profile=g.id, name=g.get('name', g.id), versions=sorted(have, key=nsp.vnum), pack=pack,
                 registered={v: b.get('display', '') for v, b in builds.items()}, derived=pack not in builds)
@@ -198,7 +211,7 @@ class Port:
     def inputs(self):
         o = self.o
         say(f'game folder: {o.folder}')
-        self.app, self.fam = nsp.scan_nsps(o.folder, dumps.EXTS, o.keys)
+        self.app, self.fam = scan_packages(o.folder, o.keys, self.env)
         tid = f'{self.app:016X}'
         self.work = o.folder / f'{tid}_build'
         g, ap = profiles.by_title(self.app)
@@ -212,7 +225,7 @@ class Port:
         if not re.fullmatch(r'[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+', self.package): raise BuildError(f'not a package name: {self.package}')
         say(f'game profile: {g.id} {g.get("name", "")} (HarmonyOS: {ap.status}' + (f', tested on {ap.tested}' if ap.tested else '') + ')')
         builds, need = g.builds(), g.words('shader_versions')
-        have = nsp.nsp_versions(self.fam, builds)
+        have = nsp.nsp_versions(self.fam)
         self.derived, self.derived_mem, self.lost = '', '', []
         if self.provisional:   # the version the survey saw
             self.pkg_ver = o.version or g.get('package')
@@ -291,9 +304,18 @@ class Port:
         m = self.unpack([p for v in self.versions if not fresh(v) for p in picks[v] if p] + ([] if dlc_reused else zdlc))
         picks = {v: tuple(m.get(p, p) if p else None for p in bu) for v, bu in picks.items()}
         PROG.stage('build nx_extract')
-        nx = nsp.build_nx_extract(NXNATIVE, self.work, self.logs, self.env)
+        # Upstream builds the two native tools through dm/tools/native_tools.sh, a macOS shell script (lipo, nm -m,
+        # arch) that cannot run on Windows - and this port does not need it to: nx_extract.exe is built from the same
+        # sources with `dotnet publish -r win-x64` and validated by find_nx_extract's --source-sha check, which is the
+        # guarantee the build step exists for. nsp.build_nx_extract does not exist in upstream's script at all, so
+        # the call failed outright on every platform; resolving the executable is what both cases want.
+        nx = nsp.find_nx_extract(NXNATIVE, self.env)
         PROG.end()
-        self.dirs = {ver: nsp.extract(nx, o.keys, ex, ver, *picks[ver], None, self.logs, g) for ver in self.versions}
+        # extract(nx, keys, ex, name, base, upd, logs, app, repo): logs, app and repo come after the packages. The call
+        # this replaces passed (None, self.logs, g) there - a positional list that upstream has since grown a repo
+        # argument past - which put None into logs and made extract die on `logs / 'extract_<name>.log'`. app is the
+        # application the packages hold (--app), repo the tree whose nx_extract/extraction key names the cache.
+        self.dirs = {ver: nsp.extract(nx, o.keys, ex, ver, *picks[ver], self.logs, self.app, NXNATIVE) for ver in self.versions}
         bad = [] if self.derived else [f'{v}: {x}' for v in self.versions for x in nsp.build_mismatch(self.dirs[v], v, g)]
         if bad and self.provisional: raise BuildError(f'not the builds the provisional profile registers: {"; ".join(bad)}')
         if bad:
@@ -419,7 +441,16 @@ class Port:
         nsp.rewrite(PY, NXNATIVE, self.game / 'ExeFS', self.patched, dict(self.env, DM_TARGET='ohos'), self.logs, self.g)
         if self.derived or self.provisional:   # the keys that need the rewritten modules (upstream's provisional steps)
             nsp.provisional_prep(PY, NXNATIVE, self.env, self.logs, self.g)
-            self.g = nsp.refine_after_rewrite(self.g, self.game, self.patched)
+            # refine_after_rewrite is upstream's post-rewrite key refinement for a guessed profile; it is gone from the
+            # script this porter imports (only provisional_prep and heap_checked remain), so a derived or provisional
+            # port cannot refine its keys and must say so rather than die on an AttributeError. A registered profile
+            # never takes this branch - its keys come from the profile, not from the rewritten modules.
+            refine = getattr(nsp, 'refine_after_rewrite', None)
+            if refine is None:
+                raise BuildError('this porter expects nsp.refine_after_rewrite for a derived or provisional profile, and the '
+                                 'imported build_ipa_from_nsp.py no longer has it: port a game with a registered profile, or '
+                                 'restore that step upstream')
+            self.g = refine(self.g, self.game, self.patched)
             if self.provisional and profile_guess.heap_check_needed(self.game / 'ExeFS') and not nsp.heap_checked(self.g):
                 say('[RED] no heap check: it boots the game in the Mac host; the provisional profile keeps its guessed heap keys')
 
@@ -427,8 +458,14 @@ class Port:
     def shaders(self):
         sv = self.versions
         pkg = self.work / 'shader' / 'pkg'
-        nsp.split_shaders(PY, NXNATIVE, [self.dirs[v] / 'RomFS' for v in sv], [self.dirs[v] / 'ExeFS/main' for v in sv], pkg, self.env, self.logs, self.g, bool(self.derived or self.provisional),
-                          oodle=None, aoc=self.aoc)   # DLC with shaders of its own (Xenoblade Chronicles 3's archives)
+        # nsp.extract writes RomFS.img (one image, 1214 files inside it), not an unpacked RomFS/ directory: the call
+        # this replaces pointed at <dir>/RomFS, which never exists, so the split read an empty RomFS, found none of the
+        # profile's shaders and stopped with "24 row(s) only in the profile". shader_split.py reads an image directly
+        # (its is_image), which is how upstream runs it.
+        roms = [(self.dirs[v] / 'RomFS.img') if (self.dirs[v] / 'RomFS.img').exists() else (self.dirs[v] / 'RomFS') for v in sv]
+        dlc_roms = tuple(sorted((p for p in self.aoc.iterdir() if p.is_file()), key=lambda p: p.name)) if self.aoc and self.aoc.is_dir() else ()
+        nsp.split_shaders(PY, NXNATIVE, roms, [self.dirs[v] / 'ExeFS/main' for v in sv], pkg, self.env, self.logs, self.g, bool(self.derived or self.provisional),
+                          oodle=None, dlc_roms=dlc_roms)
         self.dmsv = self.aw / 'shaders.dmsv'; kf = self.aw / 'shaders.dmsv.key'; cap = self.aw / 'captured_shaders'
         PROG.stage('Vulkan shaders', step='building the translator')
         xlate, xkey = self.translator()
@@ -478,7 +515,17 @@ class Port:
         font_env, font_files = self.button_font()
         dst = self.o.out / f'{app_stem(self.g, self.app_name)}-data-ohos'
         # the pack's env.txt names its paths relative to the sandbox root (HarmonyOS), which front_ohos.c puts in front of every relative path the pack sets
-        man = datapack.build(dst, profile=self.ap, version=self.pkg_ver, display=self.display, patched=self.patched, romfs=self.game / 'RomFS', shaders=self.dmsv,
+        # The pack needs the game's files as a tree (datapack.link_tree walks it), and nsp.extract now leaves a
+        # RomFS.img image rather than a RomFS/ directory - so this points at self.game / 'RomFS', which nothing
+        # writes, and the pack came out with mods/ and the shaders only: the app then showed its library with the
+        # game's 1.1 GB absent (measured 2026-11-16). Take the directory when one exists, else the image, whose
+        # extraction the caller made.
+        romfs_src = self.game / 'RomFS'
+        if not romfs_src.is_dir():
+            img = self.game / 'RomFS.img'
+            unpacked = self.work / 'romfs_dir' / 'RomFS'   # nx_extract without --romfs-image: <out>/RomFS/ + <out>/ExeFS/
+            romfs_src = unpacked if unpacked.is_dir() else (img if img.is_file() else romfs_src)
+        man = datapack.build(dst, profile=self.ap, version=self.pkg_ver, display=self.display, patched=self.patched, romfs=romfs_src, shaders=self.dmsv,
                              aoc=self.aoc, language=self.lang, package=self.package, env=self.fps_env + font_env, settings=TOUCH_SETTINGS if self.o.touch else None,
                              files={**self.fps_files, **font_files}, dev_root=self.dev_root,
                              progress=lambda what: PROG.set(step=f'linking {what}'))

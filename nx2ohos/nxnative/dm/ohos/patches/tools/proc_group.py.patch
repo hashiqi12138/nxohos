@@ -1,0 +1,103 @@
+--- a/tools/proc_group.py
++++ b/tools/proc_group.py
+@@ -27,6 +27,7 @@
+ 
+ def members(pgid):
+     """[(pid, name)] of the live processes in process group pgid; zombies are not members (they write nothing; the caller or launchd reaps them)"""
++    if sys.platform == 'win32': return []   # DM_OHOS: no process groups on this platform: nothing to enumerate (Group supervises its direct child only)
+     if _libproc is None:   # another system: only whether the group has a member, no names
+         try: os.killpg(pgid, 0); return [(pgid, '?')]
+         except ProcessLookupError: return []
+@@ -46,12 +47,21 @@
+ class Group:
+     """The direct child (p, a subprocess.Popen started with these Popen arguments; for lines(), stdout=PIPE in binary mode) leads a new session and process group.
+     `with Group(...) as g:` stops the group when the block ends by an exception, and finishes it (finish) when it ends otherwise.
+-    stragglers: [(pid, name)] that outlived the direct child's normal exit and were stopped (pid None: a holder of the output outside the group), for the caller to report"""
++    stragglers: [(pid, name)] that outlived the direct child's normal exit and were stopped (pid None: a holder of the output outside the group), for the caller to report.
++
++    Windows (sys.platform == 'win32'): no sessions and no process groups exist, so the child is a plain Popen and
++    supervision is only of the direct child. That is enough for the callers here - a tool that writes a log and
++    exits - and it is what makes the porter work at all on Windows: start_new_session=True is not accepted there and
++    os.killpg does not exist, which left every run() hanging with an empty log (measured 2026-11-16)."""
+ 
+     def __init__(self, cmd, grace=None, drain=None, **popen):   # grace, drain: GRACE and DRAIN when None
+         self.grace, self.drain = GRACE if grace is None else grace, DRAIN if drain is None else drain
+         self.paused, self.stragglers, self.done = False, [], False
+-        self.p = subprocess.Popen([str(c) for c in cmd], start_new_session=True, **popen)
++        self.win = sys.platform == 'win32'   # DM_OHOS: no sessions/process groups there
++        if self.win:
++            self.p = subprocess.Popen([str(c) for c in cmd], **popen)
++        else:
++            self.p = subprocess.Popen([str(c) for c in cmd], start_new_session=True, **popen)
+         self.pgid = self.p.pid
+ 
+     def __enter__(self): return self
+@@ -65,13 +75,18 @@
+         return False
+ 
+     def _signal(self, sig):
++        if sys.platform == 'win32':   # DM_OHOS: no process groups - stop the direct child, which is all that runs here
++            try:
++                if self.p.poll() is None: self.p.kill() if sig == signal.SIGKILL else self.p.terminate()
++            except OSError: pass
++            return
+         if self.p.returncode is not None and not members(self.pgid): return   # its leader reaped and its members gone: the number may be another group's now
+         try: os.killpg(self.pgid, sig)
+         except (ProcessLookupError, PermissionError): pass   # every member gone, or only zombies left (macOS answers EPERM for those)
+ 
+-    def pause(self): self._signal(signal.SIGSTOP); self.paused = True
++    def pause(self): self._signal(getattr(signal, 'SIGSTOP', signal.SIGTERM)); self.paused = True
+ 
+-    def resume(self): self._signal(signal.SIGCONT); self.paused = False
++    def resume(self): self._signal(getattr(signal, 'SIGCONT', signal.SIGTERM)); self.paused = False
+ 
+     def _gone(self, secs):   # waits up to secs for the group to end (reaping the direct child on the way); → whether it did
+         end = time.monotonic() + secs
+@@ -83,8 +98,22 @@
+ 
+     def stop(self, sig=signal.SIGTERM):
+         """sig to the group (resumed first: a stopped process acts on no signal but SIGKILL), up to grace seconds, then SIGKILL; returns once the direct child is reaped and
+-        no member is left, or REAP seconds after the SIGKILL (a member stuck in the kernel). Re-raises the last interrupt (or SIGTERM, exit) that came while it waited"""
++        no member is left, or REAP seconds after the SIGKILL (a member stuck in the kernel). Re-raises the last interrupt (or SIGTERM, exit) that came while it waited
++
++        Windows: no group exists, so this stops and reaps the direct child and returns. The retry loop below would spin
++        for ever there - members() answers [] on Windows, so _gone()'s "the group ended" test is never the reason to
++        leave, and a child already reaped by finish() makes p.wait() return at once while the loop keeps repeating.
++        Measured 2026-11-16: porter's every run() hung inside this loop, which is what held `porter inspect` and
++        `porter port` for ten minutes with an empty log."""
+         late, self.done = None, True
++        if self.win:   # DM_OHOS: no members() to wait for
++            self._signal(sig)
++            try: self.p.wait(timeout=self.grace)
++            except subprocess.TimeoutExpired:
++                self._signal(signal.SIGKILL)
++                try: self.p.wait(timeout=REAP)
++                except subprocess.TimeoutExpired: pass
++            return
+         try:
+             self.resume(); self._signal(sig)
+             if self._gone(self.grace): self.p.wait(); return
+@@ -105,9 +134,22 @@
+     def lines(self):
+         """The output of a group started with stdout=PIPE, a line at a time as text (universal newlines, undecodable bytes replaced: as text=True reads it). Ends at the end of
+         the output, or drain seconds after the direct child's exit while a member still holds the pipe: those members are stopped then (stragglers) and the end follows.
+-        The direct child's exit is seen whether or not output comes; finish() then waits for the rest of the group"""
++        The direct child's exit is seen whether or not output comes; finish() then waits for the rest of the group
++
++        Windows: selectors cannot wait on a pipe there (only on sockets), so the output is read straight from the pipe,
++        which blocks until the child writes or closes it - the child always closes it on exit. The straggler rule does
++        not apply: no member of a group can hold the pipe, because there are no groups."""
+         out = self.p.stdout
+         assert out is not None, 'lines() reads a group started with stdout=PIPE'
++        if sys.platform == 'win32':   # DM_OHOS: selectors cannot wait on a pipe here
++            # The caller's contract is text (run() writes every line into a text log): decode here, as the POSIX path
++            # does with its IncrementalNewlineDecoder. Yielding the pipe's bytes instead made run() raise on f.write and
++            # left it in the exception path, where stop() then spun for ever (measured 2026-11-16).
++            dec = io.IncrementalNewlineDecoder(codecs.getincrementaldecoder(locale.getpreferredencoding(False))(errors='replace'), translate=True)
++            for chunk in out: yield dec.decode(chunk)
++            rest = dec.decode(b'', True)
++            if rest: yield rest
++            return
+         fd = out.fileno()
+         dec = io.IncrementalNewlineDecoder(codecs.getincrementaldecoder(locale.getpreferredencoding(False))(errors='replace'), translate=True)
+         sel, buf, end, stopped = selectors.DefaultSelector(), '', None, False

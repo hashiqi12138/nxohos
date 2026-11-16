@@ -93,6 +93,14 @@ def is_image(path):
 
 def _resolve(path):
     p = _os.path.abspath(_os.fsdecode(path))
+    # DM_OHOS: two separators meet in one string here, and both are legal in it. The filesystem part uses the platform's
+    # separator (splitting on '/' alone, as this once did, leaves 'F:\NS\...\RomFS.img' as one part that does not end
+    # in '.img' on Windows, so nothing inside an image resolves and romfs.os.walk() falls back to the real os.walk()
+    # and calls a 1.1 GB image empty). The part after the image is the image's OWN path and always uses '/', because
+    # Image.find() looks names up as the image stores them. So: find the '.img' component wherever it is, take
+    # everything up to it as the file path, and everything after it - with either separator turned into '/' - as the
+    # path inside the image.
+    p = p.replace(_os.sep, '/') if _os.sep != '/' else p
     parts = p.split('/')
     for i, part in enumerate(parts):
         if not part.endswith('.img'): continue
@@ -116,6 +124,7 @@ _fd_ranges = {}
 class _File(io.RawIOBase):
     def __init__(self, image, k):
         self.fd = _os.open(image.path, _os.O_RDONLY)
+        self.path = image.path   # kept for the Windows read fallback below (no pread there)
         self.start, self.length = image.entry(k)[:2]
         self.pos = 0
         _fd_ranges[self.fd] = (self.start, self.length)
@@ -129,7 +138,17 @@ class _File(io.RawIOBase):
         self.pos = pos; return pos
     def readinto(self, buffer):
         size = min(len(buffer), max(0, self.length - self.pos))
-        data = _os.pread(self.fd, size, self.start + self.pos)
+        if not size: return 0
+        # os.pread is POSIX-only. Windows has no read-at-offset on a descriptor, and lseek+os.read there returns
+        # short reads on a descriptor opened through os.open (measured 2026-11-16: 2446 of 9836 bytes, which made
+        # four .xnb effects look truncated), so the fallback opens the image as a file object and seeks on it.
+        # DM_OHOS: no pread on this platform
+        if hasattr(_os, 'pread'):
+            data = _os.pread(self.fd, size, self.start + self.pos)
+        else:
+            with io.open(self.path, 'rb') as f:   # io.open: this module's own open() shadows the builtin
+                f.seek(self.start + self.pos)
+                data = f.read(size)
         buffer[:len(data)] = data; self.pos += len(data)
         return len(data)
     def close(self):
@@ -208,6 +227,18 @@ def scandir(path):
 def walk(top, topdown=True, onerror=None, followlinks=False):
     if not _resolve(top):
         yield from _os.walk(top, topdown=topdown, onerror=onerror, followlinks=followlinks); return
+    # A path inside an image is the image's own, and the image stores '/' whatever the host uses. Yielding the
+    # platform path made shader_split.py name every source '/Content\Effects\Border.xnb', which the profile's
+    # tables (split on a Mac) do not have, and moved 24 shaders from ps_content.bin to ps_other.bin - the same
+    # content hashes under different names (measured 2026-11-16). Only the image's part is translated; a path
+    # outside any image keeps its platform form.
+    def shown(path):
+        # DM_OHOS: an image's own path uses '/'
+        resolved = _resolve(path)
+        if not resolved: return str(path)
+        image, relative = resolved
+        if not relative: return str(path)
+        return str(image.path) + '/' + relative
     def visit(path):
         try:
             dirs, files = [], []
@@ -216,9 +247,9 @@ def walk(top, topdown=True, onerror=None, followlinks=False):
         except OSError as error:
             if onerror: onerror(error)
             return
-        if topdown: yield str(path), dirs, files
+        if topdown: yield shown(path), dirs, files
         for name in dirs: yield from visit(_os.path.join(path, name))
-        if not topdown: yield str(path), dirs, files
+        if not topdown: yield shown(path), dirs, files
     yield from visit(top)
 
 
@@ -252,6 +283,28 @@ class Path(type(_Path())):
 class _PathOps:
     exists = staticmethod(exists); isdir = staticmethod(isdir); isfile = staticmethod(isfile)
     getsize = staticmethod(lambda path: stat(path).st_size)
+    @staticmethod
+    def join(*parts):
+        """Join with the separator the path itself uses: a path inside an image is the image's ('/'), anything else
+        the platform's. Callers build a source name as join(dirpath, filename) out of walk(), so a Windows '\\' here
+        put every shader under '/Content\\Effects\\Border.xnb' - not the name the profile's tables hold (measured
+        2026-11-16: 24 shaders landed in ps_other.bin instead of ps_content.bin, with identical content hashes)."""
+        # DM_OHOS: '/' inside an image, the platform's separator outside
+        if parts and isinstance(parts[0], str) and _resolve(parts[0]): return '/'.join(p.replace(_os.sep, '/').strip('/') if i else p for i, p in enumerate(parts))
+        return _os.path.join(*parts)
+    @staticmethod
+    def relpath(path, start=None):
+        """The path relative to start, with '/' when both are inside an image: shader_split.py builds each shader's
+        source column as relpath(dirpath, romfs), and a Windows relpath hands back 'Content\\Effects\\Border.xnb',
+        which is not the name the profile's tables hold (they were split on a Mac)."""
+        if isinstance(path, str) and _resolve(path):
+            rp = _resolve(path)[1]
+            if start is None: return rp or '.'
+            rs = _resolve(start)[1] if isinstance(start, str) and _resolve(start) else None
+            if rs is not None:
+                if not rs: return rp or '.'
+                return rp[len(rs) + 1:] if rp.startswith(rs + '/') else rp
+        return _os.path.relpath(path, start) if start is not None else _os.path.relpath(path)
     def __getattr__(self, name): return getattr(_os.path, name)
 class _OS:
     path = _PathOps()

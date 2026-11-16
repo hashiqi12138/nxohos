@@ -1,4 +1,4 @@
-# Build outputs (Xcode derived data, produced by the scripts under dm/ios)
+﻿# Build outputs (Xcode derived data, produced by the scripts under dm/ios)
 .iosdd/
 .iosdd_mac/
 .iosdd_*/
@@ -26,3 +26,7 @@ dm/ohos/tests/cov/
 __pycache__/
 .pytest_cache/
 .coverage
+# Windows build of nx_extract (dm/tools/nx_extract/out_win) and the copy the porter finds beside the
+# committed macOS binary: built locally with `dotnet publish -r win-x64`, never committed
+dm/tools/nx_extract/out_win/
+dm/tools/nx_extract_bin/nx_extract.exe

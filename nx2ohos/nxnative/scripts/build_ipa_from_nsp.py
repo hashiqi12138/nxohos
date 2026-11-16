@@ -471,8 +471,11 @@ def extraction_key(repo, what, packages, *rest):
 
 def find_nx_extract(repo, env):
     """The committed nx_extract, a native executable (no .NET needed, GitHub issue #1853), once it has shown that it runs and that it was built from the in-repo source: after an edit
-    to Program.cs the old executable would extract with the old code"""
+    to Program.cs the old executable would extract with the old code. The committed file is a macOS universal binary; on Windows a build of the same source sits beside it as
+    nx_extract.exe (dm/tools/nx_extract/out_win, `dotnet publish -r win-x64`), so the name is resolved per platform."""
     nx = repo / NX_EXTRACT
+    if sys.platform == 'win32' and nx.with_name(nx.name + '.exe').exists():
+        nx = nx.with_name(nx.name + '.exe')   # the committed file is the macOS universal binary; a PE needs its extension to start
     try: r = subprocess.run([str(nx), '--source-sha'], capture_output=True, text=True, env=env, timeout=60, errors='replace')
     except (OSError, subprocess.SubprocessError) as e: raise BuildError(f'nx_extract does not start ({e}): {nx}') from e
     got, want = r.stdout.strip(), nx_extract_source_sha(repo)
