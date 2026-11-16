@@ -32,6 +32,10 @@ export struct GameDetailSheet {
   onVerify: () => void = () => {};
   onDelete: () => void = () => {};
   onClose: () => void = () => {};
+  /** S5: the player locked or unlocked this build. The page writes the marker and reloads. */
+  onKeptChange: (on: boolean) => void = () => {};
+  /** S5: rebuild this game, offered when its build is older than the host. */
+  onRebuild: () => void = () => {};
   /** Write this game's save to a file the player picks (P2.3). */
   onExportSave: () => void = () => {};
   /** Replace this game's save from a file the player picks (P2.3). */
@@ -157,6 +161,43 @@ export struct GameDetailSheet {
                 .width('100%')
                 .textAlign(TextAlign.Start)
             }
+
+            // ---- S5: the build's own facts, and the one switch that changes them ----
+            // NX Play's "Keep This Build": a lock on the build so a host update does not replace it. The player's
+            // reason is real - a build that plays is worth more than a build that is current - so it is a switch
+            // here rather than a file only a terminal can make.
+            if (this.game.hasData) {
+              Row({ space: Space.s2 }) {
+                Column({ space: 2 }) {
+                  Text('锁定这个构建').fontSize(Font.label).fontColor(TextToken.primary).width('100%')
+                  Text(this.game.kept
+                    ? '已锁定：host 更新不会重建它，它保持现在能跑的样子。'
+                    : '未锁定：host 更新后重新构建会替换它。')
+                    .fontSize(Font.caption).fontColor(TextToken.tertiary).width('100%')
+                }.layoutWeight(1).alignItems(HorizontalAlign.Start)
+                Toggle({ type: ToggleType.Switch, isOn: this.game.kept })
+                  .onChange((on: boolean) => this.onKeptChange(on))
+              }
+              .width('100%')
+              .padding({ top: Space.s2, bottom: Space.s2 })
+
+              // A build older than the host may be missing fixes the host now has. NX Play calls it "App out of
+              // date" and offers a rebuild; saying it without offering the rebuild would be a dead end.
+              if (this.game.stale && !this.game.kept) {
+                Row({ space: Space.s2 }) {
+                  Column({ space: 2 }) {
+                    Text('这个构建比 host 旧').fontSize(Font.label).fontColor(Semantic.warning).width('100%')
+                    Text('重新构建可以带上 host 的新修复；锁定中的构建不会重建。')
+                      .fontSize(Font.caption).fontColor(TextToken.tertiary).width('100%')
+                  }.layoutWeight(1).alignItems(HorizontalAlign.Start)
+                  Text('重新构建').fontSize(Font.label).fontColor(Semantic.accent)
+                    .onClick(() => this.onRebuild())
+                }
+                .width('100%')
+                .padding({ top: Space.s2, bottom: Space.s2 })
+              }
+            }
+
 
             // ---- actions ----
             Button('启动游戏')

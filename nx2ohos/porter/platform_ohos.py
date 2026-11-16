@@ -11,7 +11,7 @@ import os, shutil, subprocess, sys
 from dataclasses import dataclass
 from pathlib import Path
 
-from porter.paths import DM
+from porter.paths import DM, NXNATIVE
 from porter.upstream import BuildError, PROG, nsp, say
 
 OHOS = DM / 'ohos'
@@ -60,31 +60,39 @@ def host(port):
 
 
 def hap(port):
-    """The signed HAP around the host and the pack, as <App>.hap in the output folder"""
+    """The signed HAP around the host, and the game data as one .nxpk beside it.
+
+    The data does NOT go into the HAP. GAMEDATA.md: game data is one .nxpk (an 80-byte header over a ustar stream)
+    that the app imports into its own sandbox, and the full-HAP split - mkhap.py --data into feature modules
+    data1..dataN - is the fallback "for a one-shot integrated bundle; it is no longer the default and every round
+    paid 20-70 minutes for it". This stage used to take that fallback every time: a 1.2 GB game produced a 1.2 GB
+    data1 HAP, an update of the host meant re-sending and re-installing all of it, and `bm install -p` on the entry
+    alone silently REMOVES the data modules (GAMEDATA.md's own note), which is what left the library empty after a
+    devpush round (measured 2026-11-16).
+    """
     PROG.stage('HAP')
     if port.o.touch: say('[RED] --touch is not in the HarmonyOS host yet: the pack carries the button layout, but nothing draws the overlay there')
     stem = port.hap_stem
     work = port.aw / 'hap'
     port.o.out.mkdir(parents=True, exist_ok=True)
-    nsp.run([sys.executable, str(OHOS / 'mkhap.py'), '--game', port.g.id, '--lib', str(port.so), '--data', str(port.data_path), '--out', str(work)],
+    # The data first, as the container the app imports: this is the whole of what a game needs, and it is the only
+    # copy of it the port produces (no second one inside a HAP).
+    nxpk = port.o.out / f'{stem}.nxpk'
+    PROG.set(step='packing the data container')
+    nsp.run([sys.executable, str(NXNATIVE / 'dm/tools/pack_game.py'), '--pack', str(port.data_path), '--title', port.g.id, '--out', str(nxpk)],
+            port.logs / 'ohos_nxpk.log', env=port.env)
+    port.nxpk_path = nxpk; port.result['nxpk'] = str(nxpk)
+    # The HAP carries the host and the pack's small fixed files only (mkhap.py without --data): a host change costs a
+    # 3-5 MB entry, never the game.
+    nsp.run([sys.executable, str(OHOS / 'mkhap.py'), '--game', port.g.id, '--lib', str(port.so), '--out', str(work)],
             port.logs / 'ohos_hap.log', env=port.env)
-    # A pack over the 4 GB one signed HAP can carry comes back as a folder of signed HAPs (entry + data1..dataN): bm install -p takes the folder whole,
-    # because hdc install refuses the app pack (it carries the unsigned HAPs)
-    haps = work / 'dmhost-haps'
-    if haps.is_dir():
-        dest = port.o.out / f'{stem}-haps'
-        if dest.exists(): shutil.rmtree(dest)
-        dest.mkdir(parents=True)
-        for p in haps.glob('*.hap'):
-            try: os.link(p, dest / p.name)   # same disk: the 15 GB of HAPs are not copied again
-            except OSError: shutil.copy2(p, dest / p.name)
-        port.hap_path = dest
-    else:
-        src = work / 'dmhost-signed.hap'
-        if not src.is_file(): raise BuildError(f'mkhap.py made no signed HAP (see {port.logs / "ohos_hap.log"})')
-        port.hap_path = port.o.out / f'{stem}.hap'
-        try: os.link(src, port.hap_path)
-        except OSError: shutil.copy2(src, port.hap_path)
+    # One signed HAP, no feature modules: the game's data is the .nxpk beside it, imported by the app (the picker, or
+    # the loopback a devpush round serves), never unpacked from a module.
+    src = work / 'dmhost-signed.hap'
+    if not src.is_file(): raise BuildError(f'mkhap.py made no signed HAP (see {port.logs / "ohos_hap.log"})')
+    port.hap_path = port.o.out / f'{stem}.hap'
+    try: os.link(src, port.hap_path)
+    except OSError: shutil.copy2(src, port.hap_path)
     port.result['hap'] = str(port.hap_path)
     if port.package != BUNDLE:   # the signing material is bound to the template's bundle name
         say(f'the HAP installs as {BUNDLE} (DevEco\'s signing material is bound to it); the game\'s package {port.package} is in the pack\'s manifest')
@@ -126,3 +134,10 @@ def install(port):
     rc, out = run('shell', 'aa', 'start', '-b', BUNDLE, '-a', ABILITY, timeout=60)
     if rc or 'error' in out.lower(): say(f'[RED] aa start failed: {out.strip()[:300]} (the HAP is installed; see {log})')
     else: say(f'installed and started on the device: {port.hap_path.name}')
+    # The HAP carries the host alone now: the game is in the .nxpk beside it, and the app imports that into its own
+    # sandbox on the first launch (its picker, or the loopback a devpush round serves). Say where it is, because a
+    # freshly installed HAP with no data shows the library and nothing else.
+    nxpk = getattr(port, 'nxpk_path', None)
+    if nxpk is not None and Path(nxpk).is_file():
+        say(f'the game data is {Path(nxpk).name} ({Path(nxpk).stat().st_size / 2**30:.2f} GB): import it in the app')
+        say(f'  dev round: python dm/ohos/devpush.py --game {port.g.id} --pack {nxpk}')

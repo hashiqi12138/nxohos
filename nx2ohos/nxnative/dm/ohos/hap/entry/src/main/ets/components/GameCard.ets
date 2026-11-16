@@ -10,6 +10,7 @@
  */
 
 import { Bg, Text as TextToken, Semantic, CoverPalette, Space, Font, Radius, Motion, Size } from '../theme/Tokens';
+import { BadgeSpec, BadgeFit, fitBadges } from './GameBadges';
 
 /** What the card is doing right now. */
 export enum CardState {
@@ -41,6 +42,20 @@ export struct GameCard {
   @Prop coverSize: number = Size.cardCoverLandscape;
   /** The current state. */
   @State state: CardState = CardState.Idle;
+  /**
+   * The game's facts, most telling first (S5, GameBadges.badgesFor). A list rather than a state value: a game can
+   * be complete and kept and carry a save at the same time, and a single CardState could only ever say one of them.
+   */
+  @Prop badges: BadgeSpec[] = [];
+  /** How many badges the cover has room for; the rest become a "+N". */
+  @Prop badgeSlots: number = 2;
+  /**
+   * A running job's fraction, 0..1, drawn as a bar along the bottom of the artwork; -1 for no bar.
+   *
+   * It is a separate input from `state` on purpose: a build or an install is progress on the card, not a state the
+   * card is in, and the caller can report any long job without inventing a CardState for it.
+   */
+  @Prop progress: number = -1;
   /** Called when the card is activated (tap, or the gamepad's A). */
   onActivate: () => void = () => {};
   /** Called on a long press (600 ms) or the gamepad's menu key. */
@@ -116,6 +131,11 @@ export struct GameCard {
     .backgroundColor(Bg.overlay)
   }
 
+  /** The badges this card can show, and how many it had to leave out. */
+  private badgeFit(): BadgeFit {
+    return fitBadges(this.badges, this.badgeSlots);
+  }
+
   build() {
     // The card is a cover plus a centred caption beneath it; both live in one column so the grid's cells stay
     // one rectangle (the Grid measures the cell before the children, and a caption outside the card's own bounds
@@ -131,6 +151,52 @@ export struct GameCard {
           this.launchingOverlay()
         } else if (this.state === CardState.Verifying) {
           this.verifyingOverlay()
+        }
+        // ---- S5: the badges, over the artwork ----
+        // NX Play puts a game's facts on its artwork rather than under it, so a badge appearing or going away does
+        // not change the card's height and the grid never reflows (GameCard.swift, "on the artwork, so a build
+        // doesn't make the card taller"). The row is the most telling facts that fit, and a "+N" for the rest.
+        if (this.badges.length > 0) {
+          Row({ space: Space.s1 }) {
+            ForEach(this.badgeFit().shown, (b: BadgeSpec) => {
+              Text(b.text)
+                .fontSize(Font.caption)
+                .fontColor(b.color)
+                .padding({ left: 6, right: 6, top: 2, bottom: 2 })
+                .backgroundColor('rgba(0,0,0,0.55)')
+                .borderRadius(Radius.sm)
+            }, (b: BadgeSpec) => b.text)
+            if (this.badgeFit().overflow > 0) {
+              Text('+' + this.badgeFit().overflow)
+                .fontSize(Font.caption)
+                .fontColor(TextToken.secondary)
+                .padding({ left: 6, right: 6, top: 2, bottom: 2 })
+                .backgroundColor('rgba(0,0,0,0.55)')
+                .borderRadius(Radius.sm)
+            }
+          }
+          .position({ x: 0, y: 0 })
+          .margin({ left: Space.s1, top: Space.s1 })
+          .width(this.coverSize - Space.s2)
+          .justifyContent(FlexAlign.Start)
+        }
+        // ---- S5: a running job's progress, at the bottom of the artwork ----
+        // Same reason as the badges: a launch or a build must not resize the card. Drawn from `progress` rather
+        // than from CardState, so the caller can report any long job, not only the launch.
+        if (this.progress >= 0 && this.progress < 1) {
+          Column() {
+            Row() {
+              Column()
+                .width(`${Math.max(2, Math.round(this.progress * 100))}%`)
+                .height(3)
+                .backgroundColor(Semantic.accent)
+            }
+            .width('100%')
+            .height(3)
+            .backgroundColor('rgba(0,0,0,0.45)')
+          }
+          .position({ x: 0, y: this.coverSize - 3 })
+          .width(this.coverSize)
         }
       }
       .width(this.coverSize)

@@ -14,7 +14,7 @@ import { picker } from '@kit.CoreFileKit';
 import { router } from '@kit.ArkUI';
 import { preferences } from '@kit.ArkData';
 import { Bg, Text as TextToken, Semantic, CoverPalette, Space, Font, Radius, Motion, Size } from '../theme/Tokens';
-import { GameEntry, gamesDir, listGames, deleteGame, humanSize, writeMeta, ImportStatus, verifyGame, gameVersion, VerifyResult } from './GameLibrary';
+import { GameEntry, gamesDir, listGames, deleteGame, humanSize, writeMeta, ImportStatus, verifyGame, gameVersion, VerifyResult, setKept } from './GameLibrary';
 import { readPackHeader, importPack, readStamp, writeStamp, PackInfo, ImportProgress } from './PackImport';
 import { saveDir, backupDir, packSave, importSave, readSaveHeader, saveSize, hasBackup, SaveInfo, SaveProgress } from './SaveData';
 import { GameCard, CardState } from '../components/GameCard';
@@ -27,6 +27,7 @@ import { ConfirmDialog } from '../components/ConfirmDialog';
 import { GameDetailSheet } from '../components/GameDetailSheet';
 import { RemotePacksSection } from '../components/RemotePacksSection';
 import { RemoteDownloads } from '../components/RemoteDownloads';
+import { badgesFor, badgeHelp } from '../components/GameBadges';
 
 /** A grid cell: either a game or the add tile. */
 interface Cell {
@@ -119,7 +120,17 @@ struct LibraryPage {
     const ctx = this.getUIContext().getHostContext();
     const files: string = ctx?.filesDir ?? '';
     const t0: number = Date.now();
-    this.games = listGames(files);
+    // A throw here used to leave the page showing nothing and saying nothing: listGames walks the disk, and one
+    // unreadable entry took the whole library down with it (measured 2026-11-16: the grid held only the add tile,
+    // and no 'library:' line appeared at all). A library that cannot list a game should still list the others.
+    try {
+      this.games = listGames(files);
+    } catch (e) {
+      const why: string = e instanceof Error ? e.message : JSON.stringify(e);
+      console.error(`library: listing failed: ${why}`);
+      this.showToast('读取游戏列表失败：' + why);
+      this.games = [];
+    }
     const ms: number = Date.now() - t0;
     console.info(`library: ${this.games.length} game(s) in ${ms} ms`);
     if (this.games.length === 0) this.focusIndex = 0;
@@ -432,6 +443,37 @@ struct LibraryPage {
    * Check the game's tree. Cheap by design: the loader's two entries plus the metadata and stamp, not a hash of
    * 14 GB (which would take minutes and answer nothing the player asked).
    */
+  /**
+   * Lock or unlock the build the sheet is showing (S5).
+   *
+   * A rebuild is not started here: locking is a decision about the build that is on disk now, and the reload after
+   * it is what makes the badge appear. The toast says which way it went, because the switch alone does not say that
+   * the marker was written.
+   */
+  private setKept(on: boolean): void {
+    const g: GameEntry | null = this.detailGame;
+    if (g === null) return;
+    const ok: boolean = setKept(g.root, on);
+    this.showToast(ok ? (on ? '已锁定这个构建' : '已解锁') : '无法写入锁定标记');
+    if (!ok) return;
+    // reload so the badge and the switch agree with what is on disk, then re-read the sheet's game
+    this.reload();
+    const again: GameEntry | undefined = this.games.find((x: GameEntry): boolean => x.titleId === g.titleId);
+    if (again !== undefined) this.detailGame = again;
+  }
+
+  /**
+   * Rebuild the game the sheet is showing (S5).
+   *
+   * The build is done by the pack round, not by the app: the app has no rewriter. So this says what to do rather
+   * than pretending to do it - NX Play owns nxplay and can start a build; we cannot.
+   */
+  private rebuildDetail(): void {
+    const g: GameEntry | null = this.detailGame;
+    if (g === null) return;
+    this.showToast(`重新构建 ${g.titleId}：运行 porter port，或重新导入这个游戏的 .nxpk`);
+  }
+
   private verifyDetail(): void {
     const g: GameEntry | null = this.detailGame;
     if (g === null) return;
@@ -807,6 +849,8 @@ struct LibraryPage {
           if (g !== null) this.launch(g);
         },
         onVerify: () => this.verifyDetail(),
+        onKeptChange: (on: boolean) => this.setKept(on),
+        onRebuild: () => this.rebuildDetail(),
         onDelete: () => this.askDelete(),
         onClose: () => {
           this.detailVisible = false;
@@ -837,6 +881,17 @@ struct LibraryPage {
     })
   }
 
+  /**
+   * A grid cell's identity for ForEach (S5).
+   *
+   * The title alone is not enough: kept and stale are read from disk and can change under the same title, and a
+   * ForEach that keys by title reuses the card it already built. Appending the two facts makes a changed game a new
+   * cell, which is what makes the badge follow the switch.
+   */
+  private cellKey(g: GameEntry): string {
+    return g.titleId + (g.kept ? ':k' : '') + (g.stale ? ':s' : '');
+  }
+
   /** The grid itself. */
   @Builder
   grid() {
@@ -857,12 +912,19 @@ struct LibraryPage {
               iconPath: (cell.game as GameEntry).iconPath,
               coverSize: this.coverSize,
               state: this.cardState(cell.game as GameEntry, index),
+              // S5: the game's facts, not one state value. Two fit on a cover at this size; the rest become "+N"
+              // and are readable in the detail sheet, which lists every badge with its full sentence.
+              badges: badgesFor(cell.game as GameEntry, { save: false }),
+              badgeSlots: this.columns >= 4 ? 2 : 3,
               onActivate: () => this.activate(cell),
               onDetails: () => this.openDetail(cell.game as GameEntry)
             })
           }
         }
-      }, (cell: Cell, index: number) => cell.isAdd ? 'add' : (cell.game as GameEntry).titleId)
+      // The key carries the facts, not just the title: a game whose kept/stale changed is a different card to
+      // ForEach, so the badge appears the moment the switch is flipped. Keying by title alone made the switch write
+      // the file and reload the list while the card kept drawing the old badges (measured 2026-11-16).
+      }, (cell: Cell, index: number) => cell.isAdd ? 'add' : this.cellKey(cell.game as GameEntry))
     }
     // Grid sizes its cells; a wrapping Flex measured the cover taller than its own height, which squeezed the
     // caption to nothing (measured: the initial rendered 296 vp tall inside a 260 vp cover).
