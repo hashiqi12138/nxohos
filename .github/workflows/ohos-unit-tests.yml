@@ -19,6 +19,10 @@ jobs:
     runs-on: windows-latest   # devpush/mkhap hard-code Windows paths (F:, DevEco), and the suite is written for that
     steps:
       - uses: actions/checkout@v4
+        # The nested tree (nx2ohos/nxnative) is a submodule: without this the gates
+        # run over an empty directory and every one of them passes for the wrong reason.
+        with:
+          submodules: recursive
 
       - name: Set up Python
         uses: actions/setup-python@v5
