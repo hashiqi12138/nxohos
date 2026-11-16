@@ -18,6 +18,7 @@ import { listSaves, restoreBackup, SaveEntry } from './SaveData';
 import { runSaveSelfTest, SelfTestResult } from './SaveSelfTest';
 import { listInputDevices, DeviceRow, PAD_KEY_CANDIDATES, PadKeyMap } from './ControllerProbe';
 import { preferences } from '@kit.ArkData';
+import { PREF_SOURCE, normalizeSource } from './RemoteLibrary';
 import { router } from '@kit.ArkUI';
 import { fileIo as fs } from '@kit.CoreFileKit';
 import { ConfirmDialog } from '../components/ConfirmDialog';
@@ -28,6 +29,7 @@ import { ConfirmDialog } from '../components/ConfirmDialog';
  * player would be adjusting for - and falls back to 'pad_default' when there is none.
  */
 const PREF_NAME: string = 'pad';
+const PREF_LIBRARY: string = 'library';   // the app-wide store: the remote source (P3.3)
 const PREF_OPACITY: string = 'opacity';
 const PREF_SCALE: string = 'scale';
 
@@ -55,6 +57,9 @@ export struct SettingsPage {
   /** Which group the nav has selected; the page shows all of them on a narrow screen. */
   @State group: number = 0;
   @State landscape: boolean = true;
+  // P3.3: the library's remote source, as typed and as saved ('' = none)
+  @State sourceText: string = '';
+  @State sourceSaved: string = '';
   private toastTimer: number = -1;
   private prefs: preferences.Preferences | null = null;
 
@@ -74,8 +79,30 @@ export struct SettingsPage {
       const sc = this.prefs.getSync(PREF_SCALE, 1.0) as number;
       if (typeof op === 'number' && op > 0) this.padOpacity = op;
       if (typeof sc === 'number' && sc > 0) this.padScale = sc;
+      // P3.3: the library's remote source. It belongs to the app rather than to a game (it lists every pack the
+      // server holds), so it lives in its own store, not the per-title pad one.
+      const lib = await preferences.getPreferences(ctx, PREF_LIBRARY);
+      const src = lib.getSync(PREF_SOURCE, '') as string;
+      if (typeof src === 'string' && src.length) { this.sourceSaved = src; this.sourceText = src; }
     } catch (e) {
       // defaults stand
+    }
+  }
+
+  /** Keep the typed address, normalized ('192.168.1.10' -> 'http://192.168.1.10:28899'), and say what was stored. */
+  private async saveSource(): Promise<void> {
+    try {
+      const ctx = this.getUIContext().getHostContext();
+      if (!ctx) return;
+      const norm: string = normalizeSource(this.sourceText);
+      const lib = await preferences.getPreferences(ctx, PREF_LIBRARY);
+      lib.putSync(PREF_SOURCE, norm);
+      await lib.flush();
+      this.sourceSaved = norm;
+      this.sourceText = norm;
+      this.toast = norm.length ? ('游戏库来源已保存：' + norm) : '游戏库来源已清除';
+    } catch (e) {
+      this.toast = '保存失败：' + (e instanceof Error ? e.message : JSON.stringify(e));
     }
   }
 
@@ -505,6 +532,29 @@ export struct SettingsPage {
               .padding({ top: Space.s2, bottom: Space.s2 })
             }, (s: SaveEntry) => s.titleId)
           }
+
+          // ---- 游戏库来源 (P3.3) ----
+          // A pack server on the same network publishes what it holds at /list; the library reads that list and
+          // streams a container down. Empty = only the packs already imported.
+          this.heading('游戏库来源')
+          Column({ space: Space.s2 }) {
+            Text('填入电脑上 pack_server 的地址，游戏库会列出它上面的游戏包，可以直接下载。')
+              .fontSize(Font.caption).fontColor(TextToken.secondary).width('100%')
+            Row({ space: Space.s2 }) {
+              TextInput({ text: this.sourceText, placeholder: '192.168.1.10:28899' })
+                .fontSize(Font.label)
+                .layoutWeight(1)
+                .type(InputType.Normal)
+                .onChange((v: string) => { this.sourceText = v; })
+              Button('保存')
+                .fontSize(Font.label)
+                .onClick(() => this.saveSource())
+            }.width('100%')
+            if (this.sourceSaved.length > 0) {
+              Text('已保存：' + this.sourceSaved)
+                .fontSize(Font.caption).fontColor(TextToken.secondary).width('100%')
+            }
+          }.width('100%').padding({ top: Space.s2, bottom: Space.s3 })
 
           // ---- 关于 ----
           this.heading('关于')

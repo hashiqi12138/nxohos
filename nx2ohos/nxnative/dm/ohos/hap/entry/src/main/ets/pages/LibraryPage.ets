@@ -25,6 +25,8 @@ import { ImportBanner } from '../components/ImportBanner';
 import { ImportPanel } from '../components/ImportPanel';
 import { ConfirmDialog } from '../components/ConfirmDialog';
 import { GameDetailSheet } from '../components/GameDetailSheet';
+import { RemotePacksSection } from '../components/RemotePacksSection';
+import { RemoteDownloads } from '../components/RemoteDownloads';
 
 /** A grid cell: either a game or the add tile. */
 interface Cell {
@@ -70,6 +72,14 @@ struct LibraryPage {
   /** Whether the running import wants cancelling; the loop checks between phases. */
   @State importCancelled: boolean = false;
 
+  // ---- S4: a remote download, mirrored into the same banner ----
+  // The download itself lives in RemoteDownloads (module level), so leaving this page does not stop it or lose its
+  // progress; these three fields only carry it into the strip under the top bar.
+  @State remoteBusy: boolean = false;
+  @State remotePct: number = 0;
+  @State remoteName: string = '';
+  private remoteTimer: number = -1;
+
   // ---- S4: the detail sheet ----
   @State detailVisible: boolean = false;
   @State detailGame: GameEntry | null = null;
@@ -88,6 +98,20 @@ struct LibraryPage {
 
   aboutToAppear(): void {
     this.reload();
+    // S4: the download runs in RemoteDownloads, which outlives this page; the strip under the top bar mirrors it.
+    // Polled rather than pushed: the registry notifies on every chunk, which is far more often than a strip needs.
+    this.remoteTimer = setInterval(() => {
+      const busy: boolean = RemoteDownloads.busy();
+      const pct: number = RemoteDownloads.activePercent();
+      const name: string = RemoteDownloads.activeName();
+      if (busy !== this.remoteBusy) this.remoteBusy = busy;
+      if (pct !== this.remotePct) this.remotePct = pct;
+      if (name !== this.remoteName) this.remoteName = name;
+    }, 500);
+  }
+
+  aboutToDisappear(): void {
+    if (this.remoteTimer >= 0) { clearInterval(this.remoteTimer); this.remoteTimer = -1; }
   }
 
   /** Read the library. A cache hit per game makes this a few file reads, not a 41k-file walk. */
@@ -635,10 +659,17 @@ struct LibraryPage {
         })
 
         // ---- the import heartbeat: a strip under the bar while work runs, non-modal ----
+        // A remote download uses the same strip (S4): it is the same promise to the player - work is happening,
+        // keep browsing - and one strip is easier to read than two.
         if (this.importPct > 0 && this.importPct < 100 && this.importName.length > 0) {
           ImportBanner({
             percent: this.importPct,
             gameName: this.importName
+          })
+        } else if (this.remoteBusy && this.remotePct > 0) {
+          ImportBanner({
+            percent: this.remotePct,
+            gameName: this.remoteName
           })
         }
 
@@ -669,6 +700,17 @@ struct LibraryPage {
         .justifyContent(FlexAlign.Center)
       } else {
         this.grid()
+      }
+
+      // ---- S4: what a local pack server offers, under the installed games ----
+      // The section draws nothing when no source is set, so a device without a server looks exactly as before.
+      // It sits here rather than in a settings sub-page because downloading a pack is a library action.
+      if (!this.loading) {
+        RemotePacksSection({
+          // The grid must pick up the new game; the section re-reads its own rows from RemoteDownloads (which set
+          // the row to Installed), so a plain reload is enough - no second refresh round trip to the server.
+          onImported: () => { this.reload(); }
+        })
       }
 
       if (this.toast.length > 0) {

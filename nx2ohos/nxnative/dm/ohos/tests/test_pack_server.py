@@ -260,3 +260,122 @@ def test_missing_container_exits(pack_server, tmp_path, monkeypatch):
     monkeypatch.setattr('sys.argv', ['pack_server.py', '--pack', str(pack), '--nxpk', str(tmp_path / 'nope.nxpk')])
     with pytest.raises(SystemExit, match='no such container'):
         pack_server.main()
+
+# ---- /list and /packs/<file>: the library's remote source (S4) ----
+# A second server, because the plain `server` fixture serves one container and the library lists a folder.
+
+@pytest.fixture
+def library_server(pack_server, tmp_path, monkeypatch):
+    """Start pack_server with --games-dir holding two containers; yields (port, games_dir)."""
+    pack = tmp_path / 'pack2'
+    (pack / 'RomFS').mkdir(parents=True)
+    (pack / 'nx2a-data.json').write_text(json.dumps({'title_id': 'T'}), encoding='utf-8')
+    games = tmp_path / 'library'
+    games.mkdir()
+
+    def container(name, title, stamp, size):
+        header = (b'NXPK' + bytes([1]) + b'\x00\x00\x00' + title.encode().ljust(16, b'\x00')
+                  + stamp.encode().ljust(48, b'\x00') + struct.pack('<Q', size))
+        (games / name).write_bytes(header + b'B' * size)
+
+    container('Celeste.nxpk', '01002B30028F6000', 'stamp-celeste', 40)
+    container('Zelda.nxpk', '01007EF00011E000', 'stamp-zelda', 60)
+    (games / 'notes.txt').write_text('not a container', encoding='utf-8')   # must be ignored
+    (games / 'broken.nxpk').write_bytes(b'NOPE' + b'\x00' * 100)             # wrong magic: ignored
+
+    port = free_port()
+    monkeypatch.setattr('sys.argv', ['pack_server.py', '--pack', str(pack), '--games-dir', str(games),
+                                     '--port', str(port)])
+    t = threading.Thread(target=pack_server.main, daemon=True)
+    t.start()
+    deadline = time.time() + 5
+    while time.time() < deadline:
+        try:
+            with socket.create_connection(('127.0.0.1', port), timeout=0.2):
+                break
+        except OSError:
+            time.sleep(0.02)
+    else:
+        pytest.fail('pack_server did not start')
+    yield port, games
+
+
+def test_list_reports_the_containers_by_name(library_server):
+    port, _games = library_server
+    status, headers, body = get(port, '/list')
+    assert status == 200
+    assert headers.get('Content-Type') == 'application/json'
+    items = json.loads(body)
+    assert [i['file'] for i in items] == ['Celeste.nxpk', 'Zelda.nxpk']   # sorted by name
+
+
+def test_list_carries_the_title_stamp_and_size(library_server):
+    port, _games = library_server
+    _s, _h, body = get(port, '/list')
+    celeste = json.loads(body)[0]
+    assert celeste['title'] == '01002B30028F6000'
+    assert celeste['stamp'] == 'stamp-celeste'
+    assert celeste['bytes'] == 120            # the 80-byte header and its 40-byte body
+    assert celeste['url'] == '/packs/Celeste.nxpk'
+
+
+def test_list_skips_a_file_that_is_not_a_container(library_server):
+    port, _games = library_server
+    _s, _h, body = get(port, '/list')
+    names = [i['file'] for i in json.loads(body)]
+    assert 'notes.txt' not in names
+    assert 'broken.nxpk' not in names         # wrong magic
+
+
+def test_list_is_empty_without_a_games_dir(pack_server, tmp_path, monkeypatch):
+    """A server started the old way (one --nxpk) still answers /list, with that one container."""
+    pack = tmp_path / 'pack3'
+    pack.mkdir()
+    header = b'NXPK' + bytes([1]) + b'\x00\x00\x00' + b'0100'.ljust(16, b'\x00') \
+        + b'st'.ljust(48, b'\x00') + struct.pack('<Q', 10)
+    nxpk = tmp_path / 'one.nxpk'
+    nxpk.write_bytes(header + b'B' * 10)
+    port = free_port()
+    monkeypatch.setattr('sys.argv', ['pack_server.py', '--pack', str(pack), '--nxpk', str(nxpk),
+                                     '--port', str(port)])
+    threading.Thread(target=pack_server.main, daemon=True).start()
+    deadline = time.time() + 5
+    while time.time() < deadline:
+        try:
+            with socket.create_connection(('127.0.0.1', port), timeout=0.2):
+                break
+        except OSError:
+            time.sleep(0.02)
+    _s, _h, body = get(port, '/list')
+    items = json.loads(body)
+    assert len(items) == 1
+    assert items[0]['url'] == '/pack.nxpk'
+
+
+def test_packs_serves_one_container(library_server):
+    port, games = library_server
+    status, _h, body = get(port, '/packs/Celeste.nxpk')
+    assert status == 200
+    assert body == (games / 'Celeste.nxpk').read_bytes()
+
+
+def test_packs_resumes_with_range(library_server):
+    port, games = library_server
+    status, headers, body = get(port, '/packs/Zelda.nxpk', {'Range': 'bytes=100-'})
+    assert status == 206
+    assert body == (games / 'Zelda.nxpk').read_bytes()[100:]
+    assert 'Content-Range' in headers
+
+
+def test_packs_rejects_a_name_outside_the_folder(library_server):
+    """A traversal attempt is answered 404, not the file: the handler takes the basename alone."""
+    port, _games = library_server
+    for bad in ('/packs/../pack2/nx2a-data.json', '/packs/notes.txt', '/packs/missing.nxpk'):
+        status, _h, _b = get(port, bad)
+        assert status == 404, bad
+
+
+def test_packs_is_404_without_a_games_dir(server):
+    port, _pack, _nxpk, _man = server
+    status, _h, _b = get(port, '/packs/anything.nxpk')
+    assert status == 404

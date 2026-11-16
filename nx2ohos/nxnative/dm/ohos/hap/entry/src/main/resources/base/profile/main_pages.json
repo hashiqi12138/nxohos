@@ -1,6 +1,8 @@
 {
   "src": [
-    "pages/GalleryPage",
-    "pages/Index"
+    "pages/LibraryPage",
+    "pages/Index",
+    "pages/SettingsPage",
+    "pages/GalleryPage"
   ]
 }

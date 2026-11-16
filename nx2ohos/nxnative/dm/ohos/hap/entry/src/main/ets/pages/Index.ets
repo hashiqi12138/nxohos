@@ -82,7 +82,9 @@ struct Index {
   private controller: XComponentController = new XComponentController();
   private started: boolean = false;
   private starting: boolean = false;   // the first start is in flight: a second onLoad (rotation during a multi-GB first staging) must not stage beside it
-  private isGame: boolean = false;
+  // @State, not a plain field: the build() branches on it (the frame-rate badge and the pad only belong to a running
+  // game), and a plain field's change does not re-run build - the badge never appeared after startGame set it.
+  @State isGame: boolean = false;
   @State status: string = 'dm: waiting for the surface';   // also the only way to tell a screenshot of this window from a blank one (a surface with no frame is black)
   private overlayW: number = 1280;   // the overlay's size in vp: touch is normalized by this, the hit test lives here, the pad draws here
   private overlayH: number = 720;
@@ -783,7 +785,7 @@ struct Index {
   // listed at run time). The first start --or a start after the data set changed (its stamp is the file's header) --copies it into files/dm,
   // which is what startGame reads. Files are streamed through a fixed buffer: a RomFS holds files of hundreds of MB.
   // 'none': the build carries no data; 'ok': files/dm is complete; 'fail': the copy broke (a partial pack must not be started).
-  private async stageData(root: string): Promise<string> {
+  private async stageData(rootArg: string): Promise<string> {
     const ctx = this.getUIContext().getHostContext();
     if (!ctx) return 'none';
     let text: string = '';
@@ -830,7 +832,7 @@ struct Index {
                 if (hb[i] === 0) break;
                 st += String.fromCharCode(hb[i]);
               }
-              const cur0: string = readStamp(root);
+              const cur0: string = readStamp(rootArg);
               dmhost.log(`staging: server pack stamp ${st.substring(0, 12)}, sandbox ${cur0.substring(0, 12) || 'empty'}`);
               if (st.length && cur0.length && st === cur0) {
                 dmhost.log('staging: stamp match, skipping the download entirely');
@@ -860,7 +862,7 @@ struct Index {
           if (done > 80) {
             const infoD: PackInfo = readPackHeader(tmp);
             if (done === 80 + infoD.tarSize) {
-              const curD: string = readStamp(root);
+              const curD: string = readStamp(rootArg);
               if (curD.length && curD === infoD.stamp) {
                 dmhost.log('staging: the cached pack matches the sandbox stamp, nothing to do');
                 return 'ok';
@@ -871,12 +873,12 @@ struct Index {
               this.importPct = 0;
               this.importFiles = 0;
               this.importNote = 'unpacking the cached pack';
-              const nC: number = await importPack(tmp, root, infoD, (p: ImportProgress) => {
+              const nC: number = await importPack(tmp, rootArg, infoD, (p: ImportProgress) => {
                 this.importFiles = p.files;
                 this.importPct = p.totalBytes > 0 ? Math.min(100, Math.floor(p.bytes * 100 / p.totalBytes)) : 0;
                 this.importNote = p.currentName.length ? p.currentName : 'finishing';
               });
-              writeStamp(root, infoD.stamp);
+              writeStamp(rootArg, infoD.stamp);
               this.importing = false;
               this.importNote = '';
               dmhost.log(`staging: unpacked ${nC} files from the cached pack`);
@@ -1062,6 +1064,30 @@ struct Index {
     try {
       const lines = text.split('\n');
       const stamp: string = lines.length && lines[0].startsWith('# DM_DATA ') ? lines[0].substring(10).trim() : '';
+      // The pack names its own game, and the caller's root does not: stageData is handed the LIBRARY's selected
+      // game, which is not necessarily the one this build carries. Installing Celeste over a build whose library
+      // last had Breath of the Wild selected unpacked Celeste's 1.2 GB into 01007EF00011E000, destroying BOTW's
+      // data and leaving no 01002B30028F6000 at all (measured 2026-11-16). nx2a-data.json is the pack's own
+      // declaration of its title, so the destination comes from it - the loopback path below already does this
+      // from the container header.
+      let root: string = rootArg;
+      {
+        let tid: string = '';
+        try {
+          const raw = await ctx.resourceManager.getRawFileContent('nx2a-data.json');
+          const meta = JSON.parse(util.TextDecoder.create('utf-8').decodeWithStream(raw)) as Record<string, Object>;
+          const t = meta['title_id'];
+          if (typeof t === 'string' && /^[0-9A-Fa-f]{16}$/.test(t)) tid = t.toUpperCase();
+        } catch (e) {
+          // no manifest of its own (a pack from before nx2a-data.json): the caller's root stands
+        }
+        if (tid.length) {
+          const filesD: string = ctx.filesDir;
+          const named: string = gamesDir(filesD) + '/' + tid;
+          if (named !== root) dmhost.log(`staging: the pack is ${tid}, not the selected ${root.substring(root.lastIndexOf('/') + 1)}: staging into ${named}`);
+          root = named;
+        }
+      }
       const stampPath: string = root + '/.stamp';
       let cur: string = '';
       try {
@@ -1406,7 +1432,9 @@ struct Index {
       // ---- P3.1 the frame-rate badge: a corner pill over the game. Tapping it toggles the display; while the game
       // runs it shows two numbers: the last second's rate (live) and the 10-second mean (stable). The pill is a hit
       // target in its own right, so it works whether the pad guide is on or off.
-      if (this.fpsVisible) {
+      // The badge belongs to a running game: it used to draw over the library and the self-test scene as well, where
+      // the numbers mean nothing (0 fps on a static page) and the pill covered the library header.
+      if (this.fpsVisible && this.isGame) {
         Text(`${this.fpsNow} fps · 10s ${this.fpsAvg10} · ${this.fpsAvgMs} ms`)
           .fontSize(13)
           .fontColor('#FFFFFF')
@@ -1415,7 +1443,7 @@ struct Index {
           .borderRadius(6)
           .position({ x: 12, y: 40 })
           .onClick(() => this.fpsToggle())
-      } else {
+      } else if (this.isGame) {
         // The closed state keeps a small translucent dot where the badge was: without it, closing the badge would
         // leave no target on screen to open it again (a closed readout that cannot be reopened is not a feature).
         Text('•')
