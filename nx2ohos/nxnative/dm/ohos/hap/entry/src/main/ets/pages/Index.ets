@@ -147,6 +147,14 @@ struct Index {
   @State games: GameEntry[] = [];           // the games under files/games/, newest stamp first
   @State selectedTitle: string = '';        // the game the next start launches; '' = the first in the list
   private rootChosen: string = '';          // the directory startGame was last handed
+  // ---- P3.1 frame-rate readout: a small corner badge over the game, polled twice a second ----
+  // now: the second that just closed (moves every second); avg10: the 10-second mean, which is the number to
+  // quote, because one bad second (a shader compile, a pool copy-back) fades out instead of tilting it.
+  @State fpsNow: number = 0;                // frames in the last closed second
+  @State fpsAvgMs: number = 0;             // that second's mean frame time (ms)
+  @State fpsAvg10: number = 0;             // the 10-second mean rate
+  @State fpsVisible: boolean = true;        // the badge; tapping it toggles it (on by default: the readout is the point)
+  private fpsTimer: number = -1;           // the poll's id, cleared on disappear
 
   /** The directory the game runs from: the selected title's folder, or the first installed one. */
   private activeRoot(filesDir: string): string {
@@ -581,6 +589,33 @@ struct Index {
   private pushPad(): void {
     dmhost.setPad(this.padButtons | this.keyBits, this.lx, this.ly, this.rx, this.ry);
     this.drawPad();
+  }
+
+  // ---- P3.1 frame-rate readout -----------------------------------------------------------------------------------
+  // The badge polls dmhost.getFps() twice a second; the native side closes a one-second window per call, so twice a
+  // second catches each window before the next overwrites it, and a 500 ms poll cannot pile up on the UI thread.
+  // The badge shows two numbers side by side:
+  //   the live one (the second that just closed) - moves every second, shows spikes a mean would hide
+  //   the 10 s mean - the number to quote; a shader compile or a pool copy-back fades out over ten seconds
+  private fpsPoll(): void {
+    const r: Record<string, number> = dmhost.getFps() as Record<string, number>;
+    this.fpsNow = Math.round(r['now']);
+    this.fpsAvgMs = Math.round(r['avgMs'] * 10) / 10;
+    this.fpsAvg10 = Math.round(r['avg10']);
+  }
+
+  private fpsToggle(): void {
+    this.fpsVisible = !this.fpsVisible;
+    if (this.fpsVisible) {
+      this.fpsPoll();
+      this.fpsTimer = setInterval(() => this.fpsPoll(), 500);
+    } else {
+      if (this.fpsTimer >= 0) { clearInterval(this.fpsTimer); this.fpsTimer = -1; }
+    }
+  }
+
+  aboutToDisappear(): void {
+    if (this.fpsTimer >= 0) { clearInterval(this.fpsTimer); this.fpsTimer = -1; }
   }
 
   // The pad is drawn only to show where the zones are: the game reads no touch, so the overlay is a capture-safe translucent guide.
@@ -1357,6 +1392,28 @@ struct Index {
         .width('100%')
         .height('100%')
         .onReady(() => this.drawPad())
+      // ---- P3.1 the frame-rate badge: a corner pill over the game. Tapping it toggles the display; while the game
+      // runs it shows two numbers: the last second's rate (live) and the 10-second mean (stable). The pill is a hit
+      // target in its own right, so it works whether the pad guide is on or off.
+      if (this.fpsVisible) {
+        Text(`${this.fpsNow} fps · 10s ${this.fpsAvg10} · ${this.fpsAvgMs} ms`)
+          .fontSize(13)
+          .fontColor('#FFFFFF')
+          .padding({ left: 10, right: 10, top: 4, bottom: 4 })
+          .backgroundColor('rgba(0,0,0,0.55)')
+          .borderRadius(6)
+          .position({ x: 12, y: 40 })
+          .onClick(() => this.fpsToggle())
+      } else {
+        // The closed state keeps a small translucent dot where the badge was: without it, closing the badge would
+        // leave no target on screen to open it again (a closed readout that cannot be reopened is not a feature).
+        Text('•')
+          .fontSize(16)
+          .fontColor('rgba(255,255,255,0.35)')
+          .padding(6)
+          .position({ x: 12, y: 40 })
+          .onClick(() => this.fpsToggle())
+      }
       // ---- P2.1 launcher: shown when the sandbox holds no pack. The user picks a .nxpk with the system
       // document picker and the import streams it into the sandbox (one sequential pass, progress below).
       // ---- P2.1 step 4 / P2.2 skeleton: the game library. Each imported pack lives in its own directory under
@@ -1590,6 +1647,9 @@ struct Index {
         this.overlayH = h;
         this.aspect = h / w;
         this.drawPad();
+        // The badge's poll starts with the pad: the readout belongs to a running game, and the timer is cleared
+        // when the badge is toggled off (fpsToggle) and on disappear (aboutToDisappear).
+        if (this.fpsTimer < 0 && this.fpsVisible) this.fpsTimer = setInterval(() => this.fpsPoll(), 500);
       }
     })
     .onTouch((event: TouchEvent) => this.handleTouch(event))

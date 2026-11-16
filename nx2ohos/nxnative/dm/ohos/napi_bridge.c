@@ -95,6 +95,25 @@ static napi_value js_log(napi_env env, napi_callback_info info) {
     return undef;
 }
 
+// getFps(): { now: number, avgMs: number, avg10: number } - the frame-rate readout for the on-screen display.
+// now: frames in the second that just closed (the live figure); avgMs: that second's mean frame time;
+// avg10: the 10-second mean rate, so one bad second (a shader compile, a pool copy-back) fades out instead of
+// tilting the number the whole run. All three are atomics written by the game thread once a second; reading them
+// from the UI thread needs no lock. Returns zeros before the first second of frames has closed.
+void dm_fps_read(int *now, double *avg_ms, int *avg10);   // gfx_vk_present_ohos.c
+static napi_value js_get_fps(napi_env env, napi_callback_info info) {
+    (void)info;
+    int now = 0; double avg_ms = 0; int avg10 = 0;
+    dm_fps_read(&now, &avg_ms, &avg10);
+    napi_value obj = NULL;
+    if (napi_create_object(env, &obj) != napi_ok) { napi_value undef; napi_get_undefined(env, &undef); return undef; }
+    napi_value v;
+    napi_create_double(env, (double)now, &v);    napi_set_named_property(env, obj, "now", v);
+    napi_create_double(env, avg_ms, &v);         napi_set_named_property(env, obj, "avgMs", v);
+    napi_create_double(env, (double)avg10, &v);  napi_set_named_property(env, obj, "avg10", v);
+    return obj;
+}
+
 void dm_ohos_logv(const char *fmt, ...);   // ohos_log.c: hilog with a domain and tag that survive the console's log export
 static void logi(const char *m, ...) {
     va_list ap; va_start(ap, m); char b[1024]; vsnprintf(b, sizeof b, m, ap); va_end(ap);
@@ -106,6 +125,7 @@ static napi_value dmhost_init(napi_env env, napi_value exports) {
     struct { const char *name; napi_callback fn; } fns[] = {
         {"setSurfaceId", js_set_surface}, {"surfaceLost", js_surface_lost}, {"startGame", js_start},
         {"startDemo", js_demo}, {"stopDemo", js_demo_stop}, {"setPad", js_set_pad}, {"log", js_log},
+        {"getFps", js_get_fps},
     };
     for (size_t i = 0; i < sizeof fns / sizeof fns[0]; i++) {
         napi_value fn = NULL;

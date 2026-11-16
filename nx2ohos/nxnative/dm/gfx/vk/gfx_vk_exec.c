@@ -580,8 +580,12 @@ void vk_crumbs_report(void) {
 void vk_prof_end(void) {
     if (!g_prof_on || !g_prof_t0) return;
     extern uint64_t g_pkg_ns, g_pkg_n; uint64_t tot = tick() - g_prof_t0; g_prof_t0 = 0;
-    if (tot < 40000000ull) return;
+    { const char *th = getenv("DM_VK_PROF_MS"); uint64_t t = th ? (uint64_t)atoi(th) * 1000000ull : 40000000ull; if (tot < t) return; }
     double ms = 1e-6; uint64_t known = g_prof_ns[0] + g_prof_ns[1] + g_prof_ns[2] + g_prof_ns[3] + g_prof_ns[4] + g_prof_ns[5] + g_prof_ns[6] + g_prof_ns[7];
+    { extern uint64_t g_set_hits, g_set_new, g_ns_set_build, g_ns_set_hash, g_ns_set_new;
+      VKLOG("sets (present %llu): %llu reused, %llu new; hash %.1f ms, collect %.1f ms, alloc+write %.1f ms",
+          (unsigned long long)g_tex_frame, (unsigned long long)g_set_hits, (unsigned long long)g_set_new,
+          g_ns_set_hash * 1e-6, g_ns_set_build * 1e-6, g_ns_set_new * 1e-6); }
     VKLOG("slow replay (present %llu): %.1f ms; pipelines built here %llu in %.1f ms, textures %.1f ms (%llu packaged uploads, %.1f ms of it), pools sync %.1f ms, shader modules %.1f ms, pipeline binds %.1f ms, descriptor sets %.1f ms, cuts %.1f ms, compute pipelines %.1f ms, other %.1f ms",
           (unsigned long long)g_tex_frame, tot * ms, (unsigned long long)(g_vkst.pipes_built - g_prof_pipes0), g_prof_ns[0] * ms, g_prof_ns[1] * ms, (unsigned long long)(g_pkg_n - g_prof_npkg0),
           (g_pkg_ns - g_prof_pkg0) * ms, g_prof_ns[2] * ms, g_prof_ns[3] * ms, g_prof_ns[4] * ms, g_prof_ns[5] * ms, g_prof_ns[6] * ms, g_prof_ns[7] * ms, (tot > known ? tot - known : 0) * ms);

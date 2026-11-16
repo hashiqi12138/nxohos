@@ -280,6 +280,16 @@ static struct {
     double sum_ms, max_ms;
 } g_fps = {PTHREAD_MUTEX_INITIALIZER};
 
+// The on-screen readout reads these, not the struct above: the UI thread polls getFps() twice a second, and the
+// counter's lock belongs to the game thread (present_enqueue). Atomics make the handoff cheap and correct; the
+// last-1s and last-10s rates are computed here too, so the UI never has to accumulate anything.
+//   now:  frames in the window that is closing (the live number, moves every frame)
+//   avg:  mean frame time over the last 10 s, as the stable figure next to the live one
+static _Atomic int g_fps_now;          // the second that just closed: frames
+static _Atomic double g_fps_avg_ms;     // the second that just closed: mean gap (ms)
+static _Atomic int g_fps_avg10;         // 10-second mean: frames per second (sum of the last 10 seconds / 10)
+static double g_fps_hist[10]; static int g_fps_hist_n;   // per-second fps history, one entry a second
+
 static void fps_frame(void) {
     const double DEADLINE_MS = 1000.0 / 30.0;   // a gap over this is a missed 30 fps deadline
     int report = 0, f = 0, s = 0;
@@ -304,11 +314,21 @@ static void fps_frame(void) {
         g_fps.frames = g_fps.slow = 0;
         g_fps.sum_ms = g_fps.max_ms = 0.0;
         g_fps.win = now;
+        // The 10 s mean: a ring of per-second rates, so one bad second (a shader compile, a pool copy-back)
+        // fades out over ten seconds instead of tilting the average the whole run.
+        g_fps_hist[g_fps_hist_n % 10] = (double)f; g_fps_hist_n++;
+        double sum = 0; int n = g_fps_hist_n < 10 ? g_fps_hist_n : 10;
+        for (int i = 0; i < n; i++) sum += g_fps_hist[i];
+        atomic_store(&g_fps_avg10, (int)(sum / n));
     }
     pthread_mutex_unlock(&g_fps.mu);
-    // Outside the lock: a log line can block on the logger, and holding the counter lock through it would make the
-    // measurement perturb what it measures.
-    if (report) VKLOG("fps: %d frames/s, avg %.1f ms, max %.1f ms, %d slow (>%.1f ms)", f, avg, mx, s, DEADLINE_MS);
+    if (report) {
+        atomic_store(&g_fps_now, f);
+        atomic_store(&g_fps_avg_ms, avg);
+        // Outside the lock: a log line can block on the logger, and holding the counter lock through it would make
+        // the measurement perturb what it measures.
+        VKLOG("fps: %d frames/s, avg %.1f ms, max %.1f ms, %d slow (>%.1f ms)", f, avg, mx, s, DEADLINE_MS);
+    }
 }
 
 // The present thread: mtl_present only queues a frame and returns, so the game thread never waits for a vsync inside the swapchain.
@@ -366,6 +386,14 @@ static uint64_t present_enqueue(vkimg_t *im, const int crop[4], uint64_t n) {
 }
 
 void vk_window_lost(void) { pthread_mutex_lock(&g_present_mu); swap_destroy(); atomic_store(&g_lost, 1); pthread_mutex_unlock(&g_present_mu); }
+
+// The on-screen readout's data (napi_bridge.c js_get_fps): the last completed second's frame count and mean frame
+// time, and the 10-second mean rate. Atomics written once a second by fps_frame; reading them is safe from any thread.
+void dm_fps_read(int *now, double *avg_ms, int *avg10) {
+    if (now) *now = atomic_load(&g_fps_now);
+    if (avg_ms) *avg_ms = atomic_load(&g_fps_avg_ms);
+    if (avg10) *avg10 = atomic_load(&g_fps_avg10);
+}
 // the XComponent's surface changed size (or was recreated): rebuild the swapchain on the next present
 void dm_ohos_window_resized(void) { atomic_store(&g_lost, 1); pthread_mutex_lock(&g_present_mu); swap_destroy(); pthread_mutex_unlock(&g_present_mu); }
 
