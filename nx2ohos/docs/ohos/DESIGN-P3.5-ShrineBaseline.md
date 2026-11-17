@@ -130,3 +130,28 @@ DM_VK_PASS_TIMES=1
 
 No performance improvement. Every experimental change tried against this baseline was either measured as neutral
 or reverted; none is in the tree. The value here is the measurement method and the two assumptions it disproved.
+
+## Tried against this baseline, and what it did
+
+Recorded so the next attempt does not repeat them. All were measured with the same command against the same
+save, and none is in the tree.
+
+| Change | Frame | Verdict |
+|---|---:|---|
+| none (baseline) | 132.6 ms | |
+| descriptor cache 8,192 -> 65,536 slots | no change | misses rose to 786,694; reverted |
+| memo lookup: hoist the generation loads out of the way loop | 202.3 ms | slower; reverted |
+| `DM_VK_POLLWAIT=1` | 151.5 ms | 14% slower; setting removed |
+
+`DM_VK_POLLWAIT` deserves a note because the source argues for it: the comment records that the Maleoon driver's
+blocking wait spins and returns seconds after the GPU finished, measured at 5.5 s a frame for 1 ms of work. On
+this scene the counter it polls is evidently not ahead of the fence: 151.5 ms against 132.6 ms, with GPU span up
+from 82.5 to 88.6 ms. The comment's measurement was a different scene and a much worse pathology, and this switch
+does not carry over to this one.
+
+## A guard that failed for the wrong reason
+
+`dm/tools/test_ohos_patches.py` extracted the whole upstream tree into `%TEMP%`. On this machine the system drive
+had 0.71 GB free while the repository's drive had 160 GB, so the guard died with `OSError: [Errno 28] No space
+left on device` in the middle of a write instead of reporting a verdict. It now creates its temporary directory
+beside the repository, falling back to `%TEMP%` only if that fails.
