@@ -4,7 +4,7 @@
 不模拟 CPU，游戏 ARM64 机器码直跑，只 HLE 顶替 Horizon 系统调用，
 NVN 图形调用离线翻译成 SPIR-V 后经 Vulkan 重放上屏。
 
-> 当前状态：**0.2.0 已发布** —— 一个 HAP 跑所有游戏（宿主 + 运行时 profile），
+> 当前状态：**一个 HAP 跑所有游戏**（宿主 + 运行时 profile），
 > 真机运行《塞尔达传说：旷野之息》Shrine 场景 11 fps / 104.7 ms。
 > 验证记录见 `docs/verify/`（G0.1–G1.5 闸门 PASS + [BOTW 真机记录](ohos-port/docs/verify/G1.6-BOTW.md) + 真机截图）。
 
@@ -20,12 +20,22 @@ docs/                      两份技术方案报告（含全部里程碑与验�
 .trae/skills/nxohos-port/   移植开发 skill（给 AI 协作的开发规程）
 ```
 
-## 发布版本 0.2.0
+## 运行方式
 
-**一个 HAP 跑所有游戏。** 运行环境与游戏数据分离：应用只含宿主（≈3 MB），每个游戏的常量、着色器、资源都以 `.nxpk` 数据包分发，新增或更新游戏都不需要重新发版。
+运行环境与游戏数据分离：应用只含宿主（≈3 MB），每个游戏的常量、着色器、资源都以 `.nxpk` 数据包分发，新增或更新游戏都不需要重新打包应用。
 
-- 安装包：[nxohos-0.2.0-signed.hap](nxohos-0.2.0-signed.hap)（versionCode `2000786201`，arm64，API 12+）
-- 实测设备：HUAWEI Pura 70 Pro+（Kirin 9010 / Maleoon 910）
+实测设备：HUAWEI Pura 70 Pro+（Kirin 9010 / Maleoon 910）。
+
+### 安装应用
+
+可安装的 HAP 在 [Releases](../../releases) 页面附件中下载，然后：
+
+```bash
+hdc file send nxohos-signed.hap /data/local/tmp/nx2a-e/entry-default-signed.hap
+hdc shell 'bm install -p /data/local/tmp/nx2a-e -r -w 600'
+```
+
+`-r` 覆盖安装只替换运行环境，已安装的游戏数据不受影响。
 
 ### 游戏分发制作方式
 
@@ -41,18 +51,9 @@ python dm/tools/pack_game.py --pack <数据包目录> --title <标题ID> --out <
    - 旧包没有 `profile.tsv` 时，宿主回退到构建内置的默认配置，仍然可玩
 3. 把 `.nxpk` 放到任意 HTTP 静态目录，应用从库页的「可下载」拉取
 
-### 安装
-
-```bash
-hdc file send nxohos-0.2.0-signed.hap /data/local/tmp/nx2a-e/entry-default-signed.hap
-hdc shell 'bm install -p /data/local/tmp/nx2a-e -r -w 600'
-```
-
-`-r` 覆盖安装只替换运行环境，已安装的游戏数据不受影响。
-
 ### 游戏库启动
 
-- 打开应用即游戏库；点卡片**直接开始游戏**（0.2 起不需要再点一次列表）
+- 打开应用即游戏库；点卡片**直接开始游戏**，不需要再点一次列表
 - 卡片状态按磁盘实况判定：**可运行** / **不完整**（缺 `RomFS/` 或 `mods/main.patched.bin`，点击提示重新导入）/ **已锁定**
 - 游戏内返回即结束进程，下次打开回到库页
 
