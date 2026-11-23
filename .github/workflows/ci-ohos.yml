@@ -4,7 +4,7 @@
 #
 # 鈹€鈹€ UPSTREAM_REF pin 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 # The guard (nx2ohos/nxnative/dm/tools/test_ohos_patches.py) checks that the OHOS patch queue
-# (dm/ohos/patches, 22 patches) applies cleanly to upstream seedds/nxnative main and reproduces the
+# (dm/ohos/patches, 24 patches) applies cleanly to upstream seedds/nxnative main and reproduces the
 # committed working files. The nested repo's .git is NOT tracked in this outer repo (nx2ohos/nxnative
 # is carried as plain files), so CI has no upstream/main ref to extract from. Instead we fetch the
 # pinned upstream SHA into a shallow standalone repo under RUNNER_TEMP and pass its dm/ to the guard
@@ -12,9 +12,9 @@
 #
 # UPSTREAM_REF must be the FULL 40-char SHA: GitHub serves fetch-by-object only for full SHAs
 # (`git fetch origin c365e59f` 鈫?"couldn't find remote ref"; the full SHA fetches fine 鈥?verified).
-# The committed default, 0c39549c1a80c2167885e38033a79026455dcb01 (short 0c39549c), is the last
+# The committed default, 4f4d23a814dc5619c51b463346077f60b35b8962 (short 4f4d23a8), is the last
 # upstream point the nested fork merged; the committed queue was re-exported against exactly this
-# tree and is green (22 patches).
+# tree and is green (24 patches).
 #   - The daily sync bot (P1.1) moves the pin forward in its sync PR, after re-running
 #     export_ohos_patches.py + the guard, so the pin always names an upstream HEAD the committed
 #     queue reproduces. Between syncs the pin keeps the gate stable day-to-day.
@@ -77,7 +77,7 @@ env:
   UPSTREAM_REPO: https://github.com/seedds/nxnative.git
   # Full 40-char SHA required (see header); committed default = last merged upstream point.
   # The `UPSTREAM_REF` repo variable overrides it without a file edit.
-  UPSTREAM_REF: ${{ vars.UPSTREAM_REF || '0c39549c1a80c2167885e38033a79026455dcb01' }}
+  UPSTREAM_REF: ${{ vars.UPSTREAM_REF || '4f4d23a814dc5619c51b463346077f60b35b8962' }}
 
 jobs:
   gate:
