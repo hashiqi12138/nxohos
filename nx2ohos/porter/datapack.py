@@ -38,10 +38,10 @@ def pack_path(root, name):   # a file of the pack, as env.txt names it: bare whe
     return f'{root}/{name}' if root else name
 
 
-def build(dst, *, profile, version, display, patched, romfs, shaders, aoc=None, language='en-US', package=None, env=(), settings=None, files=None, progress=None, dev_root=None):
+def build(dst, *, profile, version, display, patched, romfs, shaders, aoc=None, language='en-US', package=None, env=(), settings=None, files=None, progress=None, dev_root=None, name_zh=None):
     """Write the pack to dst (replacing it). profile: the PortProfile; package: the app's, when not the profile's; env: more env.txt rows, after the profile's; settings: settings.txt values over the profile's;
     files: {name in the pack: source} (the 60 fps memory writes, fpslock.tsv; the button-icon font); dev_root: where the pack is on the device ('' for a pack whose root the app sets itself,
-    HarmonyOS's sandbox folder). Returns the manifest"""
+    HarmonyOS's sandbox folder); name_zh: the game's Chinese name from its NACP (nacp.name_zh), '' when it carries none. Returns the manifest"""
     package = package or profile.package
     root = dev_root or ''
     tmp = dst.with_name(dst.name + '.partial')
@@ -67,7 +67,10 @@ def build(dst, *, profile, version, display, patched, romfs, shaders, aoc=None, 
     if sets := {**profile.settings, **(settings or {})}: (tmp / 'settings.txt').write_text(''.join(f'{k}={v}\n' for k, v in sets.items()), encoding='utf-8', newline='\n')
     man = dict(title_id=profile.id, name=profile.name, package=package, version=version, display=display, language=language, requires=profile.requires,
                files=n, bytes=b, dlc=sorted(int(p.name) for p in aoc.iterdir() if p.is_dir() and p.name.isdigit()) if aoc else [], made=time.strftime('%Y-%m-%d %H:%M:%S'))
-    (tmp / MANIFEST).write_text(json.dumps(man, indent=2), encoding='utf-8')
+    # The game's own Chinese name, when its NACP carries one. Absent (not empty) when it does not: a reader that finds no key
+    # falls back to `name` rather than showing an empty title, and an older pack without the key keeps working unchanged.
+    if name_zh: man['name_zh'] = name_zh
+    (tmp / MANIFEST).write_text(json.dumps(man, indent=2, ensure_ascii=False), encoding='utf-8')
     if dst.exists(): shutil.rmtree(dst)
     for i in range(20):   # Windows: a folder just removed can stay delete-pending while another process (an indexer, a virus scan) holds it, and the rename is refused meanwhile
         try: tmp.rename(dst); break

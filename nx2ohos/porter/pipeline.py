@@ -349,6 +349,9 @@ class Port:
         self.drop_unpacked()   # everything that reads them has run, and the shader stages that follow need the room
         self.base = next((self.dirs[v] for v in self.versions if picks[v][1] is None), self.dirs[self.versions[0]])
         self.app_name = o.app_name or nacp.name(self.base / 'control.nacp') or self.g.get('name', self.g.id)
+        # The game's own Chinese title, for the app's library: the NACP carries one per language, and the pack's manifest
+        # passes it on as `name_zh`. Absent when the game has no Chinese entry, so the library falls back to `name`.
+        self.app_name_zh = nacp.name_zh(self.game / 'control.nacp') or nacp.name_zh(self.base / 'control.nacp')
         self.display = nacp.version(self.game / 'control.nacp') or nacp.version(self.base / 'control.nacp') or '1.0'
         lang_in = o.language or self.cfg.get('language')
         want = nsp.language_code(lang_in) if lang_in else 'en-US'
@@ -527,7 +530,7 @@ class Port:
             romfs_src = unpacked if unpacked.is_dir() else (img if img.is_file() else romfs_src)
         man = datapack.build(dst, profile=self.ap, version=self.pkg_ver, display=self.display, patched=self.patched, romfs=romfs_src, shaders=self.dmsv,
                              aoc=self.aoc, language=self.lang, package=self.package, env=self.fps_env + font_env, settings=TOUCH_SETTINGS if self.o.touch else None,
-                             files={**self.fps_files, **font_files}, dev_root=self.dev_root,
+                             files={**self.fps_files, **font_files}, dev_root=self.dev_root, name_zh=self.app_name_zh,
                              progress=lambda what: PROG.set(step=f'linking {what}'))
         self.data_path = dst; self.result['data'] = str(dst)
         PROG.end(f'{man["files"]:,} files, {man["bytes"] / 2**30:.1f} GB')

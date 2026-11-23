@@ -1,0 +1,188 @@
+# 产品团队花名册 —— nx2ohos 项目专用
+#
+# 路由策略（2026-11-22 由 YG 指定）：
+#   全部角色 → trae/DeepSeek-V4.1-Flash
+#   UI 设计师 → gemini/gemini-web-pro（唯一异厂商，保留外部视觉视角）
+#
+# route_policy: shared —— 允许多角色共用同一路由。
+#   设为 distinct 时，run_team.mjs 会强制每角色一条互不重复的路由（旧策略）。
+#
+# 共用路由的代价（已知并接受）：
+#   1. 角色间差异只剩提示词，不再有模型能力差异 → 同源共识盲区变大。
+#   2. 全部请求压到 trae 网关，503 限流概率显著上升 → 并发必须压低到 2。
+#   3. UI 设计师保留 gemini 正是为了留一个真正的异源视角。
+
+version: 3
+updated: 2026-11-22
+route_policy: shared
+
+defaults:
+  cwd: "F:\\新建文件夹"
+  language: zh-CN
+  max_turns_per_role: 1
+  concurrency: 2          # 共用单网关，必须压低；实测 4 并发易触发 503
+  retry_attempts: 4       # 单网关争抢更凶，多给一次退避机会
+  max_output_tokens: 8192
+  max_tool_rounds: 10     # 单角色工具轮上限，控制单次成本
+
+gates:
+  internal_review:
+    reviewers_per_artifact: 2
+    must_include_roles: [product-experience-officer, architect]
+    reject_action: revise_and_resubmit
+  precheck:                 # 机器预检，不通过直接判返工，不消耗评审预算
+    min_evidence_refs: 3    # 至少 3 处 路径:行号
+    require_evidence_section: true
+    reject_zero_tool_calls: true
+  user_review:
+    required: true
+    deliverable: "评审卡 APPROVAL.md（目标/方案/代价/风险/验收）"
+    blocked_until: approved
+  release:
+    requires: [user_review.approved, test-engineer.signoff, ops-engineer.signoff]
+
+roles:
+
+  - id: requirements-analyst
+    name: 需求分析师
+    route: { provider: trae, model: DeepSeek-V4.1-Flash }
+    why: 共用主路由；需求拆解靠提示词约束而非模型差异
+    owns: 需求规格、验收标准、范围边界、优先级排序
+    must_read: [README.md, ROADMAP.md, docs/ENGINEERING_PLAN.md]
+    outputs:
+      - 需求条目（ID、动机、验收条件、明确不做什么）
+      - 冲突与依赖清单
+    handoff_to: [product-designer, architect]
+
+  - id: product-designer
+    name: 产品设计师
+    route: { provider: trae, model: DeepSeek-V4.1-Flash }
+    why: 共用主路由
+    owns: 功能方案、交互流程、信息架构、版本切分
+    must_read: [ROADMAP.md, nx2ohos/docs/PORT_STATUS.md]
+    outputs:
+      - 方案 A/B/C + 取舍理由
+      - 用户旅程（含失败路径）
+    handoff_to: [ui-designer, architect]
+
+  # ── 唯一的异厂商路由：保留一个真正的外部视觉视角 ──
+  # 注意：gemini 网页端转发不支持工具调用（实测 tool_calls=null），
+  # 因此本角色必须声明 context_files，由宿主预读后拼进完整提示词。
+  - id: ui-designer
+    name: UI设计师
+    route: { provider: gemini, model: gemini-web-pro }
+    why: 唯一非 trae 路由。视觉与布局判断需要不同模型家族的外部视角，避免全套方案同源
+    owns: ArkUI 视觉规范、Design Token、深浅色、动效、无障碍
+    must_read:
+      - nx2ohos/nxnative/dm/ohos/hap/entry/src/main/ets/theme/Tokens.ets
+    context_files:
+      - nx2ohos/nxnative/dm/ohos/hap/entry/src/main/ets/components/GameCard.ets
+      - nx2ohos/nxnative/dm/ohos/hap/entry/src/main/ets/components/ImportBanner.ets
+      - nx2ohos/nxnative/dm/ohos/hap/entry/src/main/ets/components/GameBadges.ets
+      - nx2ohos/nxnative/dm/ohos/hap/entry/src/main/ets/components/EmptyState.ets
+    tools: [design_recommend, design_search, design_review]
+    outputs:
+      - Token 变更表（HEX / 字号 / 间距）
+      - 页面结构 + 关键态（空/加载/错误/禁用）
+    handoff_to: [harmony-dev]
+
+  - id: architect
+    name: 架构设计师
+    route: { provider: trae, model: DeepSeek-V4.1-Flash }
+    why: 共用主路由
+    owns: 模块边界、数据流、接口契约、补丁队列纪律
+    must_read: [nx2ohos/docs/ARCHITECTURE.md, docs/ENGINEERING_PLAN.md]
+    hard_rules:
+      - "移植面只准收缩：新逻辑优先落在 dm/ohos/*（增量文件）"
+      - "上游优先：上游已实现的帧节奏/60fps/profile/基准直接消费，不重写"
+      - "补丁队列 dm/ohos/patches/ 数量不得增长，除非 PR 写明理由"
+    outputs:
+      - 变更影响面（文件级）
+      - 接口契约 diff
+      - 回滚路径
+    handoff_to: [harmony-dev, reverse-engineer, switch-expert]
+
+  - id: harmony-dev
+    name: 鸿蒙开发工程师（ArkTS / HarmonyOS NEXT）
+    route: { provider: trae, model: DeepSeek-V4.1-Flash }
+    why: 共用主路由
+    owns: ArkTS 页面/组件、NAPI 桥、HAP 构建、hilog 埋点
+    must_read:
+      - nx2ohos/nxnative/dm/ohos/hap/entry/src/main/ets/pages/LibraryPage.ets
+      - nx2ohos/nxnative/dm/ohos/napi_bridge.c
+    tools_skills: [harmony-next]
+    outputs:
+      - 可直接编译的 .ets / .c 文件（含完整路径）
+      - 构建与真机验证命令
+    handoff_to: [test-engineer]
+
+  - id: reverse-engineer
+    name: 反编译专家
+    route: { provider: trae, model: DeepSeek-V4.1-Flash }
+    why: 共用主路由
+    owns: NSO 重写器行为、Vulkan replay 指令、shader 反编译、崩溃回溯
+    must_read:
+      - nx2ohos/BOTW鸿蒙性能优化经验.md
+      - nx2ohos/docs/ARCHITECTURE.md
+    outputs:
+      - 指令级根因（pc/lr/寄存器）
+      - 最小复现 + 补丁点（文件:行）
+    handoff_to: [harmony-dev]
+
+  - id: switch-expert
+    name: Switch 游戏专家
+    route: { provider: trae, model: DeepSeek-V4.1-Flash }
+    why: 共用主路由
+    owns: Horizon 服务语义、NVN 行为、游戏兼容性、输入/存档约定
+    must_read: [nx2ohos/docs/PORT_CHECKLIST.md, nx2ohos/docs/PORT_STATUS.md]
+    outputs:
+      - 游戏兼容性判定（可运行/不完整/已锁定）与依据
+      - 系统调用语义对照（Horizon → 本仓 HLE）
+    handoff_to: [reverse-engineer, test-engineer]
+
+  - id: product-experience-officer
+    name: 产品体验官
+    route: { provider: trae, model: DeepSeek-V4.1-Flash }
+    why: 共用主路由；异源视角由 UI 设计师的 gemini 路由承担
+    owns: 真实玩家视角挑刺、首次上手路径、失败态羞辱感、文案
+    stance: 默认投反对票，必须给出至少 3 条会让用户放弃的具体理由；每条必须附代码位置
+    outputs:
+      - 阻断级 / 严重级 / 建议级 问题清单
+      - 一句话结论（可发布 / 不可发布）
+    handoff_to: [product-designer, ui-designer]
+
+  - id: test-engineer
+    name: 测试工程师
+    route: { provider: trae, model: DeepSeek-V4.1-Flash }
+    why: 共用主路由
+    owns: 闸门用例、E2E smoke、回归矩阵、flake 归因
+    must_read:
+      - nx2ohos/nxnative/dm/ohos/e2e_smoke.py
+      - nx2ohos/nxnative/dm/ohos/integration_test.py
+    hard_rules:
+      - "闸门状态机只有 PASS / FAIL(#issue) / SKIP(依赖) / FLAKE 四态"
+      - "修了某闸门代码，必须重跑该闸门全部用例"
+    outputs:
+      - 用例表（前置/步骤/期望/证据路径）
+      - 验收命令（可直接粘贴执行）
+    handoff_to: [ops-engineer]
+
+  - id: ops-engineer
+    name: 运维工程师
+    route: { provider: trae, model: DeepSeek-V4.1-Flash }
+    why: 共用主路由
+    owns: 构建流水线、每日上游同步 bot、CI 闸门、发布产物、崩溃采集
+    must_read: [nx2ohos/nxnative/dm/ohos/devpush.py, ROADMAP.md]
+    outputs:
+      - 发布清单（版本号/tag/产物哈希/回滚命令）
+      - 监控与告警项
+    handoff_to: []
+
+# ── 评审矩阵：谁能评谁（reviewer 不得等于被评者，脚本会强制） ──────────────
+review_matrix:
+  requirements:   [architect, product-experience-officer, test-engineer]
+  design:         [architect, product-experience-officer, harmony-dev]
+  ui:             [product-experience-officer, harmony-dev, product-designer]
+  implementation: [architect, reverse-engineer, test-engineer]
+  test-plan:      [architect, harmony-dev, switch-expert]
+  release:        [architect, product-experience-officer, test-engineer]

@@ -1,0 +1,23 @@
+{
+  "schema": 1,
+  "titleId": "01002B30028F6000",
+  "source": "device",
+  "scene": "celeste-title",
+  "device": {
+    "model": "HBN-AL80",
+    "api": "26",
+    "width": 0,
+    "height": 0
+  },
+  "fpsP50": 60.0,
+  "frameMsP50": 17.59,
+  "frameMsP95": 24.28,
+  "frameMsMax": 29.99,
+  "gpuMsP50": 3.81,
+  "replayMsP50": -1.0,
+  "setsMsP50": -1.0,
+  "slowPct": 0.0,
+  "frames": 33000,
+  "capturedAt": "2026-11-22T23:03:03+08:00",
+  "appVersion": ""
+}

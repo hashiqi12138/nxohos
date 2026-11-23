@@ -1,0 +1,23 @@
+{
+  "schema": 1,
+  "titleId": "0100F2C0115B6000",
+  "source": "device",
+  "scene": "totk-title",
+  "device": {
+    "model": "HBN-AL80",
+    "api": "26",
+    "width": 1260,
+    "height": 2844
+  },
+  "fpsP50": 8.0,
+  "frameMsP50": 139.89,
+  "frameMsP95": 156.8,
+  "frameMsMax": 171.37,
+  "gpuMsP50": 82.4,
+  "replayMsP50": -1.0,
+  "setsMsP50": -1.0,
+  "slowPct": 65.5,
+  "frames": 1200,
+  "capturedAt": "2026-11-22T23:05:50+08:00",
+  "appVersion": ""
+}

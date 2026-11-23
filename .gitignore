@@ -75,3 +75,12 @@ Thumbs.db
 # 内层仓库改 submodule 前的旧目录备份（确认新 clone 可用后删除）
 .nxnative-old/
 
+
+# ---- DSH / 构建残留（本地，不入库）----
+/.dsh/
+/.portshim/
+/.refs/
+/.tmp/
+/.trae/
+/ohos_guard_*/
+/ohos-ui.jpg

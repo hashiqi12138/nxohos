@@ -1,0 +1,23 @@
+{
+  "schema": 1,
+  "titleId": "01007EF00011E000",
+  "source": "device",
+  "scene": "botw-title",
+  "device": {
+    "model": "HBN-AL80",
+    "api": "26",
+    "width": 1260,
+    "height": 2844
+  },
+  "fpsP50": 30.0,
+  "frameMsP50": 38.92,
+  "frameMsP95": 50.97,
+  "frameMsMax": 52.57,
+  "gpuMsP50": 16.33,
+  "replayMsP50": -1.0,
+  "setsMsP50": -1.0,
+  "slowPct": 59.0,
+  "frames": 2700,
+  "capturedAt": "2026-11-23T01:45:21+08:00",
+  "appVersion": ""
+}
